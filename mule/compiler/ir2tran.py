@@ -81,6 +81,7 @@ from .vop import (
     FIXNUM,
     RANGE_T,
     REFERENCE_T,
+    SIGNED,
     VOP,
     IR2Block,
     IR2Component,
@@ -171,29 +172,60 @@ _RIGHT_BORROWING_VOPS = frozenset(
         "inplace-multiply",
     }
 )
-_PURE_FIXNUM_VOPS = frozenset(
+_FIXNUM_BINARY_VOPS = frozenset(
     {
-        "binary-add",
-        "binary-subtract",
-        "binary-multiply",
-        "binary-floor_divide",
-        "binary-modulo",
-        "binary-bit_and",
-        "binary-bit_or",
-        "binary-bit_xor",
-        "binary-left_shift",
-        "binary-right_shift",
-        "inplace-add",
-        "inplace-subtract",
-        "inplace-multiply",
-        "inplace-floor_divide",
-        "inplace-modulo",
-        "inplace-bit_and",
-        "inplace-bit_or",
-        "inplace-bit_xor",
-        "inplace-left_shift",
-        "inplace-right_shift",
+        "fixnum-add",
+        "fixnum-subtract",
+        "fixnum-multiply",
+        "fixnum-bit_and",
+        "fixnum-bit_or",
+        "fixnum-bit_xor",
     }
+)
+_FIXNUM_UNARY_VOPS = frozenset(
+    {
+        "fixnum-unary-positive",
+        "fixnum-unary-negative",
+        "fixnum-unary-invert",
+    }
+)
+_FIXNUM_COMPARISON_VOPS = frozenset(
+    {
+        "fixnum-compare-equal",
+        "fixnum-compare-not_equal",
+        "fixnum-compare-less",
+        "fixnum-compare-less_equal",
+        "fixnum-compare-greater",
+        "fixnum-compare-greater_equal",
+    }
+)
+_PURE_FIXNUM_VOPS = (
+    _FIXNUM_BINARY_VOPS
+    | _FIXNUM_UNARY_VOPS
+    | frozenset(
+        {
+            "binary-add",
+            "binary-subtract",
+            "binary-multiply",
+            "binary-floor_divide",
+            "binary-modulo",
+            "binary-bit_and",
+            "binary-bit_or",
+            "binary-bit_xor",
+            "binary-left_shift",
+            "binary-right_shift",
+            "inplace-add",
+            "inplace-subtract",
+            "inplace-multiply",
+            "inplace-floor_divide",
+            "inplace-modulo",
+            "inplace-bit_and",
+            "inplace-bit_or",
+            "inplace-bit_xor",
+            "inplace-left_shift",
+            "inplace-right_shift",
+        }
+    )
 )
 
 
@@ -237,6 +269,8 @@ _BORROWABLE_CONSTANT = _BorrowableConstant()
 
 def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
     name = vop.info.name
+    if name in _FIXNUM_BINARY_VOPS | _FIXNUM_UNARY_VOPS | _FIXNUM_COMPARISON_VOPS:
+        return True
     if name in _BORROWING_VOPS:
         return True
     if (
@@ -307,6 +341,8 @@ def _safe_borrow_step(step: VOP, source) -> bool:
                 return False
         return True
     if name == "constant":
+        return True
+    if name in _FIXNUM_COMPARISON_VOPS:
         return True
     if name in _PURE_FIXNUM_VOPS and step.results:
         return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
@@ -1584,7 +1620,9 @@ class _BorrowedLifetime:
         return _safe_borrow_step(step, source)
 
 
-_BORROWED_LIST_GETITEM_READERS = _CODEPOINT_COMPARISON_VOPS | frozenset(
+_BORROWED_LIST_GETITEM_READERS = (
+    _CODEPOINT_COMPARISON_VOPS | _FIXNUM_COMPARISON_VOPS | _FIXNUM_UNARY_VOPS
+) | frozenset(
     {
         "compare-is",
         "compare-is_not",
@@ -1631,7 +1669,7 @@ _PURE_FLOAT_STEP_VOPS = frozenset(
     }
 )
 
-_PURE_BINARY_ARITH_VOPS = frozenset(
+_PURE_BINARY_ARITH_VOPS = _FIXNUM_BINARY_VOPS | frozenset(
     {
         "binary-add",
         "binary-subtract",
@@ -1665,8 +1703,11 @@ def _can_borrow_list_getitem(reader: VOP, reader_ref: TNRef | None = None) -> bo
                 reader.codegen_info is None or reader.codegen_info.reuse_local is None
             )
         return True
-    if name == "coerce" and reader.results and reader.results[0].tn.sc is DOUBLE:
-        return True
+    if name == "coerce" and reader.results:
+        result = reader.results[0].tn
+        return result.sc is DOUBLE or (
+            result.sc is SIGNED and result.primitive_type is FIXNUM
+        )
     if name in _PURE_BINARY_ARITH_VOPS and len(reader.args) == 2:
         return all(
             not (arg.tn.type or UNKNOWN).may_run_user_code for arg in reader.args
@@ -1706,6 +1747,8 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
         )
     if name in _PURE_FLOAT_STEP_VOPS:
         return step.codegen_info is None or step.codegen_info.reuse_local is None
+    if name in _FIXNUM_COMPARISON_VOPS:
+        return True
     if name in _PURE_FIXNUM_VOPS and step.results:
         return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
             (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
@@ -1951,6 +1994,8 @@ def _safe_container_local_region_step(
         return True
     if name in _PURE_FLOAT_STEP_VOPS:
         return step.codegen_info is None or step.codegen_info.reuse_local is None
+    if name in _FIXNUM_COMPARISON_VOPS | _FIXNUM_UNARY_VOPS:
+        return True
     if name == "unpack-ref":
         return step.codegen_info is not None and bool(step.codegen_info.proved)
     if name == "type-check":
