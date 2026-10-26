@@ -1082,6 +1082,17 @@ class IntegerType(PrimitiveType):
             return narrowed
         return self
 
+    def narrow_identity(self, other, is_same: bool):
+        if (
+            not self.may_be_unbound
+            and not other.may_be_unbound
+            and self.is_fixnum
+            and other.fits(PYTHON_INTEGER)
+            and other.is_fixnum
+        ):
+            return self.narrow_equality(other, is_same)
+        return super().narrow_identity(other, is_same)
+
     def exact_integer(self):
         if (
             not self.may_be_unbound
@@ -4617,7 +4628,6 @@ STORAGE_CLASS_TYPES: dict[str, ValueType] = {
     "TupleStorage": TupleType(),
     "ListStorage": LIST_TYPE,
     "dict": DICT_TYPE,
-    "_Table": DICT_TYPE,
 }
 
 

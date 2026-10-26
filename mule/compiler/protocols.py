@@ -322,6 +322,11 @@ def _propagate_class_is_subclass(visitor, node) -> ValueType | None:
     return None
 
 
+@defconstrain("_class_is_subclass")
+def _constrain_class_is_subclass(visitor, node, state, truth: bool) -> bool:
+    return _constrain_native_is_subclass(node, visitor, state, truth)
+
+
 @defpropagate("_storage_compatible")
 def _propagate_storage_compatible(visitor, node) -> ValueType | None:
     args = node.args

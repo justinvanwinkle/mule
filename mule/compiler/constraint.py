@@ -2627,6 +2627,9 @@ _GLOBAL_CALLEE_NAME = _GlobalCalleeName()
 _IMPORTED_CALLEE_NAME = _ImportedCalleeName()
 
 
+_TABLE_FIELD_NAMES = frozenset({"_indices", "_hashes", "_keys", "_values", "_used"})
+
+
 class _Walk:
     """One propagation over a lambda under given parameter facts."""
 
@@ -2797,9 +2800,15 @@ class _Walk:
         """The predicted field type on instances of the receiver's class,
         restricted to shapes whose consumers guard their runtime operations."""
         facts = self.class_facts.get(receiver_type.instance_class())
-        if facts is None:
-            return UNKNOWN
-        return facts.fields.get(name, UNKNOWN)
+        if facts is not None:
+            return facts.fields.get(name, UNKNOWN)
+        if self.lambda_.is_protocol and name in _TABLE_FIELD_NAMES:
+            for cf in self.class_facts.values():
+                if cf.public_name == "_Table":
+                    return cf.fields.get(name, UNKNOWN)
+            if self.storage_methods is not None:
+                return self.storage_methods.get(("_Table", name), UNKNOWN)
+        return UNKNOWN
 
     def builtin_target(
         self, fun_lvar
@@ -3485,7 +3494,6 @@ BOOTSTRAP_CLASS_TARGETS: dict[str, ClassConstructorTarget] = {
         base_type=LIST_TYPE, cls_type=CLASS_LIST_TYPE
     ),
     "dict": ClassConstructorTarget(base_type=DICT_TYPE, cls_type=CLASS_DICT_TYPE),
-    "_Table": ClassConstructorTarget(base_type=DICT_TYPE, cls_type=CLASS_DICT_TYPE),
     "object": ClassConstructorTarget(base_type=UNKNOWN, cls_type=CLASS_OBJECT_TYPE),
     "type": ClassConstructorTarget(
         base_type=ANY_CLASS_TYPE,

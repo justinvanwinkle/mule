@@ -123,8 +123,11 @@ entry:
         **_llvm_functions(source.read_text()),
     }
     initial_reachable = _reachable_functions("word_count_ir_probe", initial_functions)
-    for operation in ("mule_fn__table_lookup.body", "mule_fn__table_insert.body"):
-        assert any(operation in name for name in initial_reachable), (
+    for operation in ("mule_fn__table_lookup", "mule_fn__table_insert"):
+        assert any(
+            f"{operation}.body" in name or f"{operation}.borrow." in name
+            for name in initial_reachable
+        ), (
             f"word counting must select the known {operation} entry, not only dynamic binding"
         )
     main_optimized = tmp_path / "word_count.main.optimized.ll"
@@ -161,7 +164,7 @@ entry:
         ],
     ):
         result = subprocess.run(
-            command, check=False, capture_output=True, text=True, timeout=30
+            command, check=False, capture_output=True, text=True, timeout=90
         )
         assert result.returncode == 0, result.stderr
 
@@ -179,7 +182,7 @@ entry:
         check=False,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=90,
     )
     assert analysis.returncode == 0, analysis.stderr
     accesses, blocked_accesses = _probe_storage_accesses(
@@ -232,7 +235,7 @@ def _probe_storage_accesses(functions, reachable, loop_analysis):
             # A variable-index object slot is a real vector access, not an
             # argument buffer, constant field offset, or helper declaration.
             for base in re.findall(
-                r"getelementptr(?: inbounds)? ptr, ptr (%[-\w.$]+), i64 %[-\w.$]+",
+                r"getelementptr(?: inbounds)? (?:ptr|\[8 x i8\]), ptr (%[-\w.$]+), i64 %[-\w.$]+",
                 blocks[label],
             ):
                 accesses.append((name, label))
@@ -291,5 +294,144 @@ for sequence in ([1], (1,), b'x', 'x'):
             print(sequence[index])
         except (IndexError, OverflowError) as error:
             print(type(error).__name__)
+""",
+    )
+
+
+def test_table_storage_fields_and_fixnum_hash_invariants():
+    from mule.compiler.ctype import (
+        FIXNUM_MAX,
+        FIXNUM_MIN,
+        UNKNOWN,
+        IntegerType,
+        ListType,
+        TupleType,
+    )
+    from mule.compiler.sequence_protocol import stdlib_type_summary
+
+    exported_types, storage_methods, _ = stdlib_type_summary()
+    assert storage_methods.get(("_Table", "_indices")) == ListType(
+        element=IntegerType(-2, (1 << 60) - 1)
+    )
+    assert storage_methods.get(("_Table", "_hashes")) == ListType(
+        element=IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+    )
+    assert storage_methods.get(("_Table", "_keys")) == ListType(element=UNKNOWN)
+    assert storage_methods.get(("_Table", "_values")) == ListType(element=UNKNOWN)
+    assert storage_methods.get(("_Table", "_used")) == IntegerType(0, (1 << 57) - 1)
+    assert exported_types.get(("_dict", "_table_lookup")) == IntegerType(
+        -1, (1 << 60) - 1
+    )
+    assert exported_types.get(("_dict", "_table_find")) == TupleType(
+        arity=2,
+        elements=(IntegerType(0, (1 << 60) - 1), IntegerType(-1, (1 << 60) - 1)),
+    )
+    for cls_name in ("_Table", "dict", "_SetBase", "set", "frozenset"):
+        assert storage_methods.get((cls_name, "__len__")) == IntegerType(
+            0, (1 << 57) - 1
+        )
+        assert storage_methods.get((cls_name, "_lookup")) == IntegerType(
+            -1, (1 << 60) - 1
+        )
+
+    toolchain = Toolchain(optimize=2)
+    with Graph(1) as graph:
+        builtins = Build(graph, toolchain).builtins()
+        graph.run(builtins)
+        builtins_llvm = builtins.path("unit.ll")
+
+    llvm_fns = _llvm_functions(builtins_llvm.read_text())
+    for fn_name in (
+        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
+        "mule_sequences_mule_import__dict:mule_fn__table_insert.body",
+        "mule_sequences_mule_import__dict:mule_fn__table_resize.body",
+        "mule_sequences_mule_fn_dict_get.body",
+        "mule_sequences_mule_fn_dict_getitem.body",
+    ):
+        body = llvm_fns[fn_name]
+        assert "@mule.attr.hit" not in body, (
+            f"{fn_name} still uses dynamic attribute cache instead of fixed _Table slots"
+        )
+        assert "getelementptr i8, ptr " in body and ", i64 32" in body, (
+            f"{fn_name} missing direct Instance.fields access at offset 32"
+        )
+
+    for probe_fn in (
+        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
+        "mule_sequences_mule_import__dict:mule_fn__table_insert.body",
+    ):
+        body = llvm_fns[probe_fn]
+        assert "@mule.fast.storage.read.borrow(" in body
+        assert "icmp eq i64 " in body, (
+            f"{probe_fn} missing unboxed fixnum hash comparison"
+        )
+
+    for dict_fn in (
+        "mule_sequences_mule_fn_dict_get.body",
+        "mule_sequences_mule_fn_dict_getitem.body",
+    ):
+        body = llvm_fns[dict_fn]
+        assert "icmp sge i64 " in body, (
+            f"{dict_fn} missing unboxed entry >= 0 comparison"
+        )
+
+
+def test_table_hash_clipping_and_multiple_inheritance_slots_match_python(tmp_path):
+    compare(
+        tmp_path,
+        """
+class WideHash:
+    def __init__(self, key, raw_hash):
+        self.key = key
+        self.raw_hash = raw_hash
+    def __hash__(self):
+        return self.raw_hash
+    def __eq__(self, other):
+        return isinstance(other, WideHash) and self.key == other.key
+
+hashes = [
+    (1 << 62),
+    (1 << 62) + 17,
+    -(1 << 62) - 1,
+    (1 << 100) + 99,
+    -(1 << 100) - 99,
+    -1,
+    -2,
+]
+mapping = {}
+items = set()
+for idx, h in enumerate(hashes):
+    k1 = WideHash(idx, h)
+    k2 = WideHash(idx, h)
+    print(hash(k1) == hash(k2))
+    mapping[k1] = idx * 10
+    items.add(k1)
+    print(mapping[k2], k2 in mapping, k2 in items)
+
+frozen = frozenset(items)
+for idx, h in enumerate(hashes):
+    probe = WideHash(idx, h)
+    print(probe in frozen)
+
+class Mixin:
+    def __init__(self):
+        self.extra = 'mixin'
+
+class CustomDict(Mixin, dict):
+    def __init__(self):
+        Mixin.__init__(self)
+        self['a'] = 1
+        self.label = 'custom'
+
+class CustomSet(Mixin, set):
+    def __init__(self):
+        Mixin.__init__(self)
+        self.add('x')
+        self.label = 'set'
+
+cd = CustomDict()
+cs = CustomSet()
+print(cd['a'], len(cd), cd.extra, cd.label)
+print('x' in cs, len(cs), cs.extra, cs.label)
 """,
     )

@@ -54,6 +54,7 @@ from .ctype import (
     BYTEARRAY_TYPE,
     BYTES_TYPE,
     DICT_TYPE,
+    EMPTY_LIST_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
     FLOAT,
@@ -65,9 +66,11 @@ from .ctype import (
     TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
+    ClassType,
     DictType,
     InstanceType,
     IntegerType,
+    ListType,
     TupleType,
     UniqueObjectType,
     ValueType,
@@ -75,6 +78,7 @@ from .ctype import (
 )
 from .dfo import find_dfo
 from .fndb import (
+    BUILD_LIST,
     BUILD_TUPLE,
     CLASS_DELETE,
     CLASS_STORE,
@@ -893,6 +897,8 @@ class ClassFacts:
     fields: dict[str, ValueType]
     chain: tuple[str, ...] = ()
     shadowed: frozenset[str] = frozenset()
+    public_name: str = ""
+    is_protocol: bool = False
 
 
 class _SanitizeInstanceFieldType(ValueTypeVisitor):
@@ -985,10 +991,181 @@ _GETATTR_ON_INSTANCE = _GetattrOnInstance()
 _SANITIZE_INSTANCE_FIELD_TYPE = _SanitizeInstanceFieldType()
 
 
+class _SanitizeProtocolFieldType(_SanitizeInstanceFieldType):
+    def visit_IntegerType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        if fact.is_fixnum:
+            return fact
+        return PYTHON_INTEGER
+
+    def visit_ListType(self, fact):
+        if fact.may_be_unbound or fact.element is BOTTOM:
+            return UNKNOWN
+        elem = fact.element.accept(self)
+        return ListType(elem)
+
+
+_SANITIZE_PROTOCOL_FIELD_TYPE = _SanitizeProtocolFieldType()
+
+
+class _StorageReadFromInstanceField(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if (
+            len(leaf.sets) == 1
+            and leaf.sets[0].value is not None
+            and len(leaf.sets[0].value.uses) == 1
+        ):
+            return leaf.sets[0].value.uses[0].accept(self)
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name == "_storage_read"
+            and len(node.args) == 2
+        ):
+            attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
+            if attr is not None:
+                return attr[1]
+        return None
+
+
+_STORAGE_READ_FROM_INSTANCE_FIELD = _StorageReadFromInstanceField()
+
+
+class _EmptyListCopiedFromField(NodeVisitor, LeafVisitor):
+    def __init__(self, field_name: str):
+        self.field_name = field_name
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if (
+            len(leaf.sets) != 1
+            or leaf.sets[0].value is None
+            or len(leaf.sets[0].value.uses) != 1
+        ):
+            return False
+        init_node = leaf.sets[0].value.uses[0]
+        if not init_node.accept(_IS_EMPTY_BUILD_LIST):
+            return False
+        saw_append = False
+        for ref in leaf.refs:
+            if ref.lvar is None or ref.lvar.dest is None:
+                continue
+            dest = ref.lvar.dest
+            copied = dest.accept(_AppendsFromField(ref.lvar, self.field_name))
+            if copied is False:
+                return False
+            if copied is True:
+                saw_append = True
+        return saw_append
+
+
+class _IsEmptyBuildList(NodeVisitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is BUILD_LIST
+            and len(node.args) == 0
+        )
+
+
+_IS_EMPTY_BUILD_LIST = _IsEmptyBuildList()
+
+
+class _AppendsFromField(NodeVisitor):
+    def __init__(self, list_lvar, field_name: str):
+        self.list_lvar = list_lvar
+        self.field_name = field_name
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name == "_storage_append"
+            and len(node.args) == 2
+            and node.args[0] is self.list_lvar
+        ):
+            src_field = node.args[1].use().accept(_STORAGE_READ_FROM_INSTANCE_FIELD)
+            return src_field == self.field_name
+        return None
+
+
+class _DependsOnInstanceField(NodeVisitor, LeafVisitor):
+    def __init__(self, field_name: str):
+        self.field_name = field_name
+        self.seen: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf in self.seen:
+            return False
+        self.seen.add(leaf)
+        if (
+            len(leaf.sets) == 1
+            and leaf.sets[0].value is not None
+            and len(leaf.sets[0].value.uses) == 1
+        ):
+            return leaf.sets[0].value.uses[0].accept(self)
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is GETATTR
+            and len(node.args) == 1
+            and node.info is not None
+        ):
+            return node.info.name == self.field_name
+        return any(use.accept(self) for arg in node.args for use in arg.uses)
+
+
+_TABLE_FIELD_NAMES = frozenset({"_indices", "_hashes", "_keys", "_values", "_used"})
+
+
 class _CollectSetattrSites(NodeVisitor):
-    def __init__(self, sites: list[Combination], setitems: list[Combination]):
+    def __init__(
+        self,
+        sites: list[Combination],
+        setitems: list[Combination],
+        list_mutations: list[Combination] | None = None,
+    ):
         self.sites = sites
         self.setitems = setitems
+        self.list_mutations = list_mutations if list_mutations is not None else []
 
     def visit_Combination(self, node: Combination):
         if (
@@ -1004,6 +1181,13 @@ class _CollectSetattrSites(NodeVisitor):
             and len(node.args) == 3
         ):
             self.setitems.append(node)
+        elif (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name in ("_storage_append", "_storage_write")
+            and len(node.args) in (2, 3)
+        ):
+            self.list_mutations.append(node)
 
 
 def _update_class_field_types(
@@ -1012,9 +1196,14 @@ def _update_class_field_types(
     setitem_sites: list[tuple[Lambda, Combination]],
     bodies: dict[tuple[Lambda, str], Body],
     parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]],
+    list_mutation_sites: list[tuple[Lambda, Combination]] = (),
 ) -> bool:
     if not class_facts or not setattr_sites:
         return False
+    table_cls_id = next(
+        (cid for cid, cf in class_facts.items() if cf.public_name == "_Table"),
+        None,
+    )
     direct_stores: dict[str, dict[str, ValueType]] = defaultdict(dict)
     ambiguous_fields: set[str] = set()
     for lam, node in setattr_sites:
@@ -1042,19 +1231,34 @@ def _update_class_field_types(
                 continue
             found_context = True
             recv_cls = recv_fact.type.instance_class()
+            if (
+                recv_cls is None
+                and lam.is_protocol
+                and table_cls_id is not None
+                and field_name in _TABLE_FIELD_NAMES
+            ):
+                recv_cls = table_cls_id
             if recv_cls is not None and recv_cls in class_facts:
                 saw_typed_receiver = True
                 if best_store is None or best_store[1] is UNKNOWN:
                     best_store = (recv_cls, val_fact.type)
         if best_store is not None:
             recv_cls, stored_type = best_store
-            if stored_type is UNKNOWN:
-                cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
-                if cur_type is not BOTTOM:
-                    stored_type = cur_type
-            if (
-                stored_type is not UNKNOWN
-                or val_use.accept(_GETATTR_ON_INSTANCE) is None
+            cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
+            if stored_type is UNKNOWN and cur_type is not BOTTOM:
+                stored_type = cur_type
+            elif (
+                stored_type == LIST_TYPE
+                and cur_type is BOTTOM
+                and val_use.accept(_EmptyListCopiedFromField(field_name))
+            ):
+                stored_type = EMPTY_LIST_TYPE
+            if stored_type is not UNKNOWN or (
+                val_use.accept(_GETATTR_ON_INSTANCE) is None
+                and not (
+                    cur_type is BOTTOM
+                    and val_use.accept(_DependsOnInstanceField(field_name))
+                )
             ):
                 prev = direct_stores[recv_cls].get(field_name, BOTTOM)
                 direct_stores[recv_cls][field_name] = prev.join(stored_type)
@@ -1094,10 +1298,45 @@ def _update_class_field_types(
                         key_fact.type, val_fact.type
                     )
 
+    for lam, node in list_mutation_sites:
+        attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
+        if attr is None:
+            continue
+        inst_lvar, field_name = attr
+        inst_use = inst_lvar.use()
+        val_use = node.args[-1].use()
+        for ctx_name in ("observed", "fixnum", "general"):
+            body = bodies.get((lam, ctx_name))
+            if body is None:
+                continue
+            inst_fact = body.facts.get(inst_use, NO_FACT)
+            val_fact = body.facts.get(val_use, NO_FACT)
+            if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
+                continue
+            inst_cls = inst_fact.type.instance_class()
+            if (
+                inst_cls is None
+                and lam.is_protocol
+                and table_cls_id is not None
+                and field_name in _TABLE_FIELD_NAMES
+            ):
+                inst_cls = table_cls_id
+            if inst_cls is not None and inst_cls in class_facts:
+                cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
+                if cur_field.fits_list():
+                    direct_stores[inst_cls][field_name] = cur_field.with_element(
+                        val_fact.type
+                    )
+
     changed = False
     for class_id, facts in class_facts.items():
         new_fields: dict[str, ValueType] = {}
         chain = facts.chain or (class_id,)
+        sanitizer = (
+            _SANITIZE_PROTOCOL_FIELD_TYPE
+            if facts.is_protocol
+            else _SANITIZE_INSTANCE_FIELD_TYPE
+        )
         candidate_names = {
             name
             for anc_id in chain
@@ -1112,7 +1351,7 @@ def _update_class_field_types(
                 anc_type = direct_stores.get(anc_id, {}).get(name, BOTTOM)
                 if anc_type is not BOTTOM:
                     joined = joined.join(anc_type)
-            sanitized = joined.accept(_SANITIZE_INSTANCE_FIELD_TYPE)
+            sanitized = joined.accept(sanitizer)
             if (
                 sanitized is not UNKNOWN
                 and sanitized is not BOTTOM
@@ -1142,6 +1381,7 @@ def _collect_class_tables(lambdas):
         for block in component.blocks():
             for node in block.nodes():
                 node.accept(collector)
+    is_protocol = any(lam.is_protocol for lam in lambdas)
     for ns, collector in collectors.items():
         all_class_ids = list(
             dict.fromkeys([*collector.public_names, *collector.methods])
@@ -1155,12 +1395,17 @@ def _collect_class_tables(lambdas):
                 cls_type = base_target.cls_type
                 records_type_origin = base_target.records_type_origin
             else:
-                cls_type = BUILTIN_CLASS_TYPES.get(cls_name, ANY_CLASS_TYPE)
                 base_type = STORAGE_CLASS_TYPES.get(
                     cls_name,
                     InstanceType(class_id)
                     if _constructs_own_instances(collector, class_id, cls_name)
                     else UNKNOWN,
+                )
+                cls_type = BUILTIN_CLASS_TYPES.get(
+                    cls_name,
+                    ClassType((base_type,))
+                    if base_type is not UNKNOWN
+                    else ANY_CLASS_TYPE,
                 )
                 records_type_origin = False
             by_ns[ns][cls_name] = ClassConstructorTarget(
@@ -1182,6 +1427,8 @@ def _collect_class_tables(lambdas):
                     {},
                     chain,
                     shadowed,
+                    public_name=cls_name,
+                    is_protocol=is_protocol,
                 )
     return by_ns, typed
 
@@ -1998,10 +2245,11 @@ def analyze(
     deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
     setattr_sites: list[tuple[Lambda, Combination]] = []
     setitem_sites: list[tuple[Lambda, Combination]] = []
+    list_mutation_sites: list[tuple[Lambda, Combination]] = []
     if class_facts:
         for lambda_ in lambdas:
             graph = graphs[lambda_]
-            site_collector = _CollectSetattrSites([], [])
+            site_collector = _CollectSetattrSites([], [], [])
             for block in graph.blocks:
                 for node in graph.block_nodes[block]:
                     node.accept(site_collector)
@@ -2009,6 +2257,8 @@ def analyze(
                 setattr_sites.append((lambda_, site))
             for site in site_collector.setitems:
                 setitem_sites.append((lambda_, site))
+            for site in site_collector.list_mutations:
+                list_mutation_sites.append((lambda_, site))
     field_changes = 0
     initial_pending_reset: set[tuple[Lambda, str]] = set()
     must_recompute: set[Lambda] = set(lambdas)
@@ -2823,7 +3073,12 @@ def analyze(
                     elif affected.intersection(recorded[3]):
                         pending_reset.add(key)
         if field_changes < 3 and _update_class_field_types(
-            class_facts, setattr_sites, setitem_sites, bodies, parameters
+            class_facts,
+            setattr_sites,
+            setitem_sites,
+            bodies,
+            parameters,
+            list_mutation_sites,
         ):
             field_changes += 1
             inputs.clear()

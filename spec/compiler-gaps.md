@@ -150,37 +150,43 @@ departures from SBCL's compiler and runtime architecture:
      emitting per-element runtime guards via `_ContractAssertion` (`codegen.py`,
      `vops.py`) whenever the element type is not already statically proven.
 
-### 0B. Typed `dict` / `set` storage layout and fixnum hash invariants (`stdlib/_dict.py`, `locall.py`, `vops.py`) (proposed)
+### 0B. Typed `dict` / `set` storage layout and fixnum hash invariants (`stdlib/_dict.py`, `mule/runtime/classes.rs`, `locall.py`, `constraint.py`, `vops.py`) (implemented)
 
 - **SBCL reference**: `src/code/target-hash-table.lisp` (`define-ht-getter`,
-  `define-gethash/flat`, `puthash`) and `src/code/target-sxhash.lisp` (`sxhash`),
-  where hash-table slots (`index-vector`, `hash-vector`, `table`, `next-vector`)
-  are typed `defstruct` slots accessed at fixed offsets and hashes are unboxed
-  fixnums.
-- **Current Mule defect**:
+  `define-gethash/flat`, `puthash`, `clip-hash`) and `src/code/target-sxhash.lisp`
+  (`sxhash`), where hash-table slots (`index-vector`, `hash-vector`, `table`,
+  `next-vector`) are typed `defstruct` slots accessed at fixed offsets and table
+  hashes are clipped to unboxed fixnums.
+- **Previous Mule defect**:
   - In `stdlib/_dict.py`, `_table_lookup` and `_table_insert` are standalone
     functions taking untyped `(self, key)` shared by `dict`, `set`, and
-    `frozenset`. They compile with `self: UnknownType` and `variants=()`.
-  - Every lookup or insertion executes 5+ dynamic attribute lookups
-    (`mule_attribute_lookup_once`) for `self._indices`, `self._hashes`,
-    `self._keys`, `self._values`, and `self._used`.
-  - Because `self._indices` and `self._hashes` have `UnknownType`,
-    `_storage_read(indices, slot)` returns `UnknownType`. Consequently,
-    `_table_lookup` has inferred return type `UnknownType` (forcing `entry >= 0`
-    in `dict_get` and `dict_getitem` to call generic `mule_compare_greater_equal`),
-    and `_storage_read(hashes, entry) == code` calls generic `mule_compare_equal`.
-  - `hash(key)` returns a 64-bit signed integer (`[-2^63, 2^63 - 1]`) that
-    exceeds Mule's 63-bit fixnum range (`[-2^62, 2^62 - 1]`), forcing heap/GMP
-    integer allocation and comparison when bit 62 is set.
-- **Required implementation**:
-  1. Access dictionary/set table storage (`_indices`, `_hashes`, `_keys`,
-     `_values`, `_used`) through fixed native slot offsets or dedicated
-     storage primitives so `_table_lookup`, `_table_insert`, `_table_get_value`,
-     and `_table_resize` never perform dynamic attribute lookup.
-  2. Prove `IntegerType` (fixnum) for index-table and hash-table reads so
-     `_table_lookup` returns `IntegerType(-1, FIXNUM_MAX)`, `entry >= 0` and
-     `entry is _EMPTY` compile to unboxed integer comparisons, and probe-loop
-     hash comparisons execute in registers without boxed calls.
+    `frozenset`. They compiled with `self: UnknownType` and `variants=()`.
+  - Every lookup or insertion executed 5+ dynamic attribute lookups
+    for `self._indices`, `self._hashes`, `self._keys`, `self._values`, and
+    `self._used`.
+  - Because `self._indices` and `self._hashes` had `UnknownType`,
+    `_storage_read(indices, slot)` returned `UnknownType`. Consequently,
+    `_table_lookup` had inferred return type `UnknownType` (forcing `entry >= 0`
+    in `dict_get` and `dict_getitem` to call generic comparison), and
+    `_storage_read(hashes, entry) == code` called generic equality comparison.
+  - `hash(key)` can return a 64-bit or arbitrary-precision integer outside
+    Mule's 63-bit fixnum range (`[-2^62, 2^62 - 1]`), preventing `_hashes` from
+    being proven a fixnum `ListType`.
+- **Implemented architecture**:
+  1. `_Table` defines `__mule_slots__ = ("_indices", "_hashes", "_keys", "_values", "_used")`
+     at fixed `Instance.fields` slots `0..4`, and `create_class_with`
+     (`mule/runtime/classes.rs`) preserves the solid base's slot prefix `0..4`
+     across single and multiple inheritance. Protocol functions access `_Table`
+     fields directly at `INSTANCE_FIELDS_OFFSET` (`32`) without dynamic attribute
+     cache probes.
+  2. `_table_hash_fallback` (`stdlib/_dict.py`) clips out-of-range fallback hashes
+     into `[-2^62, 2^62 - 1]` (matching SBCL's `clip-hash`) while preserving
+     `hash(key)`'s exact Python return value.
+  3. `locall.py` infers `ListType` element types and fixnum `IntegerType` bounds
+     for `_Table` storage fields and exports them across stdlib units via
+     `storage_methods`, proving `_table_lookup -> IntegerType(-1, (1 << 60) - 1)`,
+     unboxed `icmp eq i64` probe-loop hash comparisons, and unboxed `icmp sge i64`
+     entry checks in `dict_get` and `dict_getitem`.
 
 ### 0C. Preserving `InstanceType(cls)` method specialization, instance field inference, and method call return contracts (`locall.py`, `constraint.py`, `return_checks.py`, `codegen.py`) (implemented)
 

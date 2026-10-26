@@ -33,6 +33,8 @@ _DUMMY = -2
 _MINIMUM_SIZE = 8
 _MODULUS = 2305843009213693951
 _WORD = 0xFFFFFFFFFFFFFFFF
+_FIXNUM_MIN = -0x4000000000000000
+_FIXNUM_MAX = 0x3FFFFFFFFFFFFFFF
 _PERTURB_MASK = 0x3FFFFFFFFFFFFFFF
 _MASK_LIMIT = 0x1FFFFFFFFFFFFFF
 _PRIME_1 = 11400714785074694791
@@ -76,7 +78,9 @@ def _tuple_hash(value):
         accumulator = (accumulator + lane * _PRIME_2) & _WORD
         accumulator = ((accumulator << 31) | (accumulator >> 33)) & _WORD
         accumulator = (accumulator * _PRIME_1) & _WORD
-    accumulator = (accumulator + (_storage_length(value) ^ (_PRIME_5 ^ 3527539))) & _WORD
+    accumulator = (
+        accumulator + (_storage_length(value) ^ (_PRIME_5 ^ 3527539))
+    ) & _WORD
     if accumulator == _WORD:
         return 1546275796
     return _signed(accumulator)
@@ -116,6 +120,15 @@ def _integer_storage_kind(value):
     return math_number_kind(value) == 1
 
 
+def _table_hash_fallback(key):
+    code = hash(key)
+    if code < _FIXNUM_MIN:
+        return (code ^ (code >> 62)) & _PERTURB_MASK
+    if code > _FIXNUM_MAX:
+        return (code ^ (code >> 62)) & _PERTURB_MASK
+    return code
+
+
 def _table_clear(self):
     self._indices = _empty_indices(_MINIMUM_SIZE)
     self._hashes = []
@@ -126,6 +139,8 @@ def _table_clear(self):
 
 def _table_find(self, key, code):
     """The index-table slot for ``key`` and its entry, or -1 for none."""
+    if code < _FIXNUM_MIN or code > _FIXNUM_MAX:
+        code = (code ^ (code >> 62)) & _PERTURB_MASK
     indices = self._indices
     hashes = self._hashes
     keys = self._keys
@@ -147,7 +162,7 @@ def _table_find(self, key, code):
 def _table_lookup(self, key):
     code = _storage_hash(key)
     if code is None:
-        code = hash(key)
+        code = _table_hash_fallback(key)
     indices = self._indices
     hashes = self._hashes
     keys = self._keys
@@ -190,7 +205,9 @@ def _table_resize(self, minimum):
         index += 1
     indices = _empty_indices(size * 2)
     self._indices = indices
-    self._hashes, self._keys, self._values = hashes, keys, values
+    self._hashes = hashes
+    self._keys = keys
+    self._values = values
     mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     live_count = _storage_length(keys)
     index = 0
@@ -207,7 +224,7 @@ def _table_resize(self, minimum):
 def _table_insert(self, key, value):
     code = _storage_hash(key)
     if code is None:
-        code = hash(key)
+        code = _table_hash_fallback(key)
     indices = self._indices
     hashes = self._hashes
     keys = self._keys
@@ -238,14 +255,14 @@ def _table_insert(self, key, value):
     _storage_append(self._hashes, code)
     _storage_append(self._keys, key)
     _storage_append(self._values, value)
-    self._used += 1
+    self._used = (self._used + 1) & _MASK_LIMIT
 
 
 def _table_remove(self, key):
     """Delete ``key``'s entry, returning its value, or _MISSING if absent."""
     code = _storage_hash(key)
     if code is None:
-        code = hash(key)
+        code = _table_hash_fallback(key)
     indices = self._indices
     hashes = self._hashes
     keys = self._keys
@@ -263,7 +280,7 @@ def _table_remove(self, key):
                 _storage_write(self._indices, slot, _DUMMY)
                 _storage_write(self._keys, entry, _DELETED)
                 _storage_write(self._values, entry, None)
-                self._used -= 1
+                self._used = (self._used - 1) & _MASK_LIMIT
                 return value
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
@@ -284,6 +301,8 @@ def _table_live(self):
 
 class _Table:
     """Hash table storage shared by dict and the set types."""
+
+    __mule_slots__ = ("_indices", "_hashes", "_keys", "_values", "_used")
 
     def _clear_table(self):
         self._indices = _empty_indices(_MINIMUM_SIZE)
@@ -354,7 +373,8 @@ class _TableIterator:
         ):
             self.used = -1
             raise RuntimeError(
-                ("dictionary" if self.kind else "set") + " changed size during iteration"
+                ("dictionary" if self.kind else "set")
+                + " changed size during iteration"
             )
         while self.index < _storage_length(keys):
             index = self.index
@@ -393,7 +413,8 @@ class _TableReverseIterator:
         ):
             self.used = -1
             raise RuntimeError(
-                ("dictionary" if self.kind else "set") + " changed size during iteration"
+                ("dictionary" if self.kind else "set")
+                + " changed size during iteration"
             )
         while self.index > 0:
             index = self.index - 1
@@ -414,7 +435,9 @@ def _representation(open, items, close):
 
 def _dict_update_table(self, other):
     for index in _table_live(other):
-        _table_insert(self, _storage_read(other._keys, index), _storage_read(other._values, index))
+        _table_insert(
+            self, _storage_read(other._keys, index), _storage_read(other._values, index)
+        )
 
 
 def _dict_update_other(self, other):
@@ -440,6 +463,8 @@ _repr_active_dicts = []
 
 
 class dict(_Table):
+    __mule_slots__ = ()
+
     def __new__(cls, /, *args, **kwargs):
         if not is_class(cls) or not is_subclass(cls, dict):
             raise TypeError("dict.__new__() requires a subtype of dict")
@@ -534,7 +559,10 @@ class dict(_Table):
             entry = _table_lookup(other, _storage_read(self._keys, index))
             if entry < 0:
                 return False
-            mine, theirs = _storage_read(self._values, index), _storage_read(other._values, entry)
+            mine, theirs = (
+                _storage_read(self._values, index),
+                _storage_read(other._values, entry),
+            )
             if not (mine is theirs or mine == theirs):
                 return False
         return True
@@ -609,7 +637,10 @@ class dict(_Table):
         if not positions:
             raise KeyError("popitem(): dictionary is empty")
         index = _storage_read(positions, _storage_length(positions) - 1)
-        key, value = _storage_read(self._keys, index), _storage_read(self._values, index)
+        key, value = (
+            _storage_read(self._keys, index),
+            _storage_read(self._values, index),
+        )
         _table_remove(self, key)
         return (key, value)
 
@@ -653,11 +684,7 @@ class dict(_Table):
 
 def _is_dict(value):
     owner = _type_of(value)
-    while owner is not None:
-        if owner is dict:
-            return True
-        owner = _class_parent(owner)
-    return False
+    return owner is dict or _class_is_subclass(owner, dict)
 
 
 def _require_dict(value):
@@ -841,6 +868,8 @@ def _set_remove(self, key):
 class _SetBase(_Table):
     """Operations shared by set and frozenset."""
 
+    __mule_slots__ = ()
+
     def _fill(self, iterable):
         _set_fill(self, iterable)
 
@@ -1009,11 +1038,7 @@ class _SetBase(_Table):
 
 def _is_mutable_set(value):
     owner = _type_of(value)
-    while owner is not None:
-        if owner is set:
-            return True
-        owner = _class_parent(owner)
-    return False
+    return owner is set or _class_is_subclass(owner, set)
 
 
 def _require_mutable_set(value):
@@ -1027,11 +1052,7 @@ def _require_mutable_set(value):
 
 def _is_frozenset(value):
     owner = _type_of(value)
-    while owner is not None:
-        if owner is frozenset:
-            return True
-        owner = _class_parent(owner)
-    return False
+    return owner is frozenset or _class_is_subclass(owner, frozenset)
 
 
 def _require_frozenset(value):
@@ -1045,11 +1066,12 @@ def _require_frozenset(value):
 
 def _is_set(value):
     owner = _type_of(value)
-    while owner is not None:
-        if owner is set or owner is frozenset:
-            return True
-        owner = _class_parent(owner)
-    return False
+    return (
+        owner is set
+        or owner is frozenset
+        or _class_is_subclass(owner, set)
+        or _class_is_subclass(owner, frozenset)
+    )
 
 
 def _require_any_set(value):
@@ -1068,6 +1090,13 @@ def _require_set(value):
 
 class set(_SetBase):
     """Mutable collection of distinct hashable items."""
+
+    __mule_slots__ = ()
+
+    def __new__(cls, *args, **kwargs):
+        if not is_class(cls) or not is_subclass(cls, set):
+            raise TypeError("set.__new__() requires a subtype of set")
+        return _empty_table(cls)
 
     def __len__(self):
         _require_mutable_set(self)
@@ -1157,6 +1186,13 @@ class set(_SetBase):
 class frozenset(_SetBase):
     """Immutable, hashable collection of distinct hashable items."""
 
+    __mule_slots__ = ()
+
+    def __new__(cls, *args, **kwargs):
+        if not is_class(cls) or not is_subclass(cls, frozenset):
+            raise TypeError("frozenset.__new__() requires a subtype of frozenset")
+        return _empty_table(cls)
+
     def __len__(self):
         _require_frozenset(self)
         return self._used
@@ -1205,7 +1241,9 @@ def build_dict(flat):
     result = _empty_dict()
     index = 0
     while index < _storage_length(flat):
-        _table_insert(result, _storage_read(flat, index), _storage_read(flat, index + 1))
+        _table_insert(
+            result, _storage_read(flat, index), _storage_read(flat, index + 1)
+        )
         index += 2
     return result
 

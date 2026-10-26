@@ -1850,6 +1850,7 @@ unsafe fn create_class_with(
             );
             return std::ptr::null_mut();
         };
+        let mut layout_base = base;
         if bases.len() > 1 {
             let has_own_slots = |cls: Value| -> bool {
                 let Some(layout) = layout_of_class(cls) else {
@@ -1898,11 +1899,14 @@ unsafe fn create_class_with(
                     return std::ptr::null_mut();
                 }
             }
+            if has_own_slots(winner) {
+                layout_base = winner;
+            }
         }
-        let inherited = if base.is_null() {
+        let inherited = if layout_base.is_null() {
             None
         } else {
-            let Data::Class(layout) = &(*base).data else {
+            let Data::Class(layout) = &(*layout_base).data else {
                 unreachable!();
             };
             Some(layout)

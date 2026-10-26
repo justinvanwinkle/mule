@@ -446,7 +446,8 @@ class ModuleCompiler:
                 else ()
             )
         method_defs = class_method_definitions(compilation.entry)
-        all_class_ids = list(dict.fromkeys([*class_names, *method_defs]))
+        class_fields = compilation.locall_state.get("class_fields", {})
+        all_class_ids = list(dict.fromkeys([*class_names, *method_defs, *class_fields]))
         for class_id in all_class_ids:
             class_name = class_names.get(class_id, class_id)
             methods = method_defs.get(class_id, {})
@@ -459,6 +460,10 @@ class ModuleCompiler:
                         ret_type = DICT_TYPE
                     self.storage_methods[class_name, method_name] = ret_type
                     self.storage_methods[class_id, method_name] = ret_type
+            for field_name, field_type in class_fields.get(class_id, {}).items():
+                if field_type is not UNKNOWN:
+                    self.storage_methods[class_name, field_name] = field_type
+                    self.storage_methods[class_id, field_name] = field_type
             bases = class_bases.get(class_name, ())
             for base_name in bases:
                 for (owner_name, method_name), ret_type in list(
