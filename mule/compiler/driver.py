@@ -1723,8 +1723,6 @@ class Build:
                 inputs=[source_node, builtins],
                 settings={
                     "step": "main",
-                    "filename": filename,
-                    "roots": None if roots is None else [str(root) for root in roots],
                     "package": package,
                 },
                 outputs=("unit.ll", "imports.json"),

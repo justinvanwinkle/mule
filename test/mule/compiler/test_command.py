@@ -2,13 +2,13 @@
 
 import os
 import subprocess
+import sys
 
 import pytest
 
 from mule.__main__ import Options, UsageError, help_parser, parse
 from mule.compiler.inputs import recording, unchanged
 from mule.compiler.modules import compile_modules
-from test.python_host import python_host
 
 
 @pytest.mark.parametrize(
@@ -106,12 +106,43 @@ def test_recorded_inputs_change_when_a_new_file_would_shadow_an_import(tmp_path)
     assert not unchanged(inputs), "the earlier root now provides the module"
 
 
+def test_main_step_cache_key_depends_on_content_not_filename_or_roots(tmp_path):
+    from mule.compiler.artifacts import Graph
+    from mule.compiler.driver import Build, Toolchain
+
+    script = tmp_path / "sub" / "prog.py"
+    script.parent.mkdir()
+    script.write_text("print(42)\n")
+
+    with Graph(1) as g1:
+        b1 = Build(g1, Toolchain(optimize=2))
+        g1.run(b1.builtins())
+        s1 = b1.main(
+            g1.file(script.resolve()),
+            "print(42)\n",
+            str(script.resolve()),
+            (script.parent.resolve(),),
+            None,
+        )
+    with Graph(1) as g2:
+        b2 = Build(g2, Toolchain(optimize=2))
+        g2.run(b2.builtins())
+        s2 = b2.main(
+            g2.file(script),
+            "print(42)\n",
+            "sub/prog.py",
+            (tmp_path,),
+            None,
+        )
+    assert s1.key == s2.key
+
+
 def mule(arguments, directory, **options):
     # A private cache, so reuse is observed only for this test's builds; -O0
     # because these tests concern running programs, not optimization.
     environment = {**os.environ, "XDG_CACHE_HOME": str(directory / "cache")}
     return subprocess.run(
-        [python_host(), "-m", "mule", "-O0", *arguments],
+        [sys.executable, "-m", "mule", "-O0", *arguments],
         cwd=directory,
         env=environment,
         capture_output=True,
@@ -140,6 +171,11 @@ def test_script_runs_with_its_arguments_and_rebuilds_after_an_import_changes(tmp
     again = mule(["main.py"], tmp_path)
     assert again.stdout == "['main.py'] first\n"
     assert executables(tmp_path) == built, "unchanged inputs reuse the executable"
+    absolute = mule([str(tmp_path / "main.py")], tmp_path)
+    assert absolute.stdout == f"[{str(tmp_path / 'main.py')!r}] first\n"
+    assert executables(tmp_path) == built, (
+        "different path spelling reuses the cached executable"
+    )
     (tmp_path / "helper.py").write_text("value = 'second'\n")
     edited = mule(["main.py"], tmp_path)
     assert edited.stdout == "['main.py'] second\n"

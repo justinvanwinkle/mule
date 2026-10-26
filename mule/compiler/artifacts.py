@@ -113,9 +113,9 @@ def tool_identity(command: tuple[str, ...], *, tool: str, failure: str) -> str:
     return result.stdout
 
 
-def artifact_key(settings: dict, inputs: dict[str, str | None]) -> str:
+def artifact_key(settings: dict, inputs: list[str]) -> str:
     """The cache key of an artifact built with ``settings`` from ``inputs``,
-    a mapping of each input to its digest (None for a probed absent file)."""
+    the sorted digests of its inputs (empty string for a probed absent file)."""
     identity = {"mule": mule_hash(), "settings": settings, "inputs": inputs}
     return digest(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
 
@@ -331,7 +331,7 @@ class Step(Node):
     def key(self) -> str:
         return artifact_key(
             self.settings,
-            {node.name: node.output_hash for node in self.inputs},
+            sorted(node.output_hash or "" for node in self.inputs),
         )
 
     @cached_property
