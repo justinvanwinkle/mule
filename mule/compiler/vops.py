@@ -321,6 +321,12 @@ def coerce(gen, vop):
     """Convert scalar storage while consuming only owned temporaries."""
     source, target = vop.args[0], vop.results[0]
     value = gen.load(source) if source.tn.leaf is not None else gen.take(source)
+    if source.tn.sc in OBJECT and target.tn.sc is SIGNED:
+        gen.store(target, gen.decode(value))
+        return
+    if source.tn.sc is SIGNED and target.tn.sc in OBJECT:
+        gen.native_result(target, gen.encode(value))
+        return
     if source.tn.sc is DESCRIPTOR and target.tn.sc is DOUBLE:
         raw = gen.operation(
             f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {value})"
@@ -1161,6 +1167,77 @@ def _define_binary(operator, opcode):
 
 for _operator, _opcode in BINARY_OPCODES.items():
     _define_binary(_operator, _opcode)
+
+
+def _fixnum_binary(operator, opcode):
+    @define_vop(
+        f"fixnum-{operator.name.lower()}",
+        translate=fndb.BINARY[operator],
+        also_translate=(fndb.INPLACE_BINARY[operator],),
+        args=((SIGNED,), (SIGNED,)),
+        results=((SIGNED,),),
+        arg_types=((FIXNUM,), (FIXNUM,)),
+        result_types=((FIXNUM,),),
+        cost=-1,
+        arg_escapes=(False, False),
+    )
+    def generator(gen, vop):
+        # The result range proof excludes Python integer overflow. No
+        # int64 contract or whole-function native representation is needed.
+        left, right = (gen.take(operand) for operand in vop.args)
+        gen.store(vop.results[0], gen.operation(f"{opcode} i64 {left}, {right}"))
+
+
+for _operator, _opcode in _RAW_BINARY.items():
+    _fixnum_binary(_operator, _opcode)
+
+
+def _fixnum_compare(operator, predicate):
+    @define_vop(
+        f"fixnum-compare-{operator.name.lower()}",
+        translate=fndb.COMPARE[operator],
+        args=((SIGNED,), (SIGNED,)),
+        results=(OBJECT,),
+        arg_types=((FIXNUM,), (FIXNUM,)),
+        cost=-1,
+        arg_escapes=(False, False),
+    )
+    def generator(gen, vop):
+        left, right = (gen.take(operand) for operand in vop.args)
+        condition = gen.operation(f"icmp {predicate} i64 {left}, {right}")
+        gen.native_result(
+            vop.results[0],
+            gen.operation(f"select i1 {condition}, ptr @mule.true, ptr @mule.false"),
+        )
+
+
+for _operator, _predicate in _RAW_COMPARE.items():
+    _fixnum_compare(_operator, _predicate)
+
+
+def _fixnum_unary(operator, opcode):
+    @define_vop(
+        f"fixnum-unary-{operator.name.lower()}",
+        translate=fndb.UNARY[operator],
+        args=((SIGNED,),),
+        results=((SIGNED,),),
+        arg_types=((FIXNUM,),),
+        result_types=((FIXNUM,),),
+        cost=-1,
+        arg_escapes=(False,),
+    )
+    def generator(gen, vop):
+        value = gen.take(vop.args[0])
+        if opcode == 1:
+            value = gen.operation(f"sub i64 0, {value}")
+        elif opcode == 2:
+            value = gen.operation(f"xor i64 {value}, -1")
+        gen.store(vop.results[0], value)
+
+
+for _operator, _opcode in UNARY_OPCODES.items():
+    if _opcode < 3:
+        _fixnum_unary(_operator, _opcode)
 
 
 def unbox_float_operand(gen, operand):

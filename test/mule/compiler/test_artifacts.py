@@ -424,3 +424,66 @@ def test_partial_worker_startup_joins_started_workers_and_retains_backlog(
         assert len(graph._workers) == graph.worker_count == 2
         assert len(runs) == 1
     assert all(not worker.is_alive() for worker in graph._workers)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_step_dependency_orders_execution_without_changing_cache_key(
+    private_cache, workers
+):
+    order = []
+
+    def build_dep(inputs, directory):
+        order.append("dep")
+        (directory / "dep.txt").write_text("dep")
+
+    def build_consumer(inputs, directory):
+        order.append("consumer")
+        (directory / "out.txt").write_text(inputs[0].text)
+
+    with Graph(workers=workers) as graph:
+        source = graph.text("source", "hello")
+        dep = graph.step(
+            "dep",
+            lambda: Step(
+                graph,
+                "dep",
+                inputs=[],
+                settings={"step": "dep"},
+                outputs=("dep.txt",),
+                action=build_dep,
+            ),
+        )
+        consumer = graph.step(
+            "consumer",
+            lambda: Step(
+                graph,
+                "consumer",
+                inputs=[source],
+                settings={"step": "consumer"},
+                outputs=("out.txt",),
+                action=build_consumer,
+            ),
+        )
+        key_before = consumer.key
+        consumer.add_dependency(dep)
+        assert consumer.key == key_before
+        assert not consumer.try_reuse_cache()
+        graph.run(consumer)
+
+    assert order == ["dep", "consumer"]
+
+    with Graph(workers=workers) as graph:
+        source = graph.text("source", "hello")
+        cached = graph.step(
+            "consumer",
+            lambda: Step(
+                graph,
+                "consumer",
+                inputs=[source],
+                settings={"step": "consumer"},
+                outputs=("out.txt",),
+                action=lambda *args: pytest.fail("cache entry was not reused"),
+            ),
+        )
+        assert cached.try_reuse_cache()
+        assert cached.path("out.txt").read_text() == "hello"

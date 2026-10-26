@@ -26,6 +26,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from threading import local
 
 from mule import ast
 
@@ -1781,7 +1782,13 @@ class _ImportBindingStores(NodeVisitor, LeafVisitor):
             self._active_aliases.remove(leaf)
 
 
-_ACTIVE_DERIVATIONS: set[tuple[Lambda, str]] = set()
+class _ActiveLocallState(local):
+    def __init__(self):
+        self.derivations: set[tuple[Lambda, str]] = set()
+        self.specialized_contexts: set[tuple[Lambda, object]] = set()
+
+
+_ACTIVE_STATE = _ActiveLocallState()
 _MAX_DERIVATION_DEPTH = 6
 
 
@@ -2467,13 +2474,14 @@ def analyze(
         cached = deriver_cache.get(cache_key)
         if cached is not None:
             return cached
+        active_derivations = _ACTIVE_STATE.derivations
         active_key = (target_lam, mode)
         if (
-            active_key in _ACTIVE_DERIVATIONS
-            or len(_ACTIVE_DERIVATIONS) >= _MAX_DERIVATION_DEPTH
+            active_key in active_derivations
+            or len(active_derivations) >= _MAX_DERIVATION_DEPTH
         ):
             return None
-        _ACTIVE_DERIVATIONS.add(active_key)
+        active_derivations.add(active_key)
         try:
             proven_globals = (
                 proven_by_namespace.get(target_lam.namespace, frozenset())
@@ -2521,7 +2529,7 @@ def analyze(
             deriver_cache[cache_key] = body
             return body
         finally:
-            _ACTIVE_DERIVATIONS.discard(active_key)
+            active_derivations.discard(active_key)
 
     def _make_derivers(target_lam: Lambda):
         def _derive_ret(param_types: tuple[ValueType, ...]) -> ValueType:
@@ -2559,13 +2567,14 @@ def analyze(
             body = _propagate_for_deriver(target_lam, param_types, "branch")
             if body is None or not body.return_states:
                 return None
+            active_derivations = _ACTIVE_STATE.derivations
             active_key = (target_lam, "branch_narrow")
             if (
-                active_key in _ACTIVE_DERIVATIONS
-                or len(_ACTIVE_DERIVATIONS) >= _MAX_DERIVATION_DEPTH
+                active_key in active_derivations
+                or len(active_derivations) >= _MAX_DERIVATION_DEPTH
             ):
                 return None
-            _ACTIVE_DERIVATIONS.add(active_key)
+            active_derivations.add(active_key)
             try:
                 from .constraint import _Walk
 
@@ -2594,7 +2603,7 @@ def analyze(
                 )
                 return walk.narrow_return_parameters(body, truth)
             finally:
-                _ACTIVE_DERIVATIONS.discard(active_key)
+                active_derivations.discard(active_key)
 
         return _derive_ret, _derive_self, _derive_branch
 
@@ -3475,20 +3484,18 @@ class _CollectNodeTypesAndTargets(NodeVisitor):
             self.targets[node] = node.predicted
 
 
-_ACTIVE_SPECIALIZED_CONTEXTS: set[tuple[Lambda, object]] = set()
-
-
 @contextmanager
 def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
     """Run entry-context-specific IR1 optimization on a cloned component for
     ``context`` and restore the canonical IR1 component on exit."""
+    active_contexts = _ACTIVE_STATE.specialized_contexts
     active_key = (lambda_, context.id)
-    if active_key in _ACTIVE_SPECIALIZED_CONTEXTS or not _would_reoptimize_for_context(
+    if active_key in active_contexts or not _would_reoptimize_for_context(
         lambda_, context
     ):
         yield
         return
-    _ACTIVE_SPECIALIZED_CONTEXTS.add(active_key)
+    active_contexts.add(active_key)
     cloned_component, node_map, restore = clone_lambda_component(lambda_)
     old_types = context.types
     old_targets = context.targets
@@ -3533,7 +3540,7 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
         context.escape_facts = None
         yield
     finally:
-        _ACTIVE_SPECIALIZED_CONTEXTS.discard(active_key)
+        active_contexts.discard(active_key)
         context.types = old_types
         context.targets = old_targets
         context.element_contracts = old_element_contracts

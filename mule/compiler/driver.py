@@ -30,6 +30,7 @@ from . import (
     sequence_protocol,
 )
 from .artifacts import (
+    STEP_STACK_SIZE,
     Graph,
     Node,
     Step,
@@ -42,11 +43,16 @@ from .artifacts import (
 from .codegen import ForeignFunction, Program, generate
 from .ctype import UNKNOWN, ValueType, value_type_from_dict
 from .dfo import find_dfo
-from .inputs import file_digest, read_source
+from .inputs import file_digest, read_source, recording, replay_recorded
 from .ir1opt import constant_literal, ir1_optimize_until_done
 from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
-from .main import compile_toplevel, ir1_phases
+from .main import (
+    Compilation,
+    compile_toplevel,
+    fold_type_checking_constants,
+    ir1_phases,
+)
 from .modules import (
     STDLIB,
     CompiledModule,
@@ -79,6 +85,7 @@ __all__ = [
 
 LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
 BUILTINS_SHARDS = 16
+OBJECT_SHARD_THRESHOLD = 2 << 20
 
 
 @dataclass(slots=True)
@@ -635,41 +642,101 @@ class _ReferencesBuiltin(_ReferencesGlobal):
         return leaf.value.accept(self._text)
 
 
-def compile_unit(
-    source: str,
+@dataclass(slots=True)
+class _PreparedUnit:
+    compilation: Compilation
+    compiler: ModuleCompiler
+    unit_name: str
+    eager_modules: list[CompiledModule]
+    linked_pending: list[CompiledModule]
+    recorded: dict[str, str | None]
+
+
+def _resolve_implicit_runtime_imports(
+    compilation: Compilation, compiler: ModuleCompiler
+) -> None:
+    nodes = [
+        node
+        for lambda_ in compilation.lambdas
+        if lambda_.component is not None
+        for block in lambda_.component.blocks()
+        for node in block.nodes()
+    ]
+    open_check = _ReferencesBuiltin("open")
+    if any(node.accept(open_check) for node in nodes):
+        compiler.resolve("io", None, None)
+    builtins_check = _ReferencesGlobal("builtins")
+    compile_global = _ReferencesGlobal("compile", "eval", "exec")
+    compile_attr = _ReferencesBuiltin("compile", "eval", "exec")
+    if any(node.accept(compile_global) for node in nodes) or (
+        any(node.accept(builtins_check) for node in nodes)
+        and any(node.accept(compile_attr) for node in nodes)
+    ):
+        compiler.resolve("ast", None, None)
+
+
+def _prepare_unit(
+    source: str | None,
     filename: str,
     interface: BuiltinsInterface,
     *,
     module: CompiledModule | None = None,
     roots: tuple[Path, ...] | None = None,
     package: str | None = None,
-    resolve_import_interface=None,
-) -> tuple[Program, list[CompiledModule]]:
-    """Compile one module as its own unit against the builtins interface:
-    the main module when ``module`` is None. Returns the unit and how each
-    module it imports resolved, in request order."""
-    compiler = import_resolver(filename, interface, module, roots, package)
-    if module is None:
-        compiler.include_patterns(compiler.project_modules)
-        compilation = compile_toplevel(source, filename, imports=compiler)
-        unit_name = "__main__"
-    else:
-        compilation = compile_toplevel(
-            source,
-            filename,
-            imports=compiler,
-            prefix=module.prefix,
-            namespace=module.name,
-        )
-        unit_name = module.name
-
-    imported_interfaces: dict[str, ModuleInterface] = {}
-    if resolve_import_interface is not None:
+) -> _PreparedUnit:
+    with recording() as recorded:
+        if source is None:
+            assert module is not None
+            source = module.source()
+        compiler = import_resolver(filename, interface, module, roots, package)
+        if module is None:
+            compiler.include_patterns(compiler.project_modules)
+            compilation = compile_toplevel(source, filename, imports=compiler)
+            unit_name = "__main__"
+        else:
+            compilation = compile_toplevel(
+                source,
+                filename,
+                imports=compiler,
+                prefix=module.prefix,
+                namespace=module.name,
+            )
+            unit_name = module.name
+        fold_type_checking_constants(compilation)
         for component in compilation.components:
             ir1_optimize_until_done(component)
             if component.reanalyze:
                 find_dfo(component)
-        eager_names = {m.name for m in linked_imports(compilation, compiler, module)}
+        eager_modules = linked_imports(compilation, compiler, module)
+        _resolve_implicit_runtime_imports(compilation, compiler)
+        linked = linked_imports(compilation, compiler, module)
+        pending_names = {dep.name for dep in compiler.pending}
+        linked_pending = [dep for dep in linked if dep.name in pending_names]
+    return _PreparedUnit(
+        compilation=compilation,
+        compiler=compiler,
+        unit_name=unit_name,
+        eager_modules=eager_modules,
+        linked_pending=linked_pending,
+        recorded=recorded,
+    )
+
+
+def _finish_unit(
+    prepared: _PreparedUnit,
+    filename: str,
+    interface: BuiltinsInterface,
+    *,
+    module: CompiledModule | None = None,
+    resolve_import_interface=None,
+) -> tuple[Program, list[CompiledModule], ModuleInterface | None]:
+    replay_recorded(prepared.recorded)
+    compilation = prepared.compilation
+    compiler = prepared.compiler
+    unit_name = prepared.unit_name
+    imported_interfaces: dict[str, ModuleInterface] = {}
+    if resolve_import_interface is not None:
+        eager_names = {m.name for m in prepared.eager_modules}
         for dep in list(compiler.pending):
             if dep.missing or dep.native or dep.path is None:
                 continue
@@ -691,24 +758,7 @@ def compile_unit(
     if module is not None:
         compiler.record_types(module.name, compilation)
 
-    nodes = [
-        node
-        for lambda_ in compilation.lambdas
-        if lambda_.component is not None
-        for block in lambda_.component.blocks()
-        for node in block.nodes()
-    ]
-    open_check = _ReferencesBuiltin("open")
-    if any(node.accept(open_check) for node in nodes):
-        compiler.resolve("io", None, None)
-    builtins_check = _ReferencesGlobal("builtins")
-    compile_global = _ReferencesGlobal("compile", "eval", "exec")
-    compile_attr = _ReferencesBuiltin("compile", "eval", "exec")
-    if any(node.accept(compile_global) for node in nodes) or (
-        any(node.accept(builtins_check) for node in nodes)
-        and any(node.accept(compile_attr) for node in nodes)
-    ):
-        compiler.resolve("ast", None, None)
+    _resolve_implicit_runtime_imports(compilation, compiler)
     linked = linked_imports(compilation, compiler, module)
     linked_names = {m.name for m in linked}
 
@@ -757,6 +807,7 @@ def compile_unit(
         program.module_import = module.import_info()
     argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
+    mod_iface: ModuleInterface | None = None
     if module is not None:
         used_deps = [m.name for m in linked if m.name in imported_interfaces]
         mod_iface = module_interface(
@@ -767,6 +818,37 @@ def compile_unit(
             interface.storage_methods,
         )
         program.interface_bytes = mod_iface.to_json().encode("utf-8")
+    return program, linked, mod_iface
+
+
+def compile_unit(
+    source: str,
+    filename: str,
+    interface: BuiltinsInterface,
+    *,
+    module: CompiledModule | None = None,
+    roots: tuple[Path, ...] | None = None,
+    package: str | None = None,
+    resolve_import_interface=None,
+) -> tuple[Program, list[CompiledModule]]:
+    """Compile one module as its own unit against the builtins interface:
+    the main module when ``module`` is None. Returns the unit and how each
+    module it imports resolved, in request order."""
+    prepared = _prepare_unit(
+        source,
+        filename,
+        interface,
+        module=module,
+        roots=roots,
+        package=package,
+    )
+    program, linked, _ = _finish_unit(
+        prepared,
+        filename,
+        interface,
+        module=module,
+        resolve_import_interface=resolve_import_interface,
+    )
     return program, linked
 
 
@@ -1008,6 +1090,17 @@ def _install_fasl_symlink(
         pass
 
 
+@dataclass(frozen=True, slots=True)
+class _UnitSpec:
+    unit_key: str
+    step: Step
+    descriptor: CompiledModule | None
+    source: str | None
+    filename: str
+    roots: tuple[Path, ...] | None
+    package: str | None
+
+
 class Build:
     """The step graph of one executable or FASL build."""
 
@@ -1026,6 +1119,187 @@ class Build:
         self.objects: dict[str, Step] = {}
         self._compiling: dict[str, set[str]] = {}
         self._active_modules: set[str] = set()
+        self._root_units: list[_UnitSpec] = []
+        self._prepared: dict[str, _PreparedUnit] = {}
+        self._prepared_errors: dict[str, Exception] = {}
+        self._interfaces: dict[str, ModuleInterface | None] = {}
+        self._cycle_edges: set[tuple[str, str]] = set()
+        self._validated: dict[tuple[str, Path], ModuleCompiler] = {}
+        self._compiled_imports: dict[str, list[CompiledModule]] = {}
+
+    def _pop_validated(self, step: Step) -> ModuleCompiler | None:
+        if step.directory is None:
+            return None
+        with self.graph.lock:
+            return self._validated.pop((step.name, step.directory), None)
+
+    def prepare_import_graph(self) -> None:
+        """Build the transitive import DAG up front so independent module units
+        and their object steps schedule across all workers without blocking."""
+        if not self._root_units:
+            return
+        interface = self.interface()
+        current_hash = mule_hash()
+        seen: set[str] = {spec.unit_key for spec in self._root_units}
+        unit_steps: dict[str, Step] = {
+            spec.unit_key: spec.step for spec in self._root_units
+        }
+        eager_deps: dict[str, list[str]] = {}
+        cached_units: set[str] = set()
+        wave: list[_UnitSpec] = list(self._root_units)
+
+        def inspect_spec(
+            spec: _UnitSpec,
+        ) -> tuple[
+            _UnitSpec,
+            bool,
+            _PreparedUnit | None,
+            Exception | None,
+            list[CompiledModule],
+        ]:
+            if spec.step.try_reuse_cache():
+                assert spec.step.directory is not None
+                with self.graph.lock:
+                    compiler = self._validated.get(
+                        (spec.step.name, spec.step.directory)
+                    )
+                if compiler is None:
+                    compiler = import_resolver(
+                        spec.filename,
+                        interface,
+                        spec.descriptor,
+                        spec.roots,
+                        spec.package,
+                    )
+                    resolve_recorded(compiler, spec.step.path("imports.json"))
+                return spec, True, None, None, list(compiler.pending)
+            try:
+                prepared = _prepare_unit(
+                    spec.source,
+                    spec.filename,
+                    interface,
+                    module=spec.descriptor,
+                    roots=spec.roots,
+                    package=spec.package,
+                )
+            except Exception as error:  # noqa: BLE001
+                return spec, False, None, error, []
+            return spec, False, prepared, None, prepared.linked_pending
+
+        workers = self.graph.worker_count
+        pool: ThreadPoolExecutor | None = None
+        previous_stack: int | None = None
+        try:
+            while wave:
+                if workers > 1 and len(wave) > 1:
+                    if pool is None:
+                        previous_stack = threading.stack_size(STEP_STACK_SIZE)
+                        pool = ThreadPoolExecutor(max_workers=workers)
+                    results = list(pool.map(inspect_spec, wave))
+                else:
+                    results = [inspect_spec(spec) for spec in wave]
+                next_wave: list[_UnitSpec] = []
+                for spec, is_cached, prepared, error, next_modules in results:
+                    if is_cached:
+                        cached_units.add(spec.unit_key)
+                        eager_deps[spec.unit_key] = [
+                            dep.name
+                            for dep in next_modules
+                            if not dep.missing
+                            and not dep.native
+                            and dep.path is not None
+                        ]
+                    elif error is not None:
+                        self._prepared_errors[spec.unit_key] = error
+                        eager_deps[spec.unit_key] = []
+                    else:
+                        assert prepared is not None
+                        self._prepared[spec.unit_key] = prepared
+                        eager_deps[spec.unit_key] = [
+                            dep.name
+                            for dep in prepared.eager_modules
+                            if not dep.missing
+                            and not dep.native
+                            and dep.path is not None
+                        ]
+                    for dep in next_modules:
+                        if self.fasl_mode:
+                            if dep.missing or dep.native or dep.path is None:
+                                continue
+                            dest = fasl_cache_path(
+                                current_hash,
+                                self.toolchain.optimize,
+                                dep.name,
+                                dep.path,
+                            )
+                            if dest is not None and dest.is_file():
+                                continue
+                            dep_step = self.module(dep, spec.roots, spec.package)
+                            self.fasl(dep_step, dep)
+                        else:
+                            dep_step = self.module(dep, spec.roots, spec.package)
+                            if self.link is not None:
+                                self.link.add_input(self.object(dep_step))
+                        unit_steps.setdefault(dep.name, dep_step)
+                        if dep.name not in seen:
+                            seen.add(dep.name)
+                            if (
+                                not dep.missing
+                                and not dep.native
+                                and dep.path is not None
+                            ):
+                                next_wave.append(
+                                    _UnitSpec(
+                                        dep.name,
+                                        dep_step,
+                                        dep,
+                                        None,
+                                        str(dep.path),
+                                        spec.roots,
+                                        spec.package,
+                                    )
+                                )
+                            else:
+                                cached_units.add(dep.name)
+                                eager_deps[dep.name] = []
+                wave = next_wave
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=True)
+            if previous_stack is not None:
+                threading.stack_size(previous_stack)
+
+        visited: set[str] = set()
+        active: set[str] = set()
+
+        def visit(u: str) -> None:
+            if u in visited:
+                return
+            visited.add(u)
+            if u not in cached_units:
+                active.add(u)
+            u_step = unit_steps.get(u)
+            for v in eager_deps.get(u, ()):
+                if v == u or v not in unit_steps:
+                    continue
+                if v in active:
+                    self._cycle_edges.add((u, v))
+                    continue
+                if v not in visited:
+                    visit(v)
+                if (
+                    u_step is not None
+                    and u not in cached_units
+                    and v not in cached_units
+                ):
+                    u_step.add_dependency(unit_steps[v])
+            active.discard(u)
+
+        for spec in self._root_units:
+            visit(spec.unit_key)
+        for u in list(unit_steps):
+            if u not in visited:
+                visit(u)
 
     def resolve_import_interface(
         self, caller_name: str, dep: CompiledModule, roots, package
@@ -1033,6 +1307,10 @@ class Build:
         if dep.missing or dep.native or dep.path is None:
             return None
         with self.graph.lock:
+            if (caller_name, dep.name) in self._cycle_edges:
+                return None
+            if dep.name in self._interfaces:
+                return self._interfaces[dep.name]
             if dep.name in self._active_modules:
                 return None
             stack = [dep.name]
@@ -1053,20 +1331,23 @@ class Build:
                 if dest is not None and dest.is_file():
                     res = read_elf_interface(dest)
                     if res is not None:
+                        with self.graph.lock:
+                            self._interfaces[dep.name] = res[0]
                         return res[0]
-                fasl_step = self.fasl(self.module(dep, roots, package), dep)
-                self.graph.resolve_now(fasl_step)
-                res = read_elf_interface(fasl_step.path("module.so"))
-                return None if res is None else res[0]
-            mod_step = self.module(dep, roots, package)
-            if self.toolchain.lto:
+                mod_step = self.module(dep, roots, package)
+                self.fasl(mod_step, dep)
+            else:
+                mod_step = self.module(dep, roots, package)
+            if mod_step.directory is None:
                 self.graph.resolve_now(mod_step)
-                res = read_ll_interface(mod_step.path("unit.ll"))
-                return None if res is None else res[0]
-            obj_step = self.object(mod_step)
-            self.graph.resolve_now(obj_step)
-            res = read_elf_interface(obj_step.path("unit.o"))
-            return None if res is None else res[0]
+            with self.graph.lock:
+                if dep.name in self._interfaces:
+                    return self._interfaces[dep.name]
+            res = read_ll_interface(mod_step.path("unit.ll"))
+            iface = None if res is None else res[0]
+            with self.graph.lock:
+                self._interfaces[dep.name] = iface
+            return iface
         finally:
             with self.graph.lock:
                 if caller_name in self._compiling:
@@ -1122,6 +1403,7 @@ class Build:
                 settings={"step": "builtins", "stdlib": str(STDLIB.resolve())},
                 outputs=("unit.ll", "interface.json"),
                 action=action,
+                discover=lambda step: self.prepare_import_graph(),
             ),
         )
         return step
@@ -1144,7 +1426,11 @@ class Build:
         def action(inputs, directory):
             output = cache_directory() / "steps" / step.key / "unit.o"
             with phase("compile object %s -> %s", unit.name, output):
-                if sharded:
+                unit_ll = unit.path("unit.ll")
+                use_shards = not lto and (
+                    sharded or unit_ll.stat().st_size >= OBJECT_SHARD_THRESHOLD
+                )
+                if use_shards:
                     llvm_split = toolchain.llvm_tool("llvm-split")
                     shard_prefix = directory / "shard"
                     _run(
@@ -1152,7 +1438,7 @@ class Build:
                             llvm_split,
                             f"-j={BUILTINS_SHARDS}",
                             f"-o={shard_prefix}",
-                            str(unit.path("unit.ll")),
+                            str(unit_ll),
                         ],
                         "LLVM compilation/linking failed",
                     )
@@ -1177,17 +1463,30 @@ class Build:
                         shard.unlink()
                         return str(obj)
 
-                    workers = min(BUILTINS_SHARDS, physical_core_count())
-                    with ThreadPoolExecutor(max_workers=workers) as pool:
-                        shard_objects = list(
-                            pool.map(compile_shard, range(BUILTINS_SHARDS))
-                        )
+                    if self.graph.worker_count == 1:
+                        shard_objects = [
+                            compile_shard(index) for index in range(BUILTINS_SHARDS)
+                        ]
+                    else:
+                        workers = min(BUILTINS_SHARDS, physical_core_count())
+                        with ThreadPoolExecutor(max_workers=workers) as pool:
+                            shard_objects = list(
+                                pool.map(compile_shard, range(BUILTINS_SHARDS))
+                            )
                     _run(
                         [
                             str(lto_linker(toolchain.rustc)),
                             "-r",
                             *shard_objects,
                             "-o",
+                            str(directory / "unit.o"),
+                        ],
+                        "LLVM compilation/linking failed",
+                    )
+                    _run(
+                        [
+                            toolchain.llvm_tool("llvm-objcopy"),
+                            "--localize-hidden",
                             str(directory / "unit.o"),
                         ],
                         "LLVM compilation/linking failed",
@@ -1201,7 +1500,7 @@ class Build:
                         *toolchain.compile_flags(),
                         "-Wno-override-module",
                         "-c",
-                        str(unit.path("unit.ll")),
+                        str(unit_ll),
                         "-o",
                         str(directory / "unit.o"),
                     ],
@@ -1213,8 +1512,9 @@ class Build:
             "lto": lto,
             **toolchain.clang_settings(),
         }
-        if sharded:
+        if not lto:
             settings["shards"] = BUILTINS_SHARDS
+            settings["shard_threshold"] = OBJECT_SHARD_THRESHOLD
         step = self.graph.step(
             name,
             lambda: Step(
@@ -1235,7 +1535,6 @@ class Build:
         builtins = self.builtins()
         path = descriptor.path
         name = f"module {descriptor.name} {path}"
-        validated: dict[Path, ModuleCompiler] = {}
 
         def resolver():
             return import_resolver(
@@ -1245,7 +1544,8 @@ class Build:
         def validate(entry: Path) -> bool:
             compiler = resolver()
             if resolves_as_recorded(compiler, entry / "imports.json"):
-                validated[entry] = compiler
+                with self.graph.lock:
+                    self._validated[name, entry] = compiler
                 return True
             return False
 
@@ -1254,20 +1554,41 @@ class Build:
             with phase("compile unit %s -> %s", name, output):
                 with self.graph.lock:
                     self._active_modules.add(descriptor.name)
+                    error = self._prepared_errors.pop(descriptor.name, None)
+                    prepared = self._prepared.pop(descriptor.name, None)
                 try:
-                    program, imported = compile_unit(
-                        descriptor.source(),
+                    if error is not None:
+                        raise error
+                    if prepared is None:
+                        prepared = _prepare_unit(
+                            descriptor.source(),
+                            str(path),
+                            self.interface(),
+                            module=descriptor,
+                            roots=roots,
+                            package=package,
+                        )
+                    program, imported, mod_iface = _finish_unit(
+                        prepared,
                         str(path),
                         self.interface(),
                         module=descriptor,
-                        roots=roots,
-                        package=package,
                         resolve_import_interface=lambda dep: (
                             self.resolve_import_interface(
                                 descriptor.name, dep, roots, package
                             )
                         ),
                     )
+                    builtin_names = set(self.interface().modules)
+                    with self.graph.lock:
+                        self._interfaces[descriptor.name] = mod_iface
+                        self._compiled_imports[name] = [
+                            dep
+                            for dep in imported
+                            if not dep.missing
+                            and not dep.native
+                            and dep.name not in builtin_names
+                        ]
                 finally:
                     with self.graph.lock:
                         self._active_modules.discard(descriptor.name)
@@ -1297,7 +1618,7 @@ class Build:
                 action=action,
                 discover=lambda step: self.discover(
                     step,
-                    validated.pop(step.directory, None) or resolver(),
+                    self._pop_validated(step) or resolver(),
                     roots,
                     package,
                 ),
@@ -1309,11 +1630,15 @@ class Build:
     def discover(self, step: Step, resolver: ModuleCompiler, roots, package) -> None:
         """Add the units of the source modules ``step`` imports to the link,
         as they resolve on this build's search path."""
-        if not resolver.requested:
-            resolve_recorded(resolver, step.path("imports.json"))
+        with self.graph.lock:
+            pending = self._compiled_imports.pop(step.name, None)
+        if pending is None:
+            if not resolver.requested:
+                resolve_recorded(resolver, step.path("imports.json"))
+            pending = list(resolver.pending)
         if self.fasl_mode:
             current_hash = mule_hash()
-            for descriptor in resolver.pending:
+            for descriptor in pending:
                 if descriptor.missing or descriptor.native or descriptor.path is None:
                     continue
                 dest = fasl_cache_path(
@@ -1328,14 +1653,13 @@ class Build:
             return
         if self.link is None:
             return
-        for descriptor in resolver.pending:
+        for descriptor in pending:
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
     def main(
         self, source_node: Node, source: str, filename: str, roots, package
     ) -> Step:
         builtins = self.builtins()
-        validated: dict[Path, ModuleCompiler] = {}
 
         def resolver():
             return import_resolver(filename, self.interface(), None, roots, package)
@@ -1343,23 +1667,44 @@ class Build:
         def validate(entry: Path) -> bool:
             compiler = resolver()
             if resolves_as_recorded(compiler, entry / "imports.json"):
-                validated[entry] = compiler
+                with self.graph.lock:
+                    self._validated["__main__", entry] = compiler
                 return True
             return False
 
         def action(inputs, directory):
             output = cache_directory() / "steps" / step.key / "unit.ll"
             with phase("compile unit __main__ %s -> %s", filename, output):
-                program, imported = compile_unit(
-                    source,
+                with self.graph.lock:
+                    error = self._prepared_errors.pop("__main__", None)
+                    prepared = self._prepared.pop("__main__", None)
+                if error is not None:
+                    raise error
+                if prepared is None:
+                    prepared = _prepare_unit(
+                        source,
+                        filename,
+                        self.interface(),
+                        roots=roots,
+                        package=package,
+                    )
+                program, imported, _ = _finish_unit(
+                    prepared,
                     filename,
                     self.interface(),
-                    roots=roots,
-                    package=package,
                     resolve_import_interface=lambda dep: self.resolve_import_interface(
                         "__main__", dep, roots, package
                     ),
                 )
+                builtin_names = set(self.interface().modules)
+                with self.graph.lock:
+                    self._compiled_imports["__main__"] = [
+                        dep
+                        for dep in imported
+                        if not dep.missing
+                        and not dep.native
+                        and dep.name not in builtin_names
+                    ]
                 if not self.toolchain.lto:
                     program.toolchain_info = (
                         sys.executable,
@@ -1386,12 +1731,15 @@ class Build:
                 action=action,
                 discover=lambda step: self.discover(
                     step,
-                    validated.pop(step.directory, None) or resolver(),
+                    self._pop_validated(step) or resolver(),
                     roots,
                     package,
                 ),
                 validate=validate,
             ),
+        )
+        self._root_units.append(
+            _UnitSpec("__main__", step, None, source, filename, roots, package)
         )
         return step
 
@@ -1440,8 +1788,38 @@ class Build:
         # Standard streams are system-module state even when the source does
         # not import sys explicitly. Protocol imports use this same image unit.
         system = ModuleCompiler("<system>", roots=(STDLIB,)).resolve("sys", None, None)
-        self.link.add_input(self.object(self.module(system, (STDLIB,), None)))
+        sys_step = self.module(system, (STDLIB,), None)
+        self.link.add_input(self.object(sys_step))
+        if system.path is not None:
+            self._root_units.append(
+                _UnitSpec(
+                    system.name,
+                    sys_step,
+                    system,
+                    None,
+                    str(system.path),
+                    (STDLIB,),
+                    None,
+                )
+            )
         return self.link
+
+    def add_fasl_root(self, descriptor: CompiledModule, roots, package) -> Step:
+        step = self.module(descriptor, roots, package)
+        fasl_step = self.fasl(step, descriptor)
+        if descriptor.path is not None:
+            self._root_units.append(
+                _UnitSpec(
+                    descriptor.name,
+                    step,
+                    descriptor,
+                    None,
+                    str(descriptor.path),
+                    roots,
+                    package,
+                )
+            )
+        return fasl_step
 
     def fasl(self, unit: Step, descriptor: CompiledModule) -> Step:
         """Link one module's object into its standalone FASL shared object."""
@@ -1737,7 +2115,7 @@ def build_dynamic_module(
         return target_dest
     with Graph(workers) as graph:
         build = Build(graph, toolchain, fasl_mode=True)
-        target = build.fasl(build.module(descriptor, compiler.roots, None), descriptor)
+        target = build.add_fasl_root(descriptor, compiler.roots, None)
         for desc in compiler.pending:
             if (
                 desc.name == descriptor.name
@@ -1751,7 +2129,7 @@ def build_dynamic_module(
             )
             if dest is not None and dest.is_file():
                 continue
-            build.fasl(build.module(desc, compiler.roots, None), desc)
+            build.add_fasl_root(desc, compiler.roots, None)
         graph.run(target)
     if target_dest is not None and target_dest.is_file():
         return target_dest

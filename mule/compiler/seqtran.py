@@ -8,6 +8,7 @@ simplify truthiness negation of newly constructed empty tuples and lists.
 from __future__ import annotations
 
 from dataclasses import replace
+from threading import Lock
 
 from mule import ast
 
@@ -1030,6 +1031,7 @@ def _fuse_concat_length(call: Combination, primitive: FunInfo) -> bool:
 
 
 _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED = False
+_LENGTH_PRIMITIVE_LOCK = Lock()
 
 
 def _transform_known_length_primitive(node: Combination) -> bool:
@@ -1042,11 +1044,14 @@ def _ensure_length_primitive_transforms() -> None:
     global _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED
     if _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED:
         return
-    if "_text_length" not in KNOWN or "_storage_length" not in KNOWN:
-        return
-    deftransform("_text_length", fun=_transform_known_length_primitive)
-    deftransform("_storage_length", fun=_transform_known_length_primitive)
-    _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED = True
+    with _LENGTH_PRIMITIVE_LOCK:
+        if _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED:
+            return
+        if "_text_length" not in KNOWN or "_storage_length" not in KNOWN:
+            return
+        deftransform("_text_length", fun=_transform_known_length_primitive)
+        deftransform("_storage_length", fun=_transform_known_length_primitive)
+        _LENGTH_PRIMITIVE_TRANSFORMS_REGISTERED = True
 
 
 def known_length_primitive(vtype: ValueType) -> FunInfo | None:

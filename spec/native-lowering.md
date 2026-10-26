@@ -107,13 +107,33 @@ including mixed-type destinations and mutable-local redefinitions. Numeric-only
 copies can independently extract a double without replacing an observable object.
 Deletion and possibly unbound reads retain descriptor storage. An object-returned
 accumulator still remains boxed because this analysis does not split local live
-ranges. Integer and other general coercion VOPs remain future work. Arithmetic
-order is preserved. LLVM receives separate operations without fast-math or
-reassociation flags.
+ranges. Flow-proven fixnum coercions are described below. Other general coercion
+VOPs remain future work. Arithmetic order is preserved. LLVM receives separate
+operations without fast-math or reassociation flags.
 The constant VOP explicitly admits machine scalar results. A float literal used
 only by these arithmetic templates therefore becomes an exact LLVM double
 constant, as SBCL's float VOPs load `fp-immediate` constants. Literal uses that
 cross object boundaries still load the pooled object and preserve its identity.
+
+## Proven fixnum locals in object entries
+
+Representation selection retains `FIXNUM` for locals whose writers all prove
+exact integers in `[-2**62, 2**62 - 1]`. It costs signed machine storage and
+tagged object storage per TN, including copy edges, without requiring a
+whole-function `NativePlan`. Signed locals use `i64` slots across blocks.
+Explicit coercion VOPs decode and restore tags at numeric/object boundaries.
+These operations do not allocate integer boxes. They follow SBCL's
+`select-tn-representation`, `coerce-vop-operands`, and
+`emit-moves-and-coercions` stages.
+
+Ordinary-entry signed arithmetic requires exact operand and result proofs.
+Operations with potentially wider results retain Python's arbitrary-precision
+path. Boolean and mixed-type joins do not qualify as exact fixnums. Locals
+with unbound checks, deletion, or pointer-address closure access retain tagged
+slots. Generator and coroutine local slots remain tagged because frame inspection
+can observe them before assignment without an explicit local read. Arithmetic
+temporaries in those bodies may still use signed storage. Coercions preserve
+local read metadata, overwrite order, and exception cleanup.
 
 ## Closure and value-cell slot lowering
 

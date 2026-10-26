@@ -7,8 +7,8 @@ transforms, unified constant-lvar/dead-operand helpers, and monotonic
 parameter promotion (Section 1B), local closure extent / fixed aggregate scalar
 replacement (Section 3), loop optimizations / loop-invariant code motion /
 induction-variable range and relational constraint inference (Section 4), and
-identity-aware float storage and coercions, numeric internal calling
-conventions, LLVM-visible private leaf boxes (parts of Section 5); **proposed**
+identity-aware float storage and coercions, flow-proven fixnum locals, numeric
+internal calling conventions, LLVM-visible private leaf boxes (parts of Section 5); **proposed**
 for Sections 0B–0D, Sections 1C–2, and the rest of Section 5.
 
 This document records the remaining architectural and transform gaps between
@@ -622,18 +622,38 @@ suite failure or performance measurement.
 - **Current Mule state**: `mule/compiler/represent.py` and `vops.py` keep raw
   `i64` / `double` values for `mule_types.int64` / `mule_types.float64` annotated locals and
   range-loop counters, and unbox fixnum arithmetic inside basic blocks.
-  Ordinary float locals can also remain raw across blocks. Identity-aware
-  selection and explicit float coercions separate numeric-only copies from
-  object-observable sources, as described below.
-- **Proposed plan**:
-  1. **Flow-proven unboxed local TNs (`SC_SIGNED_REG` / `SC_DOUBLE_REG`)**:
-     When `represent.py` sees that every write and read of a non-closed-over
-     `LambdaVar` in an `IR2Component` (general or specialized `EntryContext`) has
-     a proven `FIXNUM` (`IntegerType` fitting `[FIXNUM_MIN, FIXNUM_MAX]`, not
-     `may_be_unbound`), `int64`, or `FLOAT` type, assign its local TN to
-     `SC_SIGNED_REG` (`i64`) or `SC_DOUBLE_REG` (`double`) across the entire
-     function body and insert tag/box coercions only at boundaries where a
-     generic runtime helper requires a `ptr` `Value`.
+  Ordinary float and flow-proven fixnum locals can also remain raw across
+  blocks. Explicit coercion VOPs connect independently selected representations.
+  Float selection additionally preserves observable object identity.
+
+### Flow-proven fixnum locals (implemented)
+
+`represent.py` preserves the `FIXNUM` primitive type when the complete set of
+local writers proves exact integers within `[FIXNUM_MIN, FIXNUM_MAX]`.
+Booleans, possibly unbound values, and wider or heterogeneous integer joins
+do not establish that proof. The compiler selects `SIGNED` (`i64`) or tagged
+`IMMEDIATE` (`ptr`) storage per TN from operand and copy costs, independently
+of a whole-function `NativePlan`. Local slots retain their selected LLVM type
+across basic-block boundaries.
+
+This follows SBCL `select-tn-representation`, `coerce-vop-operands`, and
+`emit-moves-and-coercions`. Generic copies do not impose an initial descriptor
+bias. After selection, explicit coercion VOPs perform arithmetic right shift
+to decode a tagged fixnum or shift/tag to restore its object representation.
+These conversions allocate no heap object and require no runtime dispatch.
+Local reads and assignment moves retain their original binding and overwrite
+metadata. The operand index is rebuilt before ownership and cleanup analysis.
+
+Ordinary-entry arithmetic templates admit signed operands only with the
+required exact integer proofs. Arithmetic whose result may exceed the fixnum
+range retains the existing arbitrary-precision behavior. Generic calls,
+container storage, returns, and other object consumers receive tagged pointers.
+Locals requiring unbound or deletion checks and address-exposed closure slots
+retain tagged storage. Generator and coroutine local slots also remain tagged:
+frame inspection can observe a binding before its first assignment, even without
+an explicit source read. Their arithmetic temporaries may still use signed
+storage. Raw suspended locals need an independent binding-state proof or
+representation before that restriction can be removed.
 
 ### Identity-aware float representation coercions (implemented)
 
@@ -687,11 +707,11 @@ returning their float accumulator still conservatively use boxed accumulator
 storage; the numeric internal conventions below remove that boundary for numeric
 callers. Splitting one mutable local's live ranges is not implemented.
 
-Generalizing explicit coercion insertion to integer and other storage classes,
-extending identity-safe materialization, and using target-specific conversion
-costs remain proposed work. Existing integer and whole-native entry conventions
-retain their implemented generators. This increment does not establish complete
-SBCL representation-selection parity.
+Generalizing explicit coercion insertion beyond fixnums and floats, extending
+identity-safe materialization, and using target-specific conversion costs remain
+proposed work. Whole-native entry conventions retain their implemented
+generators. These increments do not establish complete SBCL
+representation-selection parity.
 
 ### Numeric internal calling conventions (implemented)
 
