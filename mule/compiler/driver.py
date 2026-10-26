@@ -1483,6 +1483,14 @@ class Build:
                         ],
                         "LLVM compilation/linking failed",
                     )
+                    _run(
+                        [
+                            toolchain.llvm_tool("llvm-objcopy"),
+                            "--localize-hidden",
+                            str(directory / "unit.o"),
+                        ],
+                        "LLVM compilation/linking failed",
+                    )
                     for obj in shard_objects:
                         Path(obj).unlink()
                     return
@@ -1504,8 +1512,9 @@ class Build:
             "lto": lto,
             **toolchain.clang_settings(),
         }
-        if sharded:
+        if not lto:
             settings["shards"] = BUILTINS_SHARDS
+            settings["shard_threshold"] = OBJECT_SHARD_THRESHOLD
         step = self.graph.step(
             name,
             lambda: Step(
