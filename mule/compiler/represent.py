@@ -4,8 +4,8 @@ Two decisions live here:
 
 - ``select_representations`` assigns every TN of an IR2 component a storage
   class from its primitive type's candidates by the cost of the VOP operands
-  that read and write it (``select-tn-representation``). A local whose every
-  writer delivers an immortal value becomes an immediate (never released).
+  that read and write it (``select-tn-representation``). Proven fixnum locals
+  admit signed words; other immortal locals use tagged immediate storage.
   Identity demand propagates backward through float copies. Numeric-only
   copies select storage independently; explicit coercion VOPs connect them.
 
@@ -59,11 +59,13 @@ from .vop import (
     FIXNUM,
     FLOAT64,
     FLOAT_BOX_LAYOUT,
+    IMMEDIATE,
     IMMORTAL_T,
     NONE_T,
     RANGE,
     RANGE_T,
     REFERENCE_T,
+    SIGNED,
     SIGNED64,
     VOP,
     BoxLayout,
@@ -93,9 +95,12 @@ def select_representations(component: IR2Component) -> None:
                 tn.name is not None and tn.name.startswith("$scalar.")
             ):
                 tn.primitive_type = _variable_type(tn, component, writes)
-    floats = _select_float_representations(component) if not raw else {}
+    selected = {}
+    if not raw:
+        selected.update(_select_float_representations(component))
+        selected.update(_select_fixnum_representations(component))
     for tn in component.tns:
-        tn.sc = floats.get(tn) or select_tn_representation(
+        tn.sc = selected.get(tn) or select_tn_representation(
             tn,
             reads=reads.get(tn, ()),
             writes=writes.get(tn, ()),
@@ -129,6 +134,21 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
         written_types.add(written)
         value_type = value_type.join(written_value)
     joined_ptype = primitive_type_of(value_type)
+    if joined_ptype is FIXNUM or written_types == {FIXNUM}:
+        # A raw slot cannot encode the unbound marker, and stack closures
+        # access address-taken slots through the object-pointer convention.
+        # Coroutine frame inspection also reads locals before assignment.
+        if tn.leaf is not None and component.lambda_.coroutine_body:
+            return IMMORTAL_T
+        for reader, _ref in component.reads.get(tn, ()):
+            if reader.info is vops.LOCAL_ADDRESS or (
+                reader.info is vops.LOAD_LOCAL
+                and (not reader.codegen_info.bound or reader.codegen_info.allow_unbound)
+            ):
+                return IMMORTAL_T
+        if any(writer.info is vops.UNBIND_LOCAL for writer, _ in writes.get(tn, ())):
+            return IMMORTAL_T
+        return FIXNUM
     if joined_ptype.boxed_layout is not None:
         return joined_ptype
     if len(written_types) == 1:
@@ -284,6 +304,33 @@ def _select_float_representations(component):
         for tn in component.tns
         if tn.primitive_type is BOXED_FLOAT
     }
+    return _refine_copy_representations(component, selected, demanded)
+
+
+def _select_fixnum_representations(component):
+    """Select each proven integer's storage independently of object boundaries."""
+    selected = {
+        tn: select_tn_representation(
+            tn,
+            reads=[
+                (vop, ref)
+                for vop, ref in component.reads.get(tn, ())
+                if not _representation_move(vop)
+            ],
+            writes=[
+                (vop, ref)
+                for vop, ref in component.writes.get(tn, ())
+                if not _representation_move(vop)
+            ],
+            convention=component.context.convention,
+        )
+        for tn in component.tns
+        if tn.primitive_type is FIXNUM
+    }
+    return _refine_copy_representations(component, selected)
+
+
+def _refine_copy_representations(component, selected, demanded=()):
     # Once both ends are selected, charge moves for actual representation
     # changes. Keep ties stable: each update must reduce the graph's total
     # operand/conversion cost, so cyclic copy graphs cannot oscillate.
@@ -294,9 +341,9 @@ def _select_float_representations(component):
             if tn in demanded:
                 continue
             best = current
-            best_cost = _float_representation_cost(component, tn, current, selected)
+            best_cost = _copy_representation_cost(component, tn, current, selected)
             for sc in tn.primitive_type.scs:
-                cost = _float_representation_cost(component, tn, sc, selected)
+                cost = _copy_representation_cost(component, tn, sc, selected)
                 if cost < best_cost:
                     best, best_cost = sc, cost
             if best is not current:
@@ -305,7 +352,7 @@ def _select_float_representations(component):
     return selected
 
 
-def _float_representation_cost(component, tn, sc, selected):
+def _copy_representation_cost(component, tn, sc, selected):
     cost = 0
     for vop, ref in (*component.reads.get(tn, ()), *component.writes.get(tn, ())):
         if _representation_move(vop):
@@ -321,7 +368,7 @@ def _float_representation_cost(component, tn, sc, selected):
 
 
 def emit_moves_and_coercions(component: IR2Component) -> None:
-    """Make float representation changes explicit after final call selection.
+    """Make scalar representation changes explicit after final call selection.
 
     Keep local reads and assignment moves: their metadata governs borrowing,
     last reads, and releasing overwritten locals. Only the intervening scalar
@@ -338,7 +385,14 @@ def emit_moves_and_coercions(component: IR2Component) -> None:
         return result
 
     def coerce(node, source, target):
-        if {source.sc, target.sc} != {DESCRIPTOR, DOUBLE}:
+        float_change = {source.sc, target.sc} == {DESCRIPTOR, DOUBLE}
+        fixnum_change = (
+            source.primitive_type is FIXNUM or target.primitive_type is FIXNUM
+        ) and (
+            (source.sc is SIGNED and target.sc in vops.OBJECT)
+            or (target.sc is SIGNED and source.sc in vops.OBJECT)
+        )
+        if not (float_change or fixnum_change):
             raise ValueError(
                 f"unsupported representation conversion: {source} -> {target}"
             )
@@ -349,17 +403,24 @@ def emit_moves_and_coercions(component: IR2Component) -> None:
         for vop in block.vops:
             if _representation_move(vop):
                 source, target = vop.args[0].tn, vop.results[0].tn
-                if source.sc is not target.sc and (
+                if source.sc.llvm_type != target.sc.llvm_type and (
                     source.primitive_type is BOXED_FLOAT
                     or target.primitive_type is BOXED_FLOAT
+                    or source.primitive_type is FIXNUM
+                    or target.primitive_type is FIXNUM
                 ):
+                    proof = (
+                        source
+                        if source.primitive_type in (BOXED_FLOAT, FIXNUM)
+                        else target
+                    )
                     if vop.info is vops.MOVE:
-                        intermediate = temporary(source, target.sc)
+                        intermediate = temporary(proof, target.sc)
                         converted.append(coerce(vop.node, source, intermediate))
                         vop.args[0] = TNRef(intermediate, False)
                         converted.append(vop)
                     else:
-                        intermediate = temporary(target, source.sc)
+                        intermediate = temporary(proof, source.sc)
                         vop.results[0] = TNRef(intermediate, True)
                         converted.extend((vop, coerce(vop.node, intermediate, target)))
                     continue
@@ -369,7 +430,7 @@ def emit_moves_and_coercions(component: IR2Component) -> None:
             for operands in (vop.args, vop.results):
                 for index, ref in enumerate(operands):
                     tn = ref.tn
-                    if tn.primitive_type is not BOXED_FLOAT:
+                    if tn.primitive_type not in (BOXED_FLOAT, FIXNUM):
                         continue
                     restriction = _operand_restriction(
                         vop, ref, convention=component.context.convention
@@ -570,6 +631,12 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
     )
     if restriction is None:
         restriction = _restriction(vop, ref)
+    if (
+        restriction is None
+        and ref.tn.primitive_type is FIXNUM
+        and vop.info.name in ("branch", "discard")
+    ):
+        return (IMMEDIATE, SIGNED)
     return ref.tn.primitive_type.operand_restriction(restriction, raw=raw)
 
 

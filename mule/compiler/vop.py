@@ -132,7 +132,7 @@ class PrimitiveType:
 # Any Python object.
 T = PrimitiveType("t", (DESCRIPTOR,))
 # A tagged fixnum: immortal as a pointer, or a raw machine word.
-FIXNUM = PrimitiveType("fixnum", (IMMEDIATE, SIGNED))
+FIXNUM = PrimitiveType("fixnum", (SIGNED, IMMEDIATE), object_boundary_scs=(IMMEDIATE,))
 # ``True`` or ``False``.
 BOOLEAN_T = PrimitiveType("boolean", (IMMEDIATE, BOOLEAN))
 # ``None``.
