@@ -254,13 +254,15 @@ class _AssertResult(NodeVisitor):
             if len(variant_targets) == 1:
                 target = next(iter(variant_targets))
         if target is not None:
+            target_lam = target.as_lambda()
             if (
-                target.namespace != self.function.namespace
-                or not target.policy.infers_return_contracts
+                target_lam is None
+                or target_lam.namespace != self.function.namespace
+                or not target_lam.policy.infers_return_contracts
             ):
                 return None
             return _target_return_contract(
-                target, self.all_facts.get(target), arguments, keywords
+                target_lam, self.all_facts.get(target_lam), arguments, keywords
             )
         method_key = (self.function.namespace, method_name)
         if method_key in self.shadowed:

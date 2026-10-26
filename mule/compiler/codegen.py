@@ -40,6 +40,7 @@ from mule.diagnostics import phase
 from . import argument_layout, vops
 from .callconv import CallConvention
 from .ctype import (
+    BOTTOM,
     FIXNUM_MAX,
     FIXNUM_MIN,
     NONE_TYPE,
@@ -378,6 +379,55 @@ class ForeignFunction:
     signature: Signature
     takes_closure: bool
     return_type: ValueType = UNKNOWN
+    namespace: str = ""
+
+    def as_lambda(self) -> None:
+        return None
+
+    def as_function(self) -> ForeignFunction:
+        return self
+
+    def global_constant_type(self) -> ValueType:
+        return UNKNOWN
+
+    def summary_return_type(self) -> ValueType:
+        return self.return_type
+
+    def derive_return_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType:
+        if any(arg is BOTTOM for arg in arg_types) or receiver_type is BOTTOM:
+            return BOTTOM
+        return self.return_type
+
+    def derive_self_type(
+        self,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+        *,
+        receiver_type: ValueType | None = None,
+    ) -> ValueType | None:
+        return None
+
+    def constrain_call(self, node, visitor, state, truth: bool) -> bool:
+        return False
+
+    def propagate_call(
+        self,
+        node,
+        visitor,
+        args,
+        arg_types: tuple[ValueType, ...],
+        keywords: tuple[str | None, ...] = (),
+    ) -> ValueType:
+        return self.derive_return_type(arg_types, keywords)
+
+    def to_interface_entry(self) -> dict:
+        return {"kind": "function", "name": self.name}
 
     def call_order(self, keywords, count, *, receiver=False):
         return self.signature.call_order(
@@ -435,6 +485,7 @@ class Program:
     storage_methods: dict[tuple[str, str], ValueType] = field(default_factory=dict)
     builtin_return_types: dict[str, ValueType] = field(default_factory=dict)
     builtin_targets: dict[str, object] = field(default_factory=dict)
+    interface_bytes: bytes | None = None
 
 
 # Every protocol (``$mule.*`` compilation namespaces) runs under the one
@@ -1979,7 +2030,7 @@ class ModuleGenerator:
                 (
                     self.facts[function].return_type
                     if function in self.facts
-                    else UNKNOWN
+                    else function.summary_return_type()
                 )
                 if context is None
                 else context.return_type
@@ -2366,7 +2417,11 @@ class ModuleGenerator:
             builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
             builder.line("  call void @mule_leave_frame()")
             returned = (
-                self.facts[function].return_type
+                (
+                    self.facts[function].return_type
+                    if function in self.facts
+                    else function.summary_return_type()
+                )
                 if context is None
                 else context.return_type
             )
@@ -2596,7 +2651,11 @@ class ModuleGenerator:
             builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
             builder.line("  call void @mule_leave_frame()")
             returned = (
-                self.facts[function].return_type
+                (
+                    self.facts[function].return_type
+                    if function in self.facts
+                    else function.summary_return_type()
+                )
                 if context is None
                 else context.return_type
             )
@@ -3229,6 +3288,17 @@ class ModuleGenerator:
         if program.entry is not None:
             self.auxiliary.extend(self.executable_entry())
         self.auxiliary.extend(self.global_linkage())
+        if program.interface_bytes is not None:
+            iface_sym = _symbol(f"__mule_interface:{program.unit}")
+            iface_hex = "".join(map(_HEX_BYTE.__getitem__, program.interface_bytes))
+            self.auxiliary.append(
+                f"{iface_sym} = constant [{len(program.interface_bytes) + 1} x i8] "
+                f'c"{iface_hex}\\00", section ".mule.interface", align 1'
+            )
+            self.auxiliary.append(
+                f"@llvm.used = appending global [1 x ptr] [ptr {iface_sym}], "
+                'section "llvm.metadata"'
+            )
         # Data first: the bodies emitted above registered their constants.
         globals_ = [
             f"{name} = private unnamed_addr constant "

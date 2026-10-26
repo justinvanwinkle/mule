@@ -54,17 +54,26 @@ follow SBCL's file-compilation and FASL-loading architecture (`src/compiler/main
 
 - One source module compiles to one standalone single-module shared object
   (`module.so` FASL) in `$XDG_CACHE_HOME/mule/fasl/`, independent of which
-  modules are currently loaded in the running image. Cross-module imports inside
-  a unit resolve through `@mule_import_missing` at module execution time.
+  modules are currently loaded in the running image. Each compiled unit embeds
+  its serialized `ModuleInterface` (`functions`, `methods`, `exported_types`,
+  `exported_targets`, `storage_methods`, and `dependencies`) directly inside an
+  ELF `.mule.interface` section and exports its `.fn` and `.body` symbols.
+  Before `ir1_phases` runs on a dependent module, the compiler resolves non-cyclic
+  imported modules' `.so`/`.o` artifacts, reads their `.mule.interface` section
+  from the ELF binary, and merges their exported types, call targets, and method
+  tables into compilation, enabling cross-module return-type propagation and
+  guarded direct calls to `@<prefix>mule_fn_<name>.body`.
 - When the runtime loader (`ensure_artifact` in `mule/runtime/imports.rs`)
   resolves a source module on `sys.path`, it computes the deterministic FASL
   cache path from the compiler digest, optimization level, module name, and
   canonical source file metadata (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`,
-  `st_ctime_ns`). On a cache hit, the runtime `dlopen`s the cached `.so`
-  directly in-process without invoking the compiler.
+  `st_ctime_ns`). On a cache hit, the runtime reads the `.mule.interface`
+  dependency list from the ELF section table, loads any dependency FASLs first,
+  and `dlopen`s the cached `.so` with `RTLD_NOW | RTLD_GLOBAL` directly
+  in-process without invoking the compiler.
 - Only on a FASL cache miss does the runtime invoke `--dynamic-module`
   (`compile-file`), which compiles the requested module and any uncached static
-  dependencies in parallel into their individual `.so` FASLs in the cache.
+  dependencies bottom-up into their individual `.so` FASLs in the cache.
 
 An originating build-step failure reports its exception immediately, including
 source coordinates for syntax errors, even without `-v`. Dependent steps retain

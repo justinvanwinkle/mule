@@ -135,10 +135,17 @@ print(parent.__spec__.origin, parent.__file__, len(parent.__path__))
 @pytest.mark.integration
 def test_unlinked_module_compiles_and_loads_dynamically_at_runtime(tmp_path):
     from mule.compiler.artifacts import mule_hash
-    from mule.compiler.driver import fasl_cache_path
+    from mule.compiler.driver import emit_llvm, fasl_cache_path, read_elf_interface
 
+    math_path = tmp_path / "dynamic_math.py"
+    math_path.write_text("def scale(x: int) -> int:\n    return x * 3\n")
     plugin_path = tmp_path / "dynamic_plugin.py"
-    plugin_path.write_text("def compute(x: int) -> int:\n    return x * 6 + 6\n")
+    plugin_path.write_text(
+        "from dynamic_math import scale\n"
+        "import dynamic_math\n"
+        "def compute(x: int) -> int:\n"
+        "    return scale(x) + dynamic_math.scale(x) + 6\n"
+    )
     main_source = tmp_path / "main.py"
     main_source.write_text(
         "import importlib\n"
@@ -152,5 +159,33 @@ def test_unlinked_module_compiles_and_loads_dynamically_at_runtime(tmp_path):
     )
     assert native.returncode == 0, native.stderr
     assert native.stdout == "42\n"
-    fasl = fasl_cache_path(mule_hash(), 0, "dynamic_plugin", plugin_path)
-    assert fasl is not None and fasl.is_file()
+    fasl_plugin = fasl_cache_path(mule_hash(), 0, "dynamic_plugin", plugin_path)
+    fasl_math = fasl_cache_path(mule_hash(), 0, "dynamic_math", math_path)
+    assert fasl_plugin is not None and fasl_plugin.is_file()
+    assert fasl_math is not None and fasl_math.is_file()
+
+    parsed = read_elf_interface(fasl_plugin)
+    assert parsed is not None
+    iface, _ = parsed
+    assert iface.dependencies == ["dynamic_math"]
+    assert ("dynamic_plugin", "compute") in iface.exported_types
+    assert (
+        iface.exported_targets["dynamic_plugin", "compute"].name
+        == "mule_import_dynamic_plugin:mule_fn_compute"
+    )
+    assert (
+        iface.exported_targets["dynamic_plugin", "scale"].name
+        == "mule_import_dynamic_math:mule_fn_scale"
+    )
+
+    caller_ir = emit_llvm(
+        "from dynamic_plugin import compute\n"
+        "import dynamic_plugin\n"
+        "print(compute(5) + dynamic_plugin.compute(6))\n",
+        str(tmp_path / "caller.py"),
+        roots=(tmp_path,),
+    )
+    assert '@"mule_import_dynamic_plugin:mule_fn_compute.body"' in caller_ir
+    assert '@"mule.direct.mule_import_dynamic_plugin:mule_fn_compute.' in caller_ir
+    assert '@"mule.method.mule_import_dynamic_plugin:mule_fn_compute.' in caller_ir
+    assert "@llvm.sadd.with.overflow.i64" in caller_ir

@@ -960,6 +960,12 @@ class Lambda(Functional):
     def as_lambda(self) -> Lambda | None:
         return self
 
+    def as_function(self) -> Lambda:
+        return self
+
+    def to_interface_entry(self) -> dict:
+        return {"kind": "function", "name": self.name}
+
     def global_constant_type(self) -> ValueType:
         return UNKNOWN
 
@@ -1117,6 +1123,25 @@ class ClassConstructorTarget:
     def as_lambda(self) -> Lambda | None:
         return None
 
+    def as_function(self) -> None:
+        return None
+
+    def call_order(self, keywords, count, *, receiver=False):
+        return None
+
+    def to_interface_entry(self) -> dict:
+        return {
+            "kind": "class",
+            "base_type": self.base_type.to_dict(),
+            "cls_type": self.cls_type.to_dict(),
+            "new_target": None if self.new_target is None else self.new_target.name,
+            "init_target": None if self.init_target is None else self.init_target.name,
+            "records_type_origin": self.records_type_origin,
+        }
+
+    def interface_members(self) -> tuple:
+        return tuple(m for m in (self.new_target, self.init_target) if m is not None)
+
     def global_constant_type(self) -> ValueType:
         return self.cls_type
 
@@ -1180,6 +1205,7 @@ class ClassConstructorTarget:
                 visitor.type_of_origins[node.lvar] = src_var
         if (
             self.init_target is not None
+            and (init_lam := self.init_target.as_lambda()) is not None
             and not keywords
             and self.base_type.instance_class() is not None
         ):
@@ -1187,7 +1213,7 @@ class ClassConstructorTarget:
 
             visitor.walk.method_calls.append(
                 CallSite(
-                    self.init_target,
+                    init_lam,
                     (
                         _fact(self.base_type),
                         *(visitor.fact_of(arg) for arg in args),
@@ -1211,6 +1237,18 @@ class ForeignCallTarget:
 
     def as_lambda(self) -> Lambda | None:
         return None
+
+    def as_function(self) -> None:
+        return None
+
+    def call_order(self, keywords, count, *, receiver=False):
+        return None
+
+    def to_interface_entry(self) -> dict | None:
+        return None
+
+    def interface_members(self) -> tuple:
+        return ()
 
     def global_constant_type(self) -> ValueType:
         return UNKNOWN

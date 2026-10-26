@@ -152,6 +152,7 @@ class Node:
     def __init__(self, graph: Graph, name: str):
         self.graph = graph
         self.name = name
+        self.inputs: list[Node] = []
         self.dependents: list[Step] = []
         self.error: BaseException | None = None
         self.done = False
@@ -237,6 +238,7 @@ class Step(Node):
         self.output_digests: dict[str, str] | None = None
         self._waiting: set[Node] = set()
         self._started = False
+        self._executing = False
         for node in inputs:
             self.add_input(node)
 
@@ -516,6 +518,10 @@ class Graph:
             self._execute(step)
 
     def _execute(self, step: Step) -> None:
+        with self.lock:
+            if step.done or step._executing:
+                return
+            step._executing = True
         try:
             step.execute()
         # Graph.run raises a step's failure; dependents fail without running.
@@ -530,9 +536,31 @@ class Graph:
 
     def _drain(self) -> None:
         while self._pending:
-            step = self._ready.get_nowait()
+            try:
+                step = self._ready.get_nowait()
+            except queue.Empty:
+                break
             if step is not None:
                 self._execute(step)
+
+    def resolve_now(self, node: Node) -> Node:
+        """Resolve ``node`` before returning, executing its inputs directly."""
+        if node.done:
+            if node.error is not None:
+                raise node.error
+            return node
+        for inp in list(node.inputs):
+            if not inp.done:
+                self.resolve_now(inp)
+        if not node.done:
+            self._execute(node)
+        while not node.done:
+            with self.lock:
+                if not node.done:
+                    self._idle.wait(timeout=0.05)
+        if node.error is not None:
+            raise node.error
+        return node
 
     def _wait(self) -> None:
         with self.lock:

@@ -19,6 +19,7 @@ from .ctype import (
     LIST_TYPE,
     STORAGE_CLASS_TYPES,
     UNKNOWN,
+    InstanceType,
     ValueType,
 )
 from .fndb import IMPORT
@@ -474,7 +475,12 @@ class ModuleCompiler:
                 records_type_origin = base_target.records_type_origin
             else:
                 cls_type = BUILTIN_CLASS_TYPES.get(class_name, ANY_CLASS_TYPE)
-                base_type = STORAGE_CLASS_TYPES.get(class_name, UNKNOWN)
+                base_type = STORAGE_CLASS_TYPES.get(
+                    class_name,
+                    UNKNOWN
+                    if namespace.startswith("$mule")
+                    else InstanceType(class_id),
+                )
                 records_type_origin = False
             cls_target = ClassConstructorTarget(
                 base_type=base_type,
@@ -486,6 +492,20 @@ class ModuleCompiler:
             self.exported_targets[namespace, class_name] = cls_target
         for leaf, vtype in collect_global_constants(compilation.lambdas).items():
             self.exported_types.setdefault((namespace, leaf.name), vtype)
+        import_bindings: dict[str, tuple[str, str]] = {}
+        reexports = _ImportBindingStores(import_bindings)
+        for block in lambda_blocks(compilation.entry):
+            for node in block.nodes():
+                node.accept(reexports)
+        for local_name, src_key in import_bindings.items():
+            if src_key in self.exported_targets:
+                self.exported_targets.setdefault(
+                    (namespace, local_name), self.exported_targets[src_key]
+                )
+            if src_key in self.exported_types:
+                self.exported_types.setdefault(
+                    (namespace, local_name), self.exported_types[src_key]
+                )
         for builtin_name, keys in builtin_installs(compilation, namespace):
             self.install_builtin(builtin_name, keys)
         # Builtins installed by a module analyzed later but defined here are

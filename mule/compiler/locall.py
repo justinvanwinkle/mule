@@ -2245,15 +2245,21 @@ def analyze(
                     global_constants=global_constants_by_ns.get(target_lam.namespace),
                     imported_returns=(
                         imported_returns_by_ns.get(target_lam.namespace)
-                        if target_lam.kind is not FunctionalKind.TOPLEVEL
-                        and target_lam.policy.safety < 3
+                        if target_lam.policy.safety < 3
                         else None
                     ),
                     imported_targets=(
                         imported_targets_by_ns.get(target_lam.namespace)
-                        if target_lam.kind is not FunctionalKind.TOPLEVEL
-                        and target_lam.policy.safety < 3
+                        if target_lam.policy.safety < 3
                         else None
+                    ),
+                    module_returns=(
+                        imported_function_types
+                        if target_lam.policy.safety < 3
+                        else None
+                    ),
+                    module_targets=(
+                        imported_targets if target_lam.policy.safety < 3 else None
                     ),
                     storage_methods=storage_methods,
                     builtin_return_types=builtin_return_types,
@@ -2329,6 +2335,8 @@ def analyze(
                     global_constants=global_constants_by_ns.get(target_lam.namespace),
                     imported_returns=imported_returns_by_ns.get(target_lam.namespace),
                     imported_targets=imported_targets_by_ns.get(target_lam.namespace),
+                    module_returns=imported_function_types,
+                    module_targets=imported_targets,
                     storage_methods=storage_methods,
                     builtin_return_types=builtin_return_types,
                     builtin_targets=builtin_targets,
@@ -2490,15 +2498,21 @@ def analyze(
                             ),
                             imported_returns=(
                                 imported_returns_by_ns.get(lambda_.namespace)
-                                if lambda_.kind is not FunctionalKind.TOPLEVEL
-                                and lambda_.policy.safety < 3
+                                if lambda_.policy.safety < 3
                                 else None
                             ),
                             imported_targets=(
                                 imported_targets_by_ns.get(lambda_.namespace)
-                                if lambda_.kind is not FunctionalKind.TOPLEVEL
-                                and lambda_.policy.safety < 3
+                                if lambda_.policy.safety < 3
                                 else None
+                            ),
+                            module_returns=(
+                                imported_function_types
+                                if lambda_.policy.safety < 3
+                                else None
+                            ),
+                            module_targets=(
+                                imported_targets if lambda_.policy.safety < 3 else None
                             ),
                             storage_methods=storage_methods,
                             builtin_return_types=builtin_return_types,

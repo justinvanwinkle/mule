@@ -83,8 +83,10 @@ from .node import (
     Combination,
     ForeignCallTarget,
     FunctionalKind,
+    GlobalVar,
     If,
     Lambda,
+    LambdaVar,
     LeafVisitor,
     NodeVisitor,
     Ref,
@@ -223,11 +225,11 @@ class Body:
             node: fact.type.normalized_bottom() for node, fact in self.facts.items()
         }
 
-    def targets(self) -> dict[object, Lambda]:
+    def targets(self) -> dict[object, object]:
         targets = {
-            node: lam
+            node: fn
             for node, fact in self.facts.items()
-            if fact.target is not None and (lam := fact.target.as_lambda()) is not None
+            if fact.target is not None and (fn := fact.target.as_function()) is not None
         }
         if self.method_targets:
             targets.update(self.method_targets)
@@ -890,6 +892,16 @@ class _Propagation(NodeVisitor, LeafVisitor):
             self.origins[ref.lvar] = leaf
             if leaf in self.walk.var_contracts:
                 self.walk.lvar_contracts[ref.lvar] = self.walk.var_contracts[leaf]
+        if (
+            fact.target is None
+            and not fact.type.may_be_unbound
+            and self.walk.imported_targets is not None
+            and len(leaf.sets) == 1
+            and (leaf.home is None or leaf not in leaf.home.vars)
+        ):
+            target = self.walk.imported_targets.get(leaf.name)
+            if target is not None:
+                fact = Fact(fact.type, target)
         return fact
 
     def visit_Lambda(self, leaf):
@@ -1229,6 +1241,63 @@ class _ResolvedMethod(NodeVisitor):
 
 
 _RESOLVED_METHOD = _ResolvedMethod()
+
+
+class _ImportedModuleReceiver(NodeVisitor, LeafVisitor):
+    """Resolve the module name an unmutated imported module lvar originates from."""
+
+    def __init__(self):
+        self._active_aliases: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.IMPORT
+            and node.info is not None
+        ):
+            return node.info.module_name
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.lexenv.policy.safety >= 3:
+            return None
+        return node.leaf.accept(self)
+
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        if len(leaf.sets) != 1:
+            return None
+        store = leaf.sets[0]
+        if (
+            store.home_lambda is None
+            or store.home_lambda.kind is not FunctionalKind.TOPLEVEL
+            or store.value is None
+            or len(store.value.uses) != 1
+        ):
+            return None
+        return store.value.uses[0].accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf.home is not None and leaf in leaf.home.vars:
+            return None
+        if leaf in self._active_aliases:
+            return None
+        value_sets = [s for s in leaf.sets if s.value is not None]
+        if len(value_sets) != 1:
+            return None
+        val = value_sets[0].value
+        if val is None or len(val.uses) != 1:
+            return None
+        self._active_aliases.add(leaf)
+        try:
+            return val.uses[0].accept(self)
+        finally:
+            self._active_aliases.remove(leaf)
 
 
 class _BuildDictType(ValueTypeVisitor):
@@ -2069,6 +2138,38 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             visitor.walk.method_targets[node] = method
             visitor.invalidate()
             return UNKNOWN_FACT
+        if (
+            len(receiver_lvar.uses) == 1
+            and visitor.walk.lambda_.policy.safety < 3
+            and node.lexenv.policy.safety < 3
+        ):
+            mod_name = receiver_lvar.uses[0].accept(_ImportedModuleReceiver())
+            if mod_name is not None:
+                mod_target = (
+                    visitor.walk.module_targets.get((mod_name, method_name))
+                    if visitor.walk.module_targets is not None
+                    else None
+                )
+                mod_res = UNKNOWN
+                if mod_target is not None:
+                    mod_res = mod_target.propagate_call(
+                        node, visitor, args[1:], arg_types, call_info.keywords
+                    )
+                    if mod_res is BOTTOM:
+                        return NO_FACT
+                if (
+                    mod_res is UNKNOWN
+                    and not has_keywords
+                    and visitor.walk.module_returns is not None
+                ):
+                    mod_res = visitor.walk.module_returns.get(
+                        (mod_name, method_name), UNKNOWN
+                    )
+                if mod_target is None and mod_res is UNKNOWN:
+                    for arg in args[1:]:
+                        visitor.widen_escaped_container(visitor.origins.get(arg))
+                visitor.invalidate()
+                return _fact(mod_res)
         recv_var = visitor.origins.get(receiver_lvar)
         (
             result_type,
@@ -2542,14 +2643,12 @@ class _Walk:
         rebound_globals: frozenset[str] = frozenset(),
         global_constants: Mapping[str, ValueType] | None = None,
         imported_returns: Mapping[str, ValueType] | None = None,
-        imported_targets: (
-            Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
-        ) = None,
+        imported_targets: (Mapping[str, object] | None) = None,
+        module_returns: Mapping[tuple[str, str], ValueType] | None = None,
+        module_targets: Mapping[tuple[str, str], object] | None = None,
         storage_methods: Mapping[tuple[str, str], ValueType] | None = None,
         builtin_return_types: Mapping[str, ValueType] | None = None,
-        builtin_targets: (
-            Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
-        ) = None,
+        builtin_targets: (Mapping[str, object] | None) = None,
         class_facts: Mapping | None = None,
     ):
         self.lambda_ = lambda_
@@ -2560,6 +2659,8 @@ class _Walk:
         self.global_constants = global_constants
         self.imported_returns = imported_returns
         self.imported_targets = imported_targets
+        self.module_returns = module_returns
+        self.module_targets = module_targets
         self.storage_methods = storage_methods
         self.builtin_return_types = builtin_return_types
         self.builtin_targets = builtin_targets
@@ -3448,14 +3549,12 @@ def propagate(
     rebound_globals: frozenset[str] = frozenset(),
     global_constants: Mapping[str, ValueType] | None = None,
     imported_returns: Mapping[str, ValueType] | None = None,
-    imported_targets: (
-        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
-    ) = None,
+    imported_targets: (Mapping[str, object] | None) = None,
+    module_returns: Mapping[tuple[str, str], ValueType] | None = None,
+    module_targets: Mapping[tuple[str, str], object] | None = None,
     storage_methods: Mapping[tuple[str, str], ValueType] | None = None,
     builtin_return_types: Mapping[str, ValueType] | None = None,
-    builtin_targets: (
-        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
-    ) = None,
+    builtin_targets: (Mapping[str, object] | None) = None,
     class_facts: Mapping | None = None,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
@@ -3478,6 +3577,8 @@ def propagate(
         global_constants=global_constants,
         imported_returns=imported_returns,
         imported_targets=imported_targets,
+        module_returns=module_returns,
+        module_targets=module_targets,
         storage_methods=storage_methods,
         builtin_return_types=builtin_return_types,
         builtin_targets=builtin_targets,

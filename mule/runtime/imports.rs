@@ -15,6 +15,7 @@ unsafe extern "C" {
 }
 
 const RTLD_NOW: c_int = 2;
+const RTLD_GLOBAL: c_int = 0x100;
 
 type Entry = unsafe extern "C" fn() -> Value;
 type Execute = unsafe extern "C" fn(Value) -> Value;
@@ -35,6 +36,20 @@ struct Image {
     search_path: Vec<String>,
     toolchain: Option<(String, String, String, i64)>,
     missing_cache: HashSet<(String, Vec<String>)>,
+    loading_artifacts: HashSet<String>,
+    loaded_fasls: HashSet<PathBuf>,
+}
+
+struct LoadingGuard(String);
+
+impl Drop for LoadingGuard {
+    fn drop(&mut self) {
+        image()
+            .lock()
+            .expect("compiled image registry poisoned")
+            .loading_artifacts
+            .remove(&self.0);
+    }
 }
 
 fn image() -> &'static Mutex<Image> {
@@ -234,10 +249,127 @@ unsafe fn resolve_candidate(name: &str, search_roots: &[String]) -> Candidate {
     }
 }
 
+fn read_elf_dependencies(path: &Path) -> Vec<String> {
+    let Ok(data) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    if data.len() < 64 || &data[0..4] != b"\x7fELF" || data[4] != 2 || data[5] != 1 {
+        return Vec::new();
+    }
+    let e_shoff = u64::from_le_bytes(data[40..48].try_into().unwrap()) as usize;
+    let e_shentsize = u16::from_le_bytes(data[58..60].try_into().unwrap()) as usize;
+    let e_shnum = u16::from_le_bytes(data[60..62].try_into().unwrap()) as usize;
+    let e_shstrndx = u16::from_le_bytes(data[62..64].try_into().unwrap()) as usize;
+    if e_shoff == 0
+        || e_shnum == 0
+        || e_shentsize < 64
+        || e_shstrndx >= e_shnum
+        || e_shoff.saturating_add(e_shnum.saturating_mul(e_shentsize)) > data.len()
+    {
+        return Vec::new();
+    }
+    let shstr_hdr = e_shoff + e_shstrndx * e_shentsize;
+    let shstr_offset =
+        u64::from_le_bytes(data[shstr_hdr + 24..shstr_hdr + 32].try_into().unwrap()) as usize;
+    let shstr_size =
+        u64::from_le_bytes(data[shstr_hdr + 32..shstr_hdr + 40].try_into().unwrap()) as usize;
+    if shstr_offset.saturating_add(shstr_size) > data.len() {
+        return Vec::new();
+    }
+    for idx in 0..e_shnum {
+        let sh_hdr = e_shoff + idx * e_shentsize;
+        let sh_name = u32::from_le_bytes(data[sh_hdr..sh_hdr + 4].try_into().unwrap()) as usize;
+        let name_start = shstr_offset.saturating_add(sh_name);
+        if name_start >= shstr_offset + shstr_size {
+            continue;
+        }
+        let Some(rel_end) = data[name_start..shstr_offset + shstr_size]
+            .iter()
+            .position(|&b| b == 0)
+        else {
+            continue;
+        };
+        if &data[name_start..name_start + rel_end] == b".mule.interface" {
+            let sh_offset =
+                u64::from_le_bytes(data[sh_hdr + 24..sh_hdr + 32].try_into().unwrap()) as usize;
+            let sh_size =
+                u64::from_le_bytes(data[sh_hdr + 32..sh_hdr + 40].try_into().unwrap()) as usize;
+            if sh_offset.saturating_add(sh_size) > data.len() {
+                return Vec::new();
+            }
+            let raw = &data[sh_offset..sh_offset + sh_size];
+            let Ok(text) = std::str::from_utf8(raw) else {
+                return Vec::new();
+            };
+            let Some(key_pos) = text.find("\"dependencies\":") else {
+                return Vec::new();
+            };
+            let rest = &text[key_pos + "\"dependencies\":".len()..];
+            let Some(open_bracket) = rest.find('[') else {
+                return Vec::new();
+            };
+            let after_open = &rest[open_bracket + 1..];
+            let Some(close_bracket) = after_open.find(']') else {
+                return Vec::new();
+            };
+            let inner = &after_open[..close_bracket];
+            let mut deps = Vec::new();
+            let mut in_str = false;
+            let mut cur = String::new();
+            for ch in inner.chars() {
+                if ch == '"' {
+                    if in_str {
+                        if !cur.is_empty() {
+                            deps.push(std::mem::take(&mut cur));
+                        }
+                        in_str = false;
+                    } else {
+                        in_str = true;
+                    }
+                } else if in_str {
+                    cur.push(ch);
+                }
+            }
+            return deps;
+        }
+    }
+    Vec::new()
+}
+
+unsafe fn dlopen_fasl(path: &Path) {
+    {
+        let mut img = image().lock().expect("compiled image registry poisoned");
+        if !img.loaded_fasls.insert(path.to_path_buf()) {
+            return;
+        }
+    }
+    for dep in read_elf_dependencies(path) {
+        let already = {
+            let img = image().lock().expect("compiled image registry poisoned");
+            img.entries.contains_key(&dep) || img.loading_artifacts.contains(&dep)
+        };
+        if !already {
+            let _ = unsafe { ensure_artifact(&dep) };
+        }
+    }
+    if let Ok(c_path) = CString::new(path.to_string_lossy().as_bytes()) {
+        unsafe {
+            let _ = dlopen(c_path.as_ptr(), RTLD_NOW | RTLD_GLOBAL);
+        }
+    }
+}
+
 unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
     if let Some(art) = registered_artifact(name) {
         return Some(art);
     }
+    {
+        let mut img = image().lock().expect("compiled image registry poisoned");
+        if !img.loading_artifacts.insert(name.to_owned()) {
+            return None;
+        }
+    }
+    let _guard = LoadingGuard(name.to_owned());
     let toolchain = image().lock().expect("compiled image registry poisoned").toolchain.clone()?;
     let mut roots = unsafe { crate::builtins::current_sys_path() }.unwrap_or_else(registered_search_path);
     for r in registered_search_path() {
@@ -246,7 +378,13 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
         }
     }
     if let Some((parent, _)) = name.rsplit_once('.') {
-        if unsafe { crate::builtins::loaded_module_paths(parent) }.is_none()
+        let parent_loading = image()
+            .lock()
+            .expect("compiled image registry poisoned")
+            .loading_artifacts
+            .contains(parent);
+        if !parent_loading
+            && unsafe { crate::builtins::loaded_module_paths(parent) }.is_none()
             && registered_artifact(parent).is_none()
         {
             let _ = unsafe { ensure_artifact(parent) };
@@ -281,13 +419,11 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
                 .unwrap_or((&rustc_and_hash, ""));
             if let Some(cached_fasl) = fasl_cache_path(compiler_hash, optimize, name, &src_path) {
                 if cached_fasl.is_file() {
-                    if let Ok(c_path) = CString::new(cached_fasl.to_string_lossy().as_bytes()) {
-                        unsafe {
-                            let _ = dlopen(c_path.as_ptr(), RTLD_NOW);
-                        }
-                        if let Some(found) = registered_artifact(name) {
-                            return Some(found);
-                        }
+                    unsafe {
+                        dlopen_fasl(&cached_fasl);
+                    }
+                    if let Some(found) = registered_artifact(name) {
+                        return Some(found);
                     }
                 }
             }
@@ -323,10 +459,8 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
                 if path.is_empty() {
                     continue;
                 }
-                if let Ok(c_path) = CString::new(path) {
-                    unsafe {
-                        let _ = dlopen(c_path.as_ptr(), RTLD_NOW);
-                    }
+                unsafe {
+                    dlopen_fasl(Path::new(path));
                 }
             }
             let found = registered_artifact(name);

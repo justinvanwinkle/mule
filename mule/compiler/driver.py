@@ -41,11 +41,12 @@ from .artifacts import (
 )
 from .codegen import ForeignFunction, Program, generate
 from .ctype import UNKNOWN, ValueType, value_type_from_dict
+from .dfo import find_dfo
 from .inputs import file_digest, read_source
-from .ir1opt import constant_literal
+from .ir1opt import constant_literal, ir1_optimize_until_done
 from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
-from .main import compile_source
+from .main import compile_toplevel, ir1_phases
 from .modules import (
     STDLIB,
     CompiledModule,
@@ -55,7 +56,9 @@ from .modules import (
 )
 from .node import (
     CallKind,
+    ClassConstructorTarget,
     Combination,
+    ForeignCallTarget,
     FunctionalKind,
     LeafVisitor,
     NodeVisitor,
@@ -71,6 +74,7 @@ __all__ = [
     "compile_program",
     "emit_llvm",
     "link_llvm",
+    "read_elf_interface",
 ]
 
 LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
@@ -190,6 +194,285 @@ class BuiltinsInterface:
             storage_methods,
             builtin_return_types,
         )
+
+
+@dataclass(slots=True)
+class ModuleInterface:
+    """Compile-time metadata embedded in a compiled module's ``.mule.interface``
+    ELF section: its functions, method predictions, exported return/value types,
+    exported call targets, class storage methods, and direct module dependencies."""
+
+    functions: dict[str, ForeignFunction]
+    methods: dict[str, list[str]]
+    exported_types: dict[tuple[str, str], ValueType]
+    exported_targets: dict[tuple[str, str], ForeignCallTarget]
+    storage_methods: dict[tuple[str, str], ValueType]
+    dependencies: list[str]
+
+    def to_json(self) -> str:
+        serialized_targets = {}
+        for (mod, name), target in self.exported_targets.items():
+            entry = target.to_interface_entry()
+            if entry is not None:
+                serialized_targets[f"{mod}:{name}"] = entry
+        return json.dumps(
+            {
+                "functions": {
+                    name: {
+                        "parameters": list(function.parameters),
+                        "kinds": [kind.name for kind in function.signature.kinds],
+                        "defaults": list(function.signature.default_parameters),
+                        "variadic": function.signature.variadic,
+                        "closure": function.takes_closure,
+                        "return_type": function.return_type.to_dict(),
+                        "namespace": function.namespace,
+                    }
+                    for name, function in self.functions.items()
+                },
+                "methods": self.methods,
+                "exported_types": {
+                    f"{mod}:{fn}": vtype.to_dict()
+                    for (mod, fn), vtype in self.exported_types.items()
+                },
+                "exported_targets": serialized_targets,
+                "storage_methods": {
+                    f"{cls}.{meth}": vtype.to_dict()
+                    for (cls, meth), vtype in self.storage_methods.items()
+                },
+                "dependencies": self.dependencies,
+            },
+            sort_keys=True,
+            indent=0,
+        )
+
+    @classmethod
+    def from_json(cls, text: str) -> ModuleInterface:
+        data = json.loads(text)
+        functions = {
+            name: ForeignFunction(
+                name,
+                tuple(entry["parameters"]),
+                Signature(
+                    kinds=tuple(ast.ParameterKind[kind] for kind in entry["kinds"]),
+                    default_parameters=tuple(entry["defaults"]),
+                    variadic=entry["variadic"],
+                ),
+                entry["closure"],
+                value_type_from_dict(entry["return_type"])
+                if "return_type" in entry
+                else UNKNOWN,
+                entry.get("namespace", ""),
+            )
+            for name, entry in data.get("functions", {}).items()
+        }
+        exported_types = {
+            tuple(key.split(":", 1)): value_type_from_dict(val)
+            for key, val in data.get("exported_types", {}).items()
+        }
+        exported_targets: dict[tuple[str, str], ForeignCallTarget] = {}
+        for key, entry in data.get("exported_targets", {}).items():
+            mod_name, pub_name = key.split(":", 1)
+            kind = entry.get("kind")
+            if kind == "function":
+                fn_name = entry.get("name")
+                if fn_name in functions:
+                    exported_targets[mod_name, pub_name] = functions[fn_name]
+            elif kind == "class":
+                new_name = entry.get("new_target")
+                init_name = entry.get("init_target")
+                exported_targets[mod_name, pub_name] = ClassConstructorTarget(
+                    base_type=value_type_from_dict(entry["base_type"]),
+                    cls_type=value_type_from_dict(entry["cls_type"]),
+                    new_target=functions.get(new_name) if new_name else None,
+                    init_target=functions.get(init_name) if init_name else None,
+                    records_type_origin=entry.get("records_type_origin", False),
+                )
+        storage_methods = {
+            tuple(key.split(".", 1)): value_type_from_dict(val)
+            for key, val in data.get("storage_methods", {}).items()
+        }
+        return cls(
+            functions,
+            data.get("methods", {}),
+            exported_types,
+            exported_targets,
+            storage_methods,
+            list(data.get("dependencies", ())),
+        )
+
+
+def module_interface(
+    module_name: str,
+    compilation,
+    compiler: ModuleCompiler,
+    dependencies: list[str],
+    base_storage_methods: dict[tuple[str, str], ValueType] | None = None,
+) -> ModuleInterface:
+    facts = compilation.facts or {}
+    functions: dict[str, ForeignFunction] = {
+        lambda_.name: ForeignFunction(
+            lambda_.name,
+            lambda_.parameters,
+            lambda_.signature,
+            lambda_.takes_closure,
+            facts[lambda_].return_type if lambda_ in facts else UNKNOWN,
+            lambda_.namespace,
+        )
+        for lambda_ in compilation.lambdas
+        if lambda_.kind is not FunctionalKind.TOPLEVEL
+    }
+    methods: dict[str, list[str]] = {}
+    for lambda_ in compilation.lambdas:
+        for definitions in class_method_definitions(lambda_).values():
+            for method_name, target in definitions.items():
+                targets = methods.setdefault(method_name, [])
+                if target.name not in targets:
+                    targets.append(target.name)
+    exported_types = {
+        (mod, name): vtype
+        for (mod, name), vtype in compiler.exported_types.items()
+        if mod == module_name
+    }
+    exported_targets: dict[tuple[str, str], ForeignCallTarget] = {}
+    for (mod, name), target in compiler.exported_targets.items():
+        if mod != module_name:
+            continue
+        fn = target.as_function()
+        if fn is not None:
+            if fn.name not in functions:
+                lam = target.as_lambda()
+                if lam is not None:
+                    functions[fn.name] = ForeignFunction(
+                        lam.name,
+                        lam.parameters,
+                        lam.signature,
+                        lam.takes_closure,
+                        facts[lam].return_type if lam in facts else UNKNOWN,
+                        lam.namespace,
+                    )
+                else:
+                    functions[fn.name] = fn
+            exported_targets[mod, name] = functions[fn.name]
+            targets = methods.setdefault(name, [])
+            if fn.name not in targets:
+                targets.append(fn.name)
+        else:
+            if target.to_interface_entry() is None:
+                continue
+            for member in target.interface_members():
+                if member.name not in functions:
+                    lam = member.as_lambda()
+                    if lam is not None:
+                        functions[lam.name] = ForeignFunction(
+                            lam.name,
+                            lam.parameters,
+                            lam.signature,
+                            lam.takes_closure,
+                            facts[lam].return_type if lam in facts else UNKNOWN,
+                            lam.namespace,
+                        )
+                    else:
+                        functions[member.name] = member
+            exported_targets[mod, name] = target
+    storage_methods = (
+        dict(compiler.storage_methods)
+        if base_storage_methods is None
+        else {
+            key: val
+            for key, val in compiler.storage_methods.items()
+            if key not in base_storage_methods
+        }
+    )
+    return ModuleInterface(
+        functions,
+        methods,
+        exported_types,
+        exported_targets,
+        storage_methods,
+        dependencies,
+    )
+
+
+@cache
+def _cached_elf_interface(path: Path, state: str) -> tuple[ModuleInterface, str] | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        return None
+    e_shoff, _, _, _, _, e_shentsize, e_shnum, e_shstrndx = struct.unpack_from(
+        "<QIHHHHHH", data, 40
+    )
+    if (
+        e_shoff == 0
+        or e_shnum == 0
+        or e_shentsize < 64
+        or e_shstrndx >= e_shnum
+        or e_shoff + e_shnum * e_shentsize > len(data)
+    ):
+        return None
+    shstr_hdr = e_shoff + e_shstrndx * e_shentsize
+    shstr_offset, shstr_size = struct.unpack_from("<QQ", data, shstr_hdr + 24)
+    if shstr_offset + shstr_size > len(data):
+        return None
+    for idx in range(e_shnum):
+        sh_hdr = e_shoff + idx * e_shentsize
+        (sh_name,) = struct.unpack_from("<I", data, sh_hdr)
+        name_start = shstr_offset + sh_name
+        if name_start >= shstr_offset + shstr_size:
+            continue
+        name_end = data.find(b"\x00", name_start, shstr_offset + shstr_size)
+        if name_end < 0:
+            continue
+        if data[name_start:name_end] == b".mule.interface":
+            sh_offset, sh_size = struct.unpack_from("<QQ", data, sh_hdr + 24)
+            if sh_offset + sh_size > len(data):
+                return None
+            raw = data[sh_offset : sh_offset + sh_size].rstrip(b"\x00")
+            try:
+                text = raw.decode("utf-8")
+                return ModuleInterface.from_json(text), text
+            except ValueError, KeyError, TypeError:
+                return None
+    return None
+
+
+def read_elf_interface(path: Path) -> tuple[ModuleInterface, str] | None:
+    """Read and parse the ``.mule.interface`` section from an ELF64 ``.so`` or ``.o``."""
+    if not path.is_file():
+        return None
+    return _cached_elf_interface(path, file_digest(path))
+
+
+@cache
+def _cached_ll_interface(path: Path, state: str) -> tuple[ModuleInterface, str] | None:
+    marker = ', section ".mule.interface", align 1'
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    pos = text.find(marker)
+    if pos < 0:
+        return None
+    line_start = text.rfind("\n", 0, pos) + 1
+    line = text[line_start:pos]
+    c_start = line.find(' c"')
+    if c_start < 0 or not line.endswith('\\00"'):
+        return None
+    hex_str = line[c_start + 3 : -4].replace("\\", "")
+    try:
+        raw = bytes.fromhex(hex_str).decode("utf-8")
+        return ModuleInterface.from_json(raw), raw
+    except ValueError, KeyError, TypeError:
+        return None
+
+
+def read_ll_interface(path: Path) -> tuple[ModuleInterface, str] | None:
+    """Read and parse the ``.mule.interface`` constant from an LLVM IR ``.ll`` file."""
+    if not path.is_file():
+        return None
+    return _cached_ll_interface(path, file_digest(path))
 
 
 def compile_builtins() -> tuple[Program, dict[str, CompiledModule]]:
@@ -360,6 +643,7 @@ def compile_unit(
     module: CompiledModule | None = None,
     roots: tuple[Path, ...] | None = None,
     package: str | None = None,
+    resolve_import_interface=None,
 ) -> tuple[Program, list[CompiledModule]]:
     """Compile one module as its own unit against the builtins interface:
     the main module when ``module`` is None. Returns the unit and how each
@@ -367,10 +651,10 @@ def compile_unit(
     compiler = import_resolver(filename, interface, module, roots, package)
     if module is None:
         compiler.include_patterns(compiler.project_modules)
-        compilation = compile_source(source, filename, imports=compiler)
+        compilation = compile_toplevel(source, filename, imports=compiler)
         unit_name = "__main__"
     else:
-        compilation = compile_source(
+        compilation = compile_toplevel(
             source,
             filename,
             imports=compiler,
@@ -378,7 +662,67 @@ def compile_unit(
             namespace=module.name,
         )
         unit_name = module.name
-    functions = interface.functions
+
+    imported_interfaces: dict[str, ModuleInterface] = {}
+    if resolve_import_interface is not None:
+        for component in compilation.components:
+            ir1_optimize_until_done(component)
+            if component.reanalyze:
+                find_dfo(component)
+        eager_names = {m.name for m in linked_imports(compilation, compiler, module)}
+        for dep in list(compiler.pending):
+            if dep.missing or dep.native or dep.path is None:
+                continue
+            if dep.name not in eager_names:
+                continue
+            dep_iface = resolve_import_interface(dep)
+            if dep_iface is not None:
+                imported_interfaces[dep.name] = dep_iface
+                compiler.exported_types.update(dep_iface.exported_types)
+                compiler.exported_targets.update(dep_iface.exported_targets)
+                compiler.storage_methods.update(dep_iface.storage_methods)
+
+    compilation.imported_function_types = compiler.exported_types
+    compilation.imported_targets = compiler.exported_targets
+    compilation.storage_methods = compiler.storage_methods
+    compilation.builtin_return_types = compiler.builtin_return_types
+    compilation.builtin_targets = compiler.builtin_targets
+    ir1_phases(compilation)
+    if module is not None:
+        compiler.record_types(module.name, compilation)
+
+    nodes = [
+        node
+        for lambda_ in compilation.lambdas
+        if lambda_.component is not None
+        for block in lambda_.component.blocks()
+        for node in block.nodes()
+    ]
+    open_check = _ReferencesBuiltin("open")
+    if any(node.accept(open_check) for node in nodes):
+        compiler.resolve("io", None, None)
+    builtins_check = _ReferencesGlobal("builtins")
+    compile_global = _ReferencesGlobal("compile", "eval", "exec")
+    compile_attr = _ReferencesBuiltin("compile", "eval", "exec")
+    if any(node.accept(compile_global) for node in nodes) or (
+        any(node.accept(builtins_check) for node in nodes)
+        and any(node.accept(compile_attr) for node in nodes)
+    ):
+        compiler.resolve("ast", None, None)
+    linked = linked_imports(compilation, compiler, module)
+    linked_names = {m.name for m in linked}
+
+    functions = dict(interface.functions)
+    methods = {method: list(names) for method, names in interface.methods.items()}
+    for dep_name, dep_iface in imported_interfaces.items():
+        if dep_name not in linked_names:
+            continue
+        functions.update(dep_iface.functions)
+        for method, names in dep_iface.methods.items():
+            target_list = methods.setdefault(method, [])
+            for name in names:
+                if name not in target_list:
+                    target_list.append(name)
 
     def entry(role):
         name = interface.entries[role]
@@ -401,10 +745,11 @@ def compile_unit(
         builtin_names=frozenset(interface.builtins),
         external=list(functions.values()),
         external_methods={
-            method: tuple(functions[name] for name in names)
-            for method, names in interface.methods.items()
+            method: tuple(functions[name] for name in names if name in functions)
+            for method, names in methods.items()
         },
         unit=unit_name,
+        exports=module is not None,
         dependencies=["builtins"],
         search_paths=tuple(str(root) for root in compiler.roots),
     )
@@ -412,25 +757,17 @@ def compile_unit(
         program.module_import = module.import_info()
     argument_protocol.bind_signatures(program.lambdas)
     program.layouts = native_protocol.prepare(program)
-    nodes = [
-        node
-        for lambda_ in program.lambdas
-        if lambda_.component is not None
-        for block in lambda_.component.blocks()
-        for node in block.nodes()
-    ]
-    open_check = _ReferencesBuiltin("open")
-    if any(node.accept(open_check) for node in nodes):
-        compiler.resolve("io", None, None)
-    builtins_check = _ReferencesGlobal("builtins")
-    compile_global = _ReferencesGlobal("compile", "eval", "exec")
-    compile_attr = _ReferencesBuiltin("compile", "eval", "exec")
-    if any(node.accept(compile_global) for node in nodes) or (
-        any(node.accept(builtins_check) for node in nodes)
-        and any(node.accept(compile_attr) for node in nodes)
-    ):
-        compiler.resolve("ast", None, None)
-    return program, linked_imports(compilation, compiler, module)
+    if module is not None:
+        used_deps = [m.name for m in linked if m.name in imported_interfaces]
+        mod_iface = module_interface(
+            module.name,
+            compilation,
+            compiler,
+            used_deps,
+            interface.storage_methods,
+        )
+        program.interface_bytes = mod_iface.to_json().encode("utf-8")
+    return program, linked
 
 
 class _ImportedModule(NodeVisitor):
@@ -687,6 +1024,53 @@ class Build:
         self.link: Step | None = None
         # The object steps the link combines, by step name.
         self.objects: dict[str, Step] = {}
+        self._compiling: dict[str, set[str]] = {}
+        self._active_modules: set[str] = set()
+
+    def resolve_import_interface(
+        self, caller_name: str, dep: CompiledModule, roots, package
+    ) -> ModuleInterface | None:
+        if dep.missing or dep.native or dep.path is None:
+            return None
+        with self.graph.lock:
+            if dep.name in self._active_modules:
+                return None
+            stack = [dep.name]
+            visited = set()
+            while stack:
+                curr = stack.pop()
+                if curr == caller_name:
+                    return None
+                if curr not in visited:
+                    visited.add(curr)
+                    stack.extend(self._compiling.get(curr, ()))
+            self._compiling.setdefault(caller_name, set()).add(dep.name)
+        try:
+            if self.fasl_mode:
+                dest = fasl_cache_path(
+                    mule_hash(), self.toolchain.optimize, dep.name, dep.path
+                )
+                if dest is not None and dest.is_file():
+                    res = read_elf_interface(dest)
+                    if res is not None:
+                        return res[0]
+                fasl_step = self.fasl(self.module(dep, roots, package), dep)
+                self.graph.resolve_now(fasl_step)
+                res = read_elf_interface(fasl_step.path("module.so"))
+                return None if res is None else res[0]
+            mod_step = self.module(dep, roots, package)
+            if self.toolchain.lto:
+                self.graph.resolve_now(mod_step)
+                res = read_ll_interface(mod_step.path("unit.ll"))
+                return None if res is None else res[0]
+            obj_step = self.object(mod_step)
+            self.graph.resolve_now(obj_step)
+            res = read_elf_interface(obj_step.path("unit.o"))
+            return None if res is None else res[0]
+        finally:
+            with self.graph.lock:
+                if caller_name in self._compiling:
+                    self._compiling[caller_name].discard(dep.name)
 
     def runtime(self) -> Step:
         rustc, lto = self.toolchain.rustc, self.toolchain.lto
@@ -773,8 +1157,6 @@ class Build:
                             [
                                 toolchain.clang,
                                 *toolchain.compile_flags(),
-                                "-ffunction-sections",
-                                "-fdata-sections",
                                 "-x",
                                 "ir",
                                 "-Wno-override-module",
@@ -861,14 +1243,23 @@ class Build:
             return False
 
         def action(inputs, directory):
-            program, imported = compile_unit(
-                descriptor.source(),
-                str(path),
-                self.interface(),
-                module=descriptor,
-                roots=roots,
-                package=package,
-            )
+            with self.graph.lock:
+                self._active_modules.add(descriptor.name)
+            try:
+                program, imported = compile_unit(
+                    descriptor.source(),
+                    str(path),
+                    self.interface(),
+                    module=descriptor,
+                    roots=roots,
+                    package=package,
+                    resolve_import_interface=lambda dep: self.resolve_import_interface(
+                        descriptor.name, dep, roots, package
+                    ),
+                )
+            finally:
+                with self.graph.lock:
+                    self._active_modules.discard(descriptor.name)
             (directory / "unit.ll").write_text(generate(program))
             write_imports(directory / "imports.json", imported)
 
@@ -925,7 +1316,7 @@ class Build:
                 self.fasl(self.module(descriptor, roots, package), descriptor)
             return
         if self.link is None:
-            raise RuntimeError("module discovery requires the link step")
+            return
         for descriptor in resolver.pending:
             self.link.add_input(self.object(self.module(descriptor, roots, package)))
 
@@ -933,13 +1324,28 @@ class Build:
         self, source_node: Node, source: str, filename: str, roots, package
     ) -> Step:
         builtins = self.builtins()
+        validated: dict[Path, ModuleCompiler] = {}
 
         def resolver():
             return import_resolver(filename, self.interface(), None, roots, package)
 
+        def validate(entry: Path) -> bool:
+            compiler = resolver()
+            if resolves_as_recorded(compiler, entry / "imports.json"):
+                validated[entry] = compiler
+                return True
+            return False
+
         def action(inputs, directory):
             program, imported = compile_unit(
-                source, filename, self.interface(), roots=roots, package=package
+                source,
+                filename,
+                self.interface(),
+                roots=roots,
+                package=package,
+                resolve_import_interface=lambda dep: self.resolve_import_interface(
+                    "__main__", dep, roots, package
+                ),
             )
             if not self.toolchain.lto:
                 program.toolchain_info = (
@@ -965,7 +1371,13 @@ class Build:
                 },
                 outputs=("unit.ll", "imports.json"),
                 action=action,
-                discover=lambda step: self.discover(step, resolver(), roots, package),
+                discover=lambda step: self.discover(
+                    step,
+                    validated.pop(step.directory, None) or resolver(),
+                    roots,
+                    package,
+                ),
+                validate=validate,
             ),
         )
 
@@ -1028,7 +1440,6 @@ class Build:
                     *toolchain.link_flags(),
                     f"--ld-path={lto_linker(toolchain.rustc)}",
                     "-Wno-override-module",
-                    "-Wl,--gc-sections",
                     "-Wl,--strip-debug",
                     str(obj.path("unit.o")),
                     "-o",
@@ -1069,11 +1480,19 @@ def load_interface(path: Path) -> BuiltinsInterface:
 
 def write_imports(path: Path, modules: list[CompiledModule]) -> None:
     """Record how each import resolved: the unit's output depends on whether a
-    module is native, missing, or compiled, not on where it was found."""
+    module is native, missing, or compiled, and on the imported module's content."""
     path.write_text(
         json.dumps(
             [
-                [module.name, module.native, module.missing, module.namespace_paths]
+                [
+                    module.name,
+                    module.native,
+                    module.missing,
+                    module.namespace_paths,
+                    None
+                    if module.path is None or not module.path.is_file()
+                    else file_digest(module.path),
+                ]
                 for module in modules
             ]
         )
@@ -1082,13 +1501,23 @@ def write_imports(path: Path, modules: list[CompiledModule]) -> None:
 
 def resolve_recorded(
     resolver: ModuleCompiler, path: Path
-) -> list[tuple[CompiledModule, bool, bool, tuple[str, ...]]]:
+) -> list[tuple[CompiledModule, bool, bool, tuple[str, ...], str | None]]:
     """Resolve the recorded imports again, in their recorded order; return
-    each current resolution with its recorded native and missing flags."""
-    return [
-        (resolver.resolve(name, None, None), native, missing, tuple(locations))
-        for name, native, missing, locations in json.loads(path.read_text())
-    ]
+    each current resolution with its recorded native, missing, locations, and digest."""
+    entries = []
+    for item in json.loads(path.read_text()):
+        name, native, missing, locations = item[:4]
+        digest = item[4] if len(item) > 4 else None
+        entries.append(
+            (
+                resolver.resolve(name, None, None),
+                native,
+                missing,
+                tuple(locations),
+                digest,
+            )
+        )
+    return entries
 
 
 def resolves_as_recorded(resolver: ModuleCompiler, path: Path) -> bool:
@@ -1096,7 +1525,15 @@ def resolves_as_recorded(resolver: ModuleCompiler, path: Path) -> bool:
         module.native == native
         and module.missing == missing
         and module.namespace_paths == locations
-        for module, native, missing, locations in resolve_recorded(resolver, path)
+        and (
+            None
+            if module.path is None or not module.path.is_file()
+            else file_digest(module.path)
+        )
+        == digest
+        for module, native, missing, locations, digest in resolve_recorded(
+            resolver, path
+        )
     )
 
 
@@ -1131,7 +1568,19 @@ def compile_program(
     ``roots`` is the module search path; ``package`` is the package of a main
     module run with ``-m``, for its relative imports."""
     interface = cached_builtins_interface()
-    program, _ = compile_unit(source, filename, interface, roots=roots, package=package)
+    with Graph(1) as graph:
+        build = Build(graph, Toolchain())
+        graph.run(build.builtins())
+        program, _ = compile_unit(
+            source,
+            filename,
+            interface,
+            roots=roots,
+            package=package,
+            resolve_import_interface=lambda dep: build.resolve_import_interface(
+                "__main__", dep, roots, package
+            ),
+        )
     return program
 
 

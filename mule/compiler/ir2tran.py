@@ -3595,6 +3595,9 @@ class _Converter(NodeVisitor):
             else frozenset(),
         )
         result, discard = self.result_tn(node)
+        if discard and not proven:
+            result.type = UNKNOWN
+            result.primitive_type = T
         plan = self.context.plan
         template = vops.FULL_CALL
         if plan is not None and plan.allocation(node) is not None:

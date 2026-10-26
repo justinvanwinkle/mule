@@ -46,10 +46,8 @@ from .ir1tran_lambda import convert_module, lambda_blocks
 from .ir1util import join_blocks_if_possible, substitute_lvar_uses, unlink_node
 from .node import (
     Cast,
-    ClassConstructorTarget,
     Component,
     Constant,
-    ForeignCallTarget,
     GlobalVar,
     Lambda,
     LeafVisitor,
@@ -71,15 +69,10 @@ class Compilation:
     locall_state: dict | None = None
     annotations: AnnotationLedger = field(default_factory=AnnotationLedger)
     imported_function_types: Mapping[tuple[str, str], ValueType] | None = None
-    imported_targets: (
-        Mapping[tuple[str, str], Lambda | ClassConstructorTarget | ForeignCallTarget]
-        | None
-    ) = None
+    imported_targets: Mapping[tuple[str, str], object] | None = None
     storage_methods: Mapping[tuple[str, str], ValueType] | None = None
     builtin_return_types: Mapping[str, ValueType] | None = None
-    builtin_targets: (
-        Mapping[str, Lambda | ClassConstructorTarget | ForeignCallTarget] | None
-    ) = None
+    builtin_targets: Mapping[str, object] | None = None
 
     @property
     def converters(self):
