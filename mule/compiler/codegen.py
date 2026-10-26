@@ -718,7 +718,7 @@ def _return_tuple_info(lambda_: Lambda) -> tuple[int, frozenset] | None:
 
 def generate(program: Program) -> str:
     """Return a complete LLVM module with a native executable entry point."""
-    with phase("LLVM generation"):
+    with phase("LLVM generation %s", program.unit or "__main__"):
         module = ModuleGenerator(program)
         llvm = module.emit()
     if logger.isEnabledFor(logging.DEBUG):

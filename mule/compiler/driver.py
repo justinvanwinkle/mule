@@ -1077,11 +1077,13 @@ class Build:
         sources = sorted((Path(__file__).parents[1] / "runtime").glob("*.rs"))
 
         def action(inputs, directory):
-            built = build_runtime(directory, rustc=rustc, lto=lto)
-            if built != directory / "libmule_runtime.a":
-                os.replace(built, directory / "libmule_runtime.a")
+            output = cache_directory() / "steps" / step.key / "libmule_runtime.a"
+            with phase("compile runtime -> %s", output):
+                built = build_runtime(directory, rustc=rustc, lto=lto)
+                if built != directory / "libmule_runtime.a":
+                    os.replace(built, directory / "libmule_runtime.a")
 
-        return self.graph.step(
+        step = self.graph.step(
             f"runtime lto={lto}",
             lambda: Step(
                 self.graph,
@@ -1100,15 +1102,18 @@ class Build:
                 action=action,
             ),
         )
+        return step
 
     def builtins(self) -> Step:
         def action(inputs, directory):
-            unit, modules = compile_builtins()
-            interface = builtins_interface(unit, modules)
-            (directory / "unit.ll").write_text(generate(unit))
-            (directory / "interface.json").write_text(interface.to_json())
+            output = cache_directory() / "steps" / step.key / "unit.ll"
+            with phase("compile unit builtins -> %s", output):
+                unit, modules = compile_builtins()
+                interface = builtins_interface(unit, modules)
+                (directory / "unit.ll").write_text(generate(unit))
+                (directory / "interface.json").write_text(interface.to_json())
 
-        return self.graph.step(
+        step = self.graph.step(
             "builtins",
             lambda: Step(
                 self.graph,
@@ -1119,6 +1124,7 @@ class Build:
                 action=action,
             ),
         )
+        return step
 
     def interface(self) -> BuiltinsInterface:
         builtins = self.builtins()
@@ -1136,7 +1142,8 @@ class Build:
         name = f"{unit.name} object optimize={toolchain.optimize} lto={lto}"
 
         def action(inputs, directory):
-            with phase("compile object %s", unit.name):
+            output = cache_directory() / "steps" / step.key / "unit.o"
+            with phase("compile object %s -> %s", unit.name, output):
                 if sharded:
                     llvm_split = toolchain.llvm_tool("llvm-split")
                     shard_prefix = directory / "shard"
@@ -1243,25 +1250,29 @@ class Build:
             return False
 
         def action(inputs, directory):
-            with self.graph.lock:
-                self._active_modules.add(descriptor.name)
-            try:
-                program, imported = compile_unit(
-                    descriptor.source(),
-                    str(path),
-                    self.interface(),
-                    module=descriptor,
-                    roots=roots,
-                    package=package,
-                    resolve_import_interface=lambda dep: self.resolve_import_interface(
-                        descriptor.name, dep, roots, package
-                    ),
-                )
-            finally:
+            output = cache_directory() / "steps" / step.key / "unit.ll"
+            with phase("compile unit %s -> %s", name, output):
                 with self.graph.lock:
-                    self._active_modules.discard(descriptor.name)
-            (directory / "unit.ll").write_text(generate(program))
-            write_imports(directory / "imports.json", imported)
+                    self._active_modules.add(descriptor.name)
+                try:
+                    program, imported = compile_unit(
+                        descriptor.source(),
+                        str(path),
+                        self.interface(),
+                        module=descriptor,
+                        roots=roots,
+                        package=package,
+                        resolve_import_interface=lambda dep: (
+                            self.resolve_import_interface(
+                                descriptor.name, dep, roots, package
+                            )
+                        ),
+                    )
+                finally:
+                    with self.graph.lock:
+                        self._active_modules.discard(descriptor.name)
+                (directory / "unit.ll").write_text(generate(program))
+                write_imports(directory / "imports.json", imported)
 
         # The unit depends on its search path only through how its imports
         # resolve, so the key omits the path and a cached unit is reused
@@ -1337,27 +1348,29 @@ class Build:
             return False
 
         def action(inputs, directory):
-            program, imported = compile_unit(
-                source,
-                filename,
-                self.interface(),
-                roots=roots,
-                package=package,
-                resolve_import_interface=lambda dep: self.resolve_import_interface(
-                    "__main__", dep, roots, package
-                ),
-            )
-            if not self.toolchain.lto:
-                program.toolchain_info = (
-                    sys.executable,
-                    self.toolchain.clang,
-                    f"{self.toolchain.rustc}\n{mule_hash()}",
-                    self.toolchain.optimize,
+            output = cache_directory() / "steps" / step.key / "unit.ll"
+            with phase("compile unit __main__ %s -> %s", filename, output):
+                program, imported = compile_unit(
+                    source,
+                    filename,
+                    self.interface(),
+                    roots=roots,
+                    package=package,
+                    resolve_import_interface=lambda dep: self.resolve_import_interface(
+                        "__main__", dep, roots, package
+                    ),
                 )
-            (directory / "unit.ll").write_text(generate(program))
-            write_imports(directory / "imports.json", imported)
+                if not self.toolchain.lto:
+                    program.toolchain_info = (
+                        sys.executable,
+                        self.toolchain.clang,
+                        f"{self.toolchain.rustc}\n{mule_hash()}",
+                        self.toolchain.optimize,
+                    )
+                (directory / "unit.ll").write_text(generate(program))
+                write_imports(directory / "imports.json", imported)
 
-        return self.graph.step(
+        step = self.graph.step(
             "__main__",
             lambda: Step(
                 self.graph,
@@ -1380,6 +1393,7 @@ class Build:
                 validate=validate,
             ),
         )
+        return step
 
     def executable(self, units: list[Step]) -> Step:
         toolchain = self.toolchain
@@ -1406,7 +1420,10 @@ class Build:
             else:
                 link_cmd.append(runtime_lib)
             link_cmd.extend([*LINK_LIBRARIES, "-o", str(directory / "program")])
-            _run(link_cmd, "LLVM compilation/linking failed")
+            assert self.link is not None
+            output = cache_directory() / "steps" / self.link.key / "program"
+            with phase("link executable -> %s", output):
+                _run(link_cmd, "LLVM compilation/linking failed")
 
         objects = [self.object(unit) for unit in units]
         self.link = self.graph.step(
@@ -1433,22 +1450,30 @@ class Build:
         name = f"{unit.name} fasl optimize={toolchain.optimize}"
 
         def action(inputs, directory):
-            _run(
-                [
-                    toolchain.clang,
-                    "-shared",
-                    *toolchain.link_flags(),
-                    f"--ld-path={lto_linker(toolchain.rustc)}",
-                    "-Wno-override-module",
-                    "-Wl,--strip-debug",
-                    str(obj.path("unit.o")),
-                    "-o",
-                    str(directory / "module.so"),
-                ],
-                "LLVM compilation/linking failed",
-            )
+            output = (
+                fasl_cache_path(
+                    mule_hash(), toolchain.optimize, descriptor.name, descriptor.path
+                )
+                if descriptor.path is not None
+                else None
+            ) or (cache_directory() / "steps" / step.key / "module.so")
+            with phase("compile fasl %s -> %s", unit.name, output):
+                _run(
+                    [
+                        toolchain.clang,
+                        "-shared",
+                        *toolchain.link_flags(),
+                        f"--ld-path={lto_linker(toolchain.rustc)}",
+                        "-Wno-override-module",
+                        "-Wl,--strip-debug",
+                        str(obj.path("unit.o")),
+                        "-o",
+                        str(directory / "module.so"),
+                    ],
+                    "LLVM compilation/linking failed",
+                )
 
-        return self.graph.step(
+        step = self.graph.step(
             name,
             lambda: Step(
                 self.graph,
@@ -1466,6 +1491,7 @@ class Build:
                 ),
             ),
         )
+        return step
 
 
 @cache
