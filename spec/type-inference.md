@@ -42,6 +42,11 @@ Type inference must operate across two different visibility regimes:
 1. **Closed-world knowledge**: The compiler sees all call sites of a function or all assignments to a binding (for example, non-escaping nested functions, private module globals, intra-module helpers, or a full-program build from source).
 2. **Open-world / separate-compilation boundaries**: The compiler is building a library (such as a precompiled standard-library unit or a third-party Mule `.whl`) whose public functions and classes may be called by unknown external modules, or via dynamic `importlib.import_module()` at runtime.
 
+An imported `typing.TYPE_CHECKING` binding is not an unconditional constant.
+The import may not have executed yet, and the module attribute may have changed
+before the import. A guarded import therefore remains a possible dependency
+unless other analysis proves the guard unreachable.
+
 ### 2.1 Multi-entry contexts bridge open and closed worlds
 
 Following SBCL's entry-point splitting in `src/compiler/locall.lisp`, Mule never sacrifices soundness at public boundaries to specialize internal calls, and never sacrifices internal specialization to preserve external generality. Every compiled function (`Lambda`) can publish multiple **entry contexts** (`EntryContext` in `mule/compiler/locall.py`):
@@ -303,3 +308,28 @@ For a single `Lambda` and parameter tuple, `propagate()` runs a worklist over th
    - Any known call (`CallKind.KNOWN`, `len()`, or predictable global known function) whose operand `Lvar` gained a narrower non-`UNKNOWN` type is marked `node.reoptimize = True`, triggering another pass of `ir1opt.ir1_optimize_until_done` (`mule/compiler/main.py`).
    - For `"fixnum"` and `"observed"` entry contexts whose narrower parameter types unlock additional IR1 transforms (`_would_reoptimize_for_context`), `specialized_ir1_context` clones the `Lambda`'s IR1 component during IR2 translation, runs `ir1opt` + `dfo` + `loop.analyze` under that entry's types, lowers the specialized IR2/LLVM body, and restores the canonical IR1 component.
    - **Current limitation in `_SpecializesBody`**: `locall.analyze` retains a `"fixnum"` entry context (including `(InstanceType(cls), ...)` on class methods) only when `_SpecializesBody` observes that a node narrows to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a `list`/`str`/`dict` container operation. Methods whose specialization consists of `InstanceType` attribute reads/writes (`GETATTR` / `SETATTR`) or `PYTHON_INTEGER` results currently drop their `"fixnum"` variant (`variants=()`). Extending `_SpecializesBody` to preserve `InstanceType` slot specialization is tracked in [compiler-gaps.md](compiler-gaps.md#0-high-impact-architectural-parity-gaps-from-the-14-workload-suite-audit-proposed).
+
+#### Known analysis gaps
+
+- **Confirmed `TYPE_CHECKING` miscompile:** `fold_type_checking_constants` in
+  `main.py` replaces global references imported from `typing.TYPE_CHECKING` with
+  `False` based on a syntactic store count. `driver.py` applies it before code
+  generation. For `print(TYPE_CHECKING)` followed by
+  `from typing import TYPE_CHECKING`, Mule prints `False` while CPython raises
+  `NameError`: the import has not executed. `locall.py` independently seeds the
+  same false global fact under a similar condition. Its independent effect has
+  not been reproduced. Both paths need sound binding and execution-order facts;
+  removing only the early rewrite leaves the other assumption in analysis.
+- **Context derivation depth:** `locall.py` limits active context-dependent
+  derivations to six, including acyclic chains. At the limit it falls back to a
+  general return summary or abandons branch narrowing, which can discard useful
+  specialization facts. A workload impact has not been measured. Preserve
+  termination for recursive analysis while investigating how to retain facts in
+  deeper acyclic chains. SBCL's local-call analysis and subsequent LET conversion
+  are described in `src/compiler/locall.lisp`.
+- **Standard-library summary cache investigation:** `stdlib_type_summary` and
+  `stdlib_target_summary` in `sequence_protocol.py` use process-wide cached
+  summaries without a source-version key at the lookup. `prepare` can refresh
+  these caches. Determine whether a long-lived compiler process can reuse stale
+  facts after standard-library sources change. Stale generated code has not been
+  reproduced, and the relevant refresh paths have not been fully established.

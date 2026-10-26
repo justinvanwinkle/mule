@@ -106,7 +106,7 @@ def test_recorded_inputs_change_when_a_new_file_would_shadow_an_import(tmp_path)
     assert not unchanged(inputs), "the earlier root now provides the module"
 
 
-def test_main_step_cache_key_depends_on_content_not_filename_or_roots(tmp_path):
+def test_main_step_cache_key_includes_filename_but_not_roots(tmp_path):
     from mule.compiler.artifacts import Graph
     from mule.compiler.driver import Build, Toolchain
 
@@ -134,7 +134,18 @@ def test_main_step_cache_key_depends_on_content_not_filename_or_roots(tmp_path):
             (tmp_path,),
             None,
         )
-    assert s1.key == s2.key
+    with Graph(1) as g3:
+        b3 = Build(g3, Toolchain(optimize=2))
+        g3.run(b3.builtins())
+        s3 = b3.main(
+            g3.file(script),
+            "print(42)\n",
+            str(script.resolve()),
+            (tmp_path,),
+            None,
+        )
+    assert s1.key != s2.key
+    assert s1.key == s3.key
 
 
 def mule(arguments, directory, **options):

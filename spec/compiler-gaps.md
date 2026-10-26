@@ -413,12 +413,12 @@ suite failure or performance measurement.
          `@mule_bytearray_getitem_fast`), `setitem(BYTEARRAY_TYPE, FIXNUM, FIXNUM)`
          (`@mule_bytearray_setitem_fast`), and `bytearray.append`
          (`@mule_bytearray_append_fast`).
-  6. **Direct `for`-loop lowering over proven sequences (`seqtran.lisp`
-     `dolist` / vector loop transforms)**:
-     - **SBCL reference**: `src/compiler/seqtran.lisp` (`define-source-transform dolist`,
-       `map` / `dosequence` transforms over vectors and lists), which lower
-       sequence iteration directly into pointer/index loops without allocating
-       iterator objects or signaling end-of-iteration conditions.
+  6. **IR1 iteration specialization (`seqtran.lisp`)**:
+     - **SBCL reference**: `build-sequence-iterator` in `src/compiler/seqtran.lisp`
+       selects list or vector traversal from inferred argument types and gives
+       up when the sequence type is unknown. Python requires different mutation
+       and observable iterator-state semantics; SBCL's cached vector length is
+       not sufficient for mutable Python sequences.
      - **Current Mule defect (observed in `perf/suite/bytes_codec.py`)**:
        - While `for j in range(...)` lowers to a counted loop in `ir1tran.py`,
          `for packet in data:` (with `data: list[bytes]`) and `for b in decoded:`
@@ -426,15 +426,38 @@ suite failure or performance measurement.
          `@mule.fast.iterate.move`, call `@mule.fast.next_item` on each step,
          and terminate by raising and catching `StopIteration`
          (`@mule_catch_exception` + `@"mule.protocol.iteration_exhausted"`).
+     - **Architecture gap**: `ir1tran.py` chooses the range candidate from the
+       source spelling `range(...)`. `seqtran.py` also transforms
+       `%range_prepare`, and some IR2 paths fuse setup. Replace or adapt these
+       pieces so IR1 represents general iteration and later transforms select
+       behavior from proven iterator and sequence facts, not source spelling.
+       Apply the same approach to ranges obtained through other expressions.
      - **Required implementation**:
-       - When the iterable of a `for` loop is proven to be a non-subclassed
-         `LIST_TYPE`, `TUPLE_TYPE`, `BYTES_TYPE`, or `BYTEARRAY_TYPE` (or under
-         an entry/loop guard on exact storage kind), lower or transform the
-         iterator protocol into a direct indexed loop (`idx = 0; while idx < len(seq): ...`)
-         reading storage directly at `idx` without allocating an iterator or
-         raising `StopIteration` on termination (re-reading current length on
-         each step for mutable `list` / `bytearray` to preserve Python's
-         mutation-during-iteration semantics).
+       - Derive or guard exact iteration behavior and iterator freshness and
+         observability. Exact storage or a broad annotation alone does not prove
+         that subclass or overridden iteration behavior can be bypassed.
+         Retain the generic protocol, including sequence-protocol fallback, when
+         these facts are unknown. Do not assume the necessary proofs already
+         exist in the compiler.
+       - For a fresh, unobservable iterator over a proven exact list, tuple,
+         bytes, or bytearray, transform iteration into direct indexed traversal
+         without an iterator allocation or exception on normal exhaustion.
+         An existing iterator can be partially consumed or shared; preserve its
+         position and observable updates instead of starting a private index at
+         zero. Preserve permanent exhaustion and owned-reference lifetimes.
+       - Re-read the current length and element on each advance of a mutable
+         list or bytearray. Preserve insertion, deletion, replacement, and
+         storage reallocation effects. Do not retain a storage pointer across
+         body effects unless a proof makes that safe.
+       - Evaluate the iterable once. A guard before iterator creation must create
+         it once on fallback; a guard after creation must reuse that iterator.
+         Preserve target assignment, `break`, `continue`, cleanup, and
+         `for`-`else`. Only normal iterator exhaustion enters the else branch;
+         errors from acquisition, advancement, assignment, and the body retain
+         their normal behavior.
+       - Preserve range construction errors and arbitrary-precision semantics.
+         Use native arithmetic only when its bounds are proven or guarded, with
+         a correct general fallback. Do not require a particular callable name.
 
 ### 1D. Numeric, division, and float transforms (`srctran.py` / `modarith.py` / `float-tran.lisp`) (partially implemented)
 
@@ -484,6 +507,12 @@ suite failure or performance measurement.
        domain guard + `call double @llvm.sqrt.f64(double %x)` (`raw-math-sqrt`,
        `boxed-float-math-sqrt`, `math-sqrt` in `vops.py`).
 - **Remaining gaps and proposed transforms**:
+  - **Large integer constant folding**: `ir1opt.py` rejects folded integer
+    results larger than 128 bits, including unary negation. This is a fixed
+    literal-size limit, not a measured workload regression. SBCL's folding
+    dispatch in `src/compiler/ir1opt.lisp` uses function attributes and constant
+    arguments. Revisit Mule's limit with an explicit compile-time resource policy
+    and verify the generated code and compilation cost.
   1. **Commutative canonicalization and reassociation**: Normalize
      `const + x -> x + const` and `const & x -> x & const` on proven commutative
      domains (`INTEGER`, `BOOLEAN`) so associative transforms in `modarith.py`
@@ -706,6 +735,22 @@ force independent numeric-only copies to remain boxed. Generic object entries
 returning their float accumulator still conservatively use boxed accumulator
 storage; the numeric internal conventions below remove that boundary for numeric
 callers. Splitting one mutable local's live ranges is not implemented.
+
+`select_tn_representation` charges one unit for each operand restriction
+mismatch, and copy refinement charges one unit for differing endpoint LLVM
+types. SBCL's `add-representation-costs` uses storage-class-specific operand
+and move costs. Mule's uniform costs can select more expensive conversions, but
+a resulting performance regression has not been measured.
+
+The list-setitem identity exemption in `represent.py` permits indexing and
+iteration of a local exact list without examining later uses of retrieved values.
+Its identity-comparison scan covers only the current component. A raw float
+stored through that path can require a new box at the descriptor boundary, so
+identity observed through a retrieved value needs investigation. Probes so far
+returned the expected result and did not establish that the exemption was
+reached; this is an unverified correctness risk, not a confirmed miscompile.
+Trace generated IR and test the actual exemption before changing the legality
+rule. The general identity guarantee above remains the required contract.
 
 Generalizing explicit coercion insertion beyond fixnums and floats, extending
 identity-safe materialization, and using target-specific conversion costs remain
