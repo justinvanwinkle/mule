@@ -154,6 +154,9 @@ class ValueType:
     def may_run_user_code(self):
         return True
 
+    def has_reflexive_equality(self) -> bool:
+        return False
+
     def accept(self, visitor):
         return visitor.visit_ValueType(self)
 
@@ -846,6 +849,9 @@ class IntegerType(PrimitiveType):
         return other.fits_integer(INTEGER)
 
     def fits_real(self, expected):
+        return not self.may_be_unbound
+
+    def has_reflexive_equality(self) -> bool:
         return not self.may_be_unbound
 
     def join_real(self, left):
@@ -1563,6 +1569,9 @@ class ImmortalType(ValueType):
     def may_run_user_code(self):
         return False
 
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
+
     def accept(self, visitor):
         return visitor.visit_ImmortalType(self)
 
@@ -1623,6 +1632,9 @@ class NoneType(PrimitiveType):
     @property
     def needs_release(self):
         return False
+
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
 
     def dispatch_rank(self) -> int:
         return 2**64 if self.may_be_unbound else 0
@@ -1697,6 +1709,9 @@ class TextType(PrimitiveType):
 
     @property
     def is_heap_object(self):
+        return not self.may_be_unbound
+
+    def has_reflexive_equality(self) -> bool:
         return not self.may_be_unbound
 
     @property
@@ -2045,6 +2060,9 @@ class BytesType(PrimitiveType):
     def same_runtime_class(self, other) -> bool:
         return other.fits_bytes(BYTES_TYPE)
 
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
+
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
@@ -2157,6 +2175,9 @@ class ByteArrayType(PrimitiveType):
 
     def same_runtime_class(self, other) -> bool:
         return other.fits_bytearray(BYTEARRAY_TYPE)
+
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
 
     @property
     def is_heap_object(self):
@@ -2412,7 +2433,7 @@ class TupleType(ValueType):
                 and len(self.elements) == len(left.elements)
             ):
                 joined_elems = tuple(
-                    l_el.join(r_el).limit_container_depth(2)
+                    l_el.join(r_el).limit_container_depth(1)
                     for l_el, r_el in zip(left.elements, self.elements)
                 )
                 elements = (
@@ -2450,7 +2471,7 @@ class TupleType(ValueType):
             and len(self.elements) == len(old.elements)
         ):
             widened_elems = tuple(
-                widen_fact(o_el, n_el, thresholds).limit_container_depth(2)
+                widen_fact(o_el, n_el, thresholds).limit_container_depth(1)
                 for o_el, n_el in zip(old.elements, self.elements)
             )
             elements = (
@@ -3763,6 +3784,11 @@ class UnionType(ValueType):
     def may_run_user_code(self):
         return self.may_be_unbound or any(m.may_run_user_code for m in self.members)
 
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound and all(
+            m.has_reflexive_equality() for m in self.members
+        )
+
     def fits(self, expected):
         return (not self.may_be_unbound or expected.may_be_unbound) and all(
             m.fits(expected.as_bound()) for m in self.members
@@ -4607,6 +4633,8 @@ LIST_TYPE = ListType()
 EMPTY_LIST_TYPE = ListType(BOTTOM)
 DICT_TYPE = DictType()
 EMPTY_DICT_TYPE = DictType(BOTTOM, BOTTOM)
+SET_TYPE = InstanceType("mule_dict_set")
+FROZENSET_TYPE = InstanceType("mule_dict_frozenset")
 ITERATOR_TYPE = IteratorType()
 _FIXNUM_INTEGER = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 OPTIONAL_FIXNUM = union_type(_FIXNUM_INTEGER, NONE_TYPE)
@@ -4623,6 +4651,8 @@ CLASS_FUNCTION_TYPE = ClassType((FUNCTION_TYPE,))
 CLASS_TUPLE_TYPE = ClassType((TupleType(),))
 CLASS_LIST_TYPE = ClassType((EMPTY_LIST_TYPE,))
 CLASS_DICT_TYPE = ClassType((EMPTY_DICT_TYPE,))
+CLASS_SET_TYPE = ClassType((SET_TYPE,))
+CLASS_FROZENSET_TYPE = ClassType((FROZENSET_TYPE,))
 CLASS_ITERATOR_TYPE = ClassType((ITERATOR_TYPE,))
 CLASS_OBJECT_TYPE = ClassType((UNKNOWN,))
 
@@ -4636,6 +4666,8 @@ BUILTIN_CLASS_TYPES: dict[str, ClassType] = {
     "tuple": CLASS_TUPLE_TYPE,
     "list": CLASS_LIST_TYPE,
     "dict": CLASS_DICT_TYPE,
+    "set": CLASS_SET_TYPE,
+    "frozenset": CLASS_FROZENSET_TYPE,
     "object": CLASS_OBJECT_TYPE,
     "type": CLASS_TYPE_TYPE,
 }
@@ -4646,6 +4678,8 @@ STORAGE_CLASS_TYPES: dict[str, ValueType] = {
     "TupleStorage": TupleType(),
     "ListStorage": LIST_TYPE,
     "dict": DICT_TYPE,
+    "set": SET_TYPE,
+    "frozenset": FROZENSET_TYPE,
 }
 
 

@@ -17,6 +17,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     INTEGER,
     PYTHON_INTEGER,
+    TEXT_TYPE,
     UNKNOWN,
     ByteArrayType,
     BytesType,
@@ -33,6 +34,7 @@ from .ir1opt import (
     constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
+    splice_fun_args,
 )
 from .ir1util import (
     add_lvar_use,
@@ -67,6 +69,7 @@ from .node import (
     Set,
     linked,
 )
+from .srctran import _is_slice_bound_lvar, _is_unit_slice_step
 
 
 class _ConstantIndex(ast.Visitor):
@@ -513,14 +516,8 @@ def _transform_tuple_getitem(node: Combination) -> bool:
         replace_combination_with_constant(node, folded)
         return True
 
-    if len(seq_lvar.uses) != 1:
-        return False
-    tuple_node = seq_lvar.uses[0].accept(_BUILD_TUPLE_PRODUCER)
-    if (
-        tuple_node is None
-        or tuple_node.prev is None
-        or tuple_node.block is not node.block
-    ):
+    tuple_node = splice_fun_args(seq_lvar, ("%build_tuple",), splice=False)
+    if tuple_node is None:
         return False
     n = len(tuple_node.args)
     idx = raw_index + n if raw_index < 0 else raw_index
@@ -531,15 +528,7 @@ def _transform_tuple_getitem(node: Combination) -> bool:
             return False
 
     selected = tuple_node.args[idx]
-    for i, elem in enumerate(tuple_node.args):
-        if i != idx:
-            _delete_pure_ref(elem)
-    tuple_node.args = []
-    _flush_operand(tuple_node.fun)
-    unlink_node(tuple_node)
-    seq_lvar.dest = None
-    node.args[0] = selected
-    selected.dest = node
+    splice_fun_args(seq_lvar, ("%build_tuple",))
     replace_combination_with_lvar(node, selected)
     return True
 
@@ -578,7 +567,7 @@ def _transform_constant_getslice(node: Combination) -> bool:
 
 @deftransform("%unary_not")
 def _transform_empty_container_not(node: Combination) -> bool:
-    if node.lvar is None or len(node.args) != 1 or len(node.fun.uses) != 1:
+    if node.lvar is None or len(node.args) != 1:
         return False
     arg = node.args[0]
     arg_literal = constant_lvar_value(arg) if is_pure_bound_ref(arg) else None
@@ -591,21 +580,97 @@ def _transform_empty_container_not(node: Combination) -> bool:
             return True
         return False
 
-    if len(arg.uses) != 1:
-        return False
-    build_node = arg.uses[0].accept(_EMPTY_CONTAINER_PRODUCER)
-    fun_ref = node.fun.uses[0]
-    if (
-        build_node is None
-        or build_node.prev is None
-        or fun_ref.prev is None
-        or fun_ref.next is not node.prev
-        or build_node.next is not fun_ref.prev
-    ):
+    if splice_fun_args(arg, ("%build_tuple", "%build_list"), 0) is None:
         return False
     folded = ast.BooleanLiteral(True)
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
+    return True
+
+
+def _match_text_slice(lvar: Lvar) -> Combination | None:
+    slice_node = splice_fun_args(lvar, ("%getslice",), 4, splice=False)
+    if slice_node is None:
+        return None
+    seq_lvar, start_lvar, stop_lvar, step_lvar = slice_node.args
+    if (
+        not lvar_type(seq_lvar).fits_text(TEXT_TYPE)
+        or not _is_slice_bound_lvar(start_lvar)
+        or not _is_slice_bound_lvar(stop_lvar)
+        or not _is_unit_slice_step(step_lvar)
+    ):
+        return None
+    return slice_node
+
+
+def _transform_text_slice_compare(node: Combination, *, invert: bool) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    left_slice = _match_text_slice(left)
+    right_slice = _match_text_slice(right)
+    if (
+        left_slice is not None
+        and right_slice is not None
+        and left_slice is not right_slice
+    ):
+        seq1, start1, stop1, _ = left_slice.args
+        seq2, start2, stop2, _ = right_slice.args
+        splice_fun_args(left, ("%getslice",), 4)
+        splice_fun_args(right, ("%getslice",), 4)
+        retarget_known_combination(
+            node,
+            fndb.TEXT_SLICE2_COMPARE,
+            [seq1, start1, stop1, seq2, start2, stop2],
+        )
+        node.info = invert
+        return True
+    if left_slice is not None:
+        seq1, start1, stop1, _ = left_slice.args
+        splice_fun_args(left, ("%getslice",), 4)
+        retarget_known_combination(
+            node, fndb.TEXT_SLICE_COMPARE, [seq1, start1, stop1, right]
+        )
+        node.info = invert
+        return True
+    if right_slice is not None:
+        seq2, start2, stop2, _ = right_slice.args
+        splice_fun_args(right, ("%getslice",), 4)
+        retarget_known_combination(
+            node, fndb.TEXT_SLICE_COMPARE, [seq2, start2, stop2, left]
+        )
+        node.info = invert
+        return True
+    return False
+
+
+@deftransform("%compare_equal", (TEXT_TYPE, TEXT_TYPE))
+def _transform_text_slice_compare_equal(node: Combination) -> bool:
+    return _transform_text_slice_compare(node, invert=False)
+
+
+@deftransform("%compare_not_equal", (TEXT_TYPE, TEXT_TYPE))
+def _transform_text_slice_compare_not_equal(node: Combination) -> bool:
+    return _transform_text_slice_compare(node, invert=True)
+
+
+@deftransform("%text_slice_compare")
+def _transform_text_slice_compare_target(node: Combination) -> bool:
+    if len(node.args) != 4:
+        return False
+    seq1, start1, stop1, target = node.args
+    other_slice = _match_text_slice(target)
+    if other_slice is None:
+        return False
+    seq2, start2, stop2, _ = other_slice.args
+    invert = bool(node.info)
+    splice_fun_args(target, ("%getslice",), 4)
+    retarget_known_combination(
+        node,
+        fndb.TEXT_SLICE2_COMPARE,
+        [seq1, start1, stop1, seq2, start2, stop2],
+    )
+    node.info = invert
     return True
 
 
@@ -1190,22 +1255,11 @@ def _transform_instance_check(node: Combination) -> bool:
     if lvar_type(classinfo).fits_class():
         retarget_known_combination(node, fndb.ISINSTANCE, [value, classinfo])
         return True
-    if len(classinfo.uses) != 1:
-        return False
-    tuple_node = classinfo.uses[0].accept(_BUILD_TUPLE_PRODUCER)
-    if (
-        tuple_node is None
-        or tuple_node.prev is None
-        or tuple_node.block is not node.block
-        or not tuple_node.args
-    ):
+    tuple_node = splice_fun_args(classinfo, ("%build_tuple",), splice=False)
+    if tuple_node is None or not tuple_node.args:
         return False
     classes = list(tuple_node.args)
-    tuple_node.args = []
-    _flush_operand(tuple_node.fun)
-    unlink_node(tuple_node)
-    classinfo.dest = None
-    node.args = [value]
+    splice_fun_args(classinfo, ("%build_tuple",))
     retarget_known_combination(node, fndb.ISINSTANCE, [value, *classes])
     return True
 

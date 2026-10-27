@@ -697,7 +697,7 @@ def getitem(value, index):
     if cls is dict:
         entry = _table_lookup(value, index)
         if entry >= 0:
-            return _storage_read(value._values, entry)
+            return _storage_read(_instance_field(value, "_values"), entry)
         raise KeyError(index)
     if cls is bytearray:
         values = value.values
@@ -717,16 +717,16 @@ def dict_get(table, key, default):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
     perturb = code & _TABLE_PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(table._indices, slot)
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(table._hashes, entry) == code:
-                existing = _storage_read(table._keys, entry)
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
                 if existing is key or existing == key:
-                    return _storage_read(table._values, entry)
+                    return _storage_read(_instance_field(table, "_values"), entry)
         elif entry is _TABLE_EMPTY:
             return default
         perturb >>= 5
@@ -737,16 +737,16 @@ def dict_getitem(table, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
     perturb = code & _TABLE_PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(table._indices, slot)
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(table._hashes, entry) == code:
-                existing = _storage_read(table._keys, entry)
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
                 if existing is key or existing == key:
-                    return _storage_read(table._values, entry)
+                    return _storage_read(_instance_field(table, "_values"), entry)
         elif entry is _TABLE_EMPTY:
             raise KeyError(key)
         perturb >>= 5
@@ -757,48 +757,60 @@ def dict_setitem(table, key, value):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
     perturb = code & _TABLE_PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(table._indices, slot)
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(table._hashes, entry) == code:
-                existing = _storage_read(table._keys, entry)
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
                 if existing is key or existing == key:
-                    _storage_write(table._values, entry, value)
+                    _storage_write(_instance_field(table, "_values"), entry, value)
                     return
         elif entry is _TABLE_EMPTY:
             break
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
-    if (_storage_length(table._keys) + 1) * 3 > _storage_length(table._indices) * 2:
-        _table_resize(table, table._used + 1)
-        mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    if (_storage_length(_instance_field(table, "_keys")) + 1) * 3 > _storage_length(
+        _instance_field(table, "_indices")
+    ) * 2:
+        _table_resize(table, _instance_field(table, "_used") + 1)
+        mask = (
+            _storage_length(_instance_field(table, "_indices")) - 1
+        ) & _TABLE_MASK_LIMIT
         perturb = code & _TABLE_PERTURB_MASK
         slot = perturb & mask
-        while _storage_read(table._indices, slot) is not _TABLE_EMPTY:
+        while (
+            _storage_read(_instance_field(table, "_indices"), slot) is not _TABLE_EMPTY
+        ):
             perturb >>= 5
             slot = (slot * 5 + perturb + 1) & mask
-    _storage_write(table._indices, slot, _storage_length(table._keys))
-    _storage_append(table._hashes, code)
-    _storage_append(table._keys, key)
-    _storage_append(table._values, value)
-    table._used = (table._used + 1) & _TABLE_MASK_LIMIT
+    _storage_write(
+        _instance_field(table, "_indices"),
+        slot,
+        _storage_length(_instance_field(table, "_keys")),
+    )
+    _storage_append(_instance_field(table, "_hashes"), code)
+    _storage_append(_instance_field(table, "_keys"), key)
+    _storage_append(_instance_field(table, "_values"), value)
+    next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
+    _set_instance_field(table, "_used", next_used)
+    del next_used
 
 
 def dict_contains(table, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
     perturb = code & _TABLE_PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(table._indices, slot)
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(table._hashes, entry) == code:
-                existing = _storage_read(table._keys, entry)
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
                 if existing is key or existing == key:
                     return True
         elif entry is _TABLE_EMPTY:
@@ -811,14 +823,14 @@ def dict_not_contains(table, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(table._indices) - 1) & _TABLE_MASK_LIMIT
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
     perturb = code & _TABLE_PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(table._indices, slot)
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(table._hashes, entry) == code:
-                existing = _storage_read(table._keys, entry)
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
                 if existing is key or existing == key:
                     return False
         elif entry is _TABLE_EMPTY:

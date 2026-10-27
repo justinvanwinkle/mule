@@ -356,6 +356,17 @@ ISINSTANCE_BUILTIN = defknown("isinstance", "call", "unsafe")
 SETATTR = defknown(
     "%setattr", "call", "unsafe", result=False, non_integer_first_arg=True
 )
+PHYSICAL_FIELD_REF = defknown(
+    "%physical_field_ref", borrowed_args=frozenset({0}), non_integer_first_arg=True
+)
+PHYSICAL_FIELD_SET = defknown(
+    "%physical_field_set",
+    "call",
+    "unsafe",
+    derive_type=lambda node: NONE_TYPE,
+    borrowed_args=frozenset({0}),
+    non_integer_first_arg=True,
+)
 RESOLVE_METHOD = defknown("%resolve_method", "call", non_integer_first_arg=True)
 RESOLVE_SUPER_METHOD = defknown("%resolve_super_method", "call")
 CALL_RESOLVED = defknown("%call_resolved", "call", "unsafe")
@@ -373,7 +384,9 @@ CLASS_DELETE = defknown("%class_delete", "unsafe", result=False)
 IMPORT = defknown("%import", "call", "unsafe")
 # ``from module import *``: bind the module's public names in the globals.
 IMPORT_STAR = defknown("%import_star", "unsafe", result=False)
-HAS_BINDING = defknown("%has_binding", derive_type=lambda node: BOOLEAN)
+HAS_BINDING = defknown(
+    "%has_binding", derive_type=lambda node: BOOLEAN, borrowed_args=frozenset({0})
+)
 # The globals namespace of the function being compiled: every native entry
 # receives it, and ``globals()`` returns it (converted where it is called).
 CURRENT_GLOBALS = defknown("%current_globals", "flushable")
@@ -463,7 +476,7 @@ def derive_min2_types(left: ValueType, right: ValueType) -> ValueType:
         if not left_can_be_bool and not right_can_be_bool:
             return IntegerType(lo, hi)
         return PythonIntegerType(lo, hi)
-    return left.join(right)
+    return left.join(right).widen_constant()
 
 
 def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
@@ -489,7 +502,7 @@ def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
         if not left_can_be_bool and not right_can_be_bool:
             return IntegerType(lo, hi)
         return PythonIntegerType(lo, hi)
-    return left.join(right)
+    return left.join(right).widen_constant()
 
 
 MIN2 = defknown(
@@ -516,6 +529,31 @@ MAX2 = defknown(
 )
 MIN_BUILTIN = defknown("min", "call", "unsafe")
 MAX_BUILTIN = defknown("max", "call", "unsafe")
+INT_BUILTIN = defknown("int", "call", "unsafe")
+PARSE_INT_TEXT = defknown(
+    "%parse_int_text",
+    "unsafe",
+    derive_type=lambda node: INTEGER,
+    non_integer_first_arg=True,
+)
+PARSE_INT_SLICE = defknown(
+    "%parse_int_slice",
+    "unsafe",
+    derive_type=lambda node: INTEGER,
+    non_integer_first_arg=True,
+)
+TEXT_SLICE_COMPARE = defknown(
+    "%text_slice_compare",
+    "flushable",
+    derive_type=lambda node: BOOLEAN,
+    non_integer_first_arg=True,
+)
+TEXT_SLICE2_COMPARE = defknown(
+    "%text_slice2_compare",
+    "flushable",
+    derive_type=lambda node: BOOLEAN,
+    non_integer_first_arg=True,
+)
 MATH_SQRT = defknown(
     "%math_sqrt",
     derive_type=lambda node: FLOAT,
@@ -679,6 +717,7 @@ __all__ = [
     "IMPORT",
     "IMPORT_STAR",
     "INPLACE_BINARY",
+    "INT_BUILTIN",
     "LEAVE_HANDLER",
     "LEN",
     "MAKE_CLASS",
@@ -689,6 +728,8 @@ __all__ = [
     "MAX_BUILTIN",
     "MIN2",
     "MIN_BUILTIN",
+    "PARSE_INT_SLICE",
+    "PARSE_INT_TEXT",
     "PROTOCOLS",
     "RAISE",
     "RANGE_ADVANCE",
@@ -700,6 +741,8 @@ __all__ = [
     "RESUME_EXCEPTION",
     "SEQUENCE_AVAILABLE",
     "SETATTR",
+    "TEXT_SLICE2_COMPARE",
+    "TEXT_SLICE_COMPARE",
     "UNARY",
     "UNPACK_REF",
     "UNWIND",

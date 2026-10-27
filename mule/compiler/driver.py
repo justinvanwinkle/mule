@@ -43,6 +43,7 @@ from .artifacts import (
 from .codegen import ForeignFunction, Program, generate
 from .ctype import UNKNOWN, ValueType, value_type_from_dict
 from .dfo import find_dfo
+from .escape import EscapeFacts, analyze_escapes
 from .inputs import file_digest, read_source, recording, replay_recorded
 from .ir1opt import constant_literal, ir1_optimize_until_done
 from .ir1tran_lambda import lambda_blocks
@@ -120,6 +121,7 @@ class BuiltinsInterface:
                         else [
                             fact.to_dict() for fact in function.entry_parameter_types
                         ],
+                        "borrowed_parameters": sorted(function.borrowed_parameters),
                     }
                     for name, function in self.functions.items()
                 },
@@ -173,6 +175,7 @@ class BuiltinsInterface:
                     value_type_from_dict(fact)
                     for fact in entry["entry_parameter_types"]
                 ),
+                borrowed_parameters=frozenset(entry.get("borrowed_parameters", ())),
             )
             for name, entry in data["functions"].items()
         }
@@ -248,6 +251,7 @@ class ModuleInterface:
                         else [
                             fact.to_dict() for fact in function.entry_parameter_types
                         ],
+                        "borrowed_parameters": sorted(function.borrowed_parameters),
                     }
                     for name, function in self.functions.items()
                 },
@@ -290,6 +294,7 @@ class ModuleInterface:
                     value_type_from_dict(fact)
                     for fact in entry["entry_parameter_types"]
                 ),
+                borrowed_parameters=frozenset(entry.get("borrowed_parameters", ())),
             )
             for name, entry in data.get("functions", {}).items()
         }
@@ -330,6 +335,18 @@ class ModuleInterface:
         )
 
 
+def _exported_borrowed_parameters(lambda_, escapes: EscapeFacts) -> frozenset[int]:
+    if not lambda_.supports_escape_summary():
+        return frozenset()
+    return frozenset(
+        index
+        for index, var in enumerate(lambda_.vars)
+        if not var.indirect
+        and not var.sets
+        and (lambda_.is_protocol or not escapes.parameter_escapes(lambda_, index))
+    )
+
+
 def module_interface(
     module_name: str,
     compilation,
@@ -338,6 +355,7 @@ def module_interface(
     base_storage_methods: dict[tuple[str, str], ValueType] | None = None,
 ) -> ModuleInterface:
     facts = compilation.facts or {}
+    escapes = analyze_escapes(compilation.lambdas, expand=False)
     functions: dict[str, ForeignFunction] = {
         lambda_.name: ForeignFunction(
             lambda_.name,
@@ -347,6 +365,7 @@ def module_interface(
             facts[lambda_].return_type if lambda_ in facts else UNKNOWN,
             lambda_.namespace,
             entry_parameter_types=lambda_.entry_parameter_types,
+            borrowed_parameters=_exported_borrowed_parameters(lambda_, escapes),
         )
         for lambda_ in compilation.lambdas
         if lambda_.kind is not FunctionalKind.TOPLEVEL
@@ -541,6 +560,7 @@ def _builtin_method_rank(target_name: str) -> int:
 
 
 def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
+    escapes = analyze_escapes(unit.lambdas, expand=False)
     functions = {
         lambda_.name: ForeignFunction(
             lambda_.name,
@@ -549,6 +569,7 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
             lambda_.takes_closure,
             unit.facts[lambda_].return_type if lambda_ in unit.facts else UNKNOWN,
             entry_parameter_types=lambda_.entry_parameter_types,
+            borrowed_parameters=_exported_borrowed_parameters(lambda_, escapes),
         )
         for lambda_ in unit.lambdas
     }
@@ -933,6 +954,17 @@ def import_resolver(
     compiler.exported_types.update(interface.exported_types)
     compiler.storage_methods.update(interface.storage_methods)
     compiler.builtin_return_types.update(interface.builtin_return_types)
+    from .protocols import NATIVE_MODULE_TARGETS
+
+    compiler.exported_targets.update(NATIVE_MODULE_TARGETS)
+    for mod in interface.modules.values():
+        if mod.prefix:
+            fn_prefix = f"{mod.prefix}mule_fn_"
+            for fn_name, fn in interface.functions.items():
+                if fn_name.startswith(fn_prefix):
+                    pub_name = fn_name[len(fn_prefix) :]
+                    if "." not in pub_name:
+                        compiler.exported_targets[mod.name, pub_name] = fn
     if module is not None:
         compiler.modules[module.name] = module
     return compiler

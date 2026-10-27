@@ -83,6 +83,13 @@ def linked[T](value: T | None, owner: object, link: str) -> T:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class PhysicalFieldInfo:
+    """A constant physical field name normalized by an IR1 transform."""
+
+    name: str
+
+
 class CtranKind(Enum):
     UNUSED = auto()
     INSIDE_BLOCK = auto()
@@ -965,6 +972,21 @@ class Lambda(Functional):
     def as_function(self) -> Lambda:
         return self
 
+    def supports_escape_summary(self) -> bool:
+        return (
+            self.kind is FunctionalKind.NORMAL
+            and not self.signature.variadic
+            and not (self.code is not None and self.code.flags & 0x2A0)
+        )
+
+    def classify_call_escape(
+        self, solver, source, param_index: int, *, direct_positional: bool = True
+    ) -> None:
+        if param_index >= len(self.vars):
+            solver.escape(source)
+            return
+        solver.escapes_with(source, self.vars[param_index])
+
     def to_interface_entry(self) -> dict:
         return {
             "kind": "function",
@@ -1141,6 +1163,9 @@ class ClassConstructorTarget:
     def as_function(self) -> None:
         return None
 
+    def supports_escape_summary(self) -> bool:
+        return False
+
     def call_order(self, keywords, count, *, receiver=False):
         return None
 
@@ -1260,6 +1285,9 @@ class ForeignCallTarget:
     def as_function(self) -> None:
         return None
 
+    def supports_escape_summary(self) -> bool:
+        return False
+
     def call_order(self, keywords, count, *, receiver=False):
         return None
 
@@ -1313,6 +1341,15 @@ class ForeignCallTarget:
             if res is not None:
                 return res
         return self.derive_return_type(arg_types, keywords)
+
+
+def resolve_implementation_type(domain: ValueType, targets) -> ValueType:
+    """Resolve one semantic domain through a unique implementation owner."""
+    if domain is UNKNOWN:
+        return UNKNOWN
+    implementations = {target.implementation_type(domain) for target in targets}
+    implementations.discard(UNKNOWN)
+    return next(iter(implementations)) if len(implementations) == 1 else UNKNOWN
 
 
 def _derive_len_builtin(
@@ -1638,6 +1675,7 @@ class Component:
         "kind",
         "lambdas",
         "last_block",
+        "mutates_module_namespace",
         "name",
         "new_functionals",
         "outer_loop",
@@ -1662,6 +1700,7 @@ class Component:
         self.reanalyze_functionals: list[Functional] = []
         self.reoptimize: bool | Literal["maybe"] = True
         self.reanalyze = False
+        self.mutates_module_namespace = False
         self.name = name
         self.info = None
         self.delete_blocks: list[Block] = []

@@ -8,7 +8,13 @@ from .inputs import _recording, read_source
 from .ir1util import known_calls, made_lambda
 from .main import compile_toplevel, ir1_phases
 from .modules import ModuleCompiler
-from .node import ClassConstructorTarget, ForeignCallTarget, Lambda, linked
+from .node import (
+    ClassConstructorTarget,
+    ForeignCallTarget,
+    Lambda,
+    linked,
+    resolve_implementation_type,
+)
 from .protocols import PRIMITIVES, add_lambdas
 
 _CACHED_STDLIB_TYPES: (
@@ -51,13 +57,10 @@ def protocol_argument_types(name: str, builtin_targets) -> tuple[ValueType, ...]
         if domain is UNKNOWN:
             arguments.append(UNKNOWN)
             continue
-        implementations = {
-            target.implementation_type(domain) for target in builtin_targets.values()
-        }
-        implementations.discard(UNKNOWN)
-        if len(implementations) != 1:
+        implementation = resolve_implementation_type(domain, builtin_targets.values())
+        if implementation is UNKNOWN:
             return None
-        arguments.append(next(iter(implementations)))
+        arguments.append(implementation)
     return tuple(arguments)
 
 

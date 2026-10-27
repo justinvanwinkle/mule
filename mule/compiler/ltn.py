@@ -152,9 +152,93 @@ class EntryContext:
     escape_facts: object = None
     base_escape_facts: object = None
     local_environments: object = None
+    codegen_info: dict = field(default_factory=dict)
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalSlotPlan:
+    name: str
+    index: int | None = None
+    identity: str | None = None
+    identities: tuple[str, ...] = ()
+
+
+class _PhysicalLayouts(ValueTypeVisitor):
+    def visit_ValueType(self, fact):
+        return ()
+
+    def visit_InstanceType(self, fact):
+        return (fact.identity,) if not fact.may_be_unbound else ()
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound:
+            return ()
+        members = [member.accept(self) for member in fact.members]
+        if not all(members):
+            return ()
+        return tuple(
+            dict.fromkeys(identity for values in members for identity in values)
+        )
+
+
+_PHYSICAL_LAYOUTS = _PhysicalLayouts()
+
+
+def _physical_slot_template(call, context):
+    from . import vops
+
+    name = call.info.name
+    receiver = call.args[0].use()
+    fact = context.type_of(receiver)
+    index = fact.fixed_slot_index(name)
+    identity = fact.instance_class()
+    direct = False
+    if (
+        index is not None
+        and context.id is not None
+        and context.plan is None
+        and context.convention is None
+    ):
+        leaf = receiver.accept(_PHYSICAL_PARAMETER)
+        home = call.home_lambda
+        if leaf is not None and home is not None and leaf in home.vars:
+            position = home.vars.index(leaf)
+            direct = (
+                position < len(context.parameters)
+                and context.parameters[position].fixed_slot_index(name) == index
+            )
+    identities = fact.accept(_PHYSICAL_LAYOUTS)
+    context.codegen_info[call] = PhysicalSlotPlan(name, index, identity, identities)
+    write = call.fun_info.name == "%physical_field_set"
+    if direct:
+        return vops.PHYSICAL_FIELD_WRITE if write else vops.PHYSICAL_FIELD_READ
+    if index is not None and identities:
+        return (
+            vops.PHYSICAL_FIELD_WRITE_GUARDED
+            if write
+            else vops.PHYSICAL_FIELD_READ_GUARDED
+        )
+    return vops.PHYSICAL_FIELD_WRITE_NAME if write else vops.PHYSICAL_FIELD_READ_NAME
+
+
+class _PhysicalParameter(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf):
+        return leaf if not leaf.indirect and not leaf.sets else None
+
+
+_PHYSICAL_PARAMETER = _PhysicalParameter()
 
 
 def primitive_type_of(value_type: ValueType) -> PrimitiveType:
@@ -206,13 +290,17 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
 _PRIMITIVE_TYPE_OF = _PrimitiveTypeOf()
 
 
-def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
-    """Annotate every lvar of ``lambda_`` and select templates for its known
-    calls under ``context``."""
+def ltn_analyze(lambda_: Lambda, context: EntryContext) -> object:
+    """Annotate lvars and select templates under ``context``.
+
+    The returned token identifies annotations from this analysis. The caller
+    must keep the IR1 graph and context facts unchanged until IR2 conversion.
+    """
     visitor = _Annotate(context)
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             node.accept(visitor)
+    return visitor.token
 
 
 class _PredictableLenCalleeDest(NodeVisitor):
@@ -234,23 +322,33 @@ class _PredictableLenCalleeDest(NodeVisitor):
 class _Annotate(NodeVisitor, LeafVisitor):
     def __init__(self, context: EntryContext):
         self.context = context
+        self.token = object()
         self.lvar = None
 
-    def lvar_ptype(self, lvar) -> PrimitiveType:
+    def lvar_types(self, lvar) -> tuple[PrimitiveType, ValueType | None]:
         plan = self.context.plan
         if plan is not None:
             chosen = plan.lvar_type(lvar)
             if chosen is not None:
-                return chosen
+                return chosen, None
         value_type = BOTTOM
         for producer in lvar.uses:
             value_type = value_type.join(self.context.type_of(producer))
-        return primitive_type_of(value_type)
+        return primitive_type_of(value_type), value_type
+
+    def lvar_ptype(self, lvar) -> PrimitiveType:
+        return self.lvar_types(lvar)[0]
 
     def annotate_1_value_lvar(self, lvar) -> None:
         if lvar is None or lvar.info is not None:
             return
-        lvar.info = IR2Lvar(IR2LvarKind.FIXED, self.lvar_ptype(lvar))
+        primitive_type, value_type = self.lvar_types(lvar)
+        lvar.info = IR2Lvar(
+            IR2LvarKind.FIXED,
+            primitive_type,
+            value_type=value_type,
+            ltn_token=self.token,
+        )
 
     def annotate_delayed(self, lvar) -> None:
         if lvar is not None and lvar.info is None:
@@ -313,6 +411,8 @@ def find_template_for_ltn_policy(call: Combination, context, annotate) -> object
     """Choose the cheapest template whose restrictions the call satisfies
     (``find-template-for-ltn-policy``)."""
     fun_info = linked(call.fun_info, call, "fun_info")
+    if fun_info.name in ("%physical_field_ref", "%physical_field_set"):
+        return _physical_slot_template(call, context)
     candidates = templates_for(fun_info)
     operands = [
         arg.info.primitive_type if arg.info is not None else annotate.lvar_ptype(arg)

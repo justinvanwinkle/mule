@@ -1,4 +1,4 @@
-"""Python float annotations retain integer objects and never imply float storage."""
+"""Python float annotations enforce exact float values and enable unboxed double storage."""
 
 from mule.compiler import emit_llvm
 from mule.compiler.annotation_types import BUILTINS
@@ -13,19 +13,22 @@ from mule.compiler.ctype import (
 from test.mule.compiler.test_exception_groups import compare
 
 
-def test_real_fact_membership_joins_and_concrete_refinement():
+def test_float_contract_and_real_fact_membership():
     contract = BUILTINS["float"]
-    for fact in (IntegerType(0, 10), PYTHON_INTEGER, BOOLEAN, FLOAT, REAL):
-        assert fact.fits(REAL)
-        assert not contract.contradicts(fact)
-        assert contract.refine(fact) is fact
-        assert fact.join(REAL) == REAL.join(fact) == REAL
+    assert contract.fact is FLOAT
+    assert not contract.contradicts(FLOAT)
+    assert contract.refine(FLOAT) is FLOAT
+    assert contract.refine(UNKNOWN) is FLOAT
+    for int_fact in (IntegerType(0, 10), PYTHON_INTEGER, BOOLEAN):
+        assert contract.contradicts(int_fact)
+        assert int_fact.fits(REAL)
+        assert int_fact.join(REAL) == REAL.join(int_fact) == REAL
+    assert FLOAT.fits(REAL)
     assert not UNKNOWN.fits(REAL)
     assert not REAL.fits(FLOAT)
-    assert contract.refine(UNKNOWN) is REAL
 
 
-def test_float_annotations_preserve_numeric_values_through_unknown_calls(tmp_path):
+def test_float_annotations_enforce_exact_float_at_runtime(tmp_path):
     compare(
         tmp_path,
         """
@@ -34,18 +37,23 @@ def identity(value: float) -> float:
     return local
 def invoke(function, value):
     return function(value)
-for original in (False, True, 42, -(2 ** 100), 2 ** 4000, 1.25):
-    result = invoke(identity, original)
-    print(type(result).__name__, result is original, result == original)
-    print(type(identity(result) + 1).__name__)
-def subtract(value: float):
+result = invoke(identity, 1.25)
+print(type(result).__name__, result == 1.25)
+print(type(identity(result) + 1.0).__name__)
+def subtract(value: float) -> float:
     return 2.5 - value
-print(invoke(subtract, 2), invoke(subtract, True), invoke(subtract, 1.25))
+print(invoke(subtract, 1.25))
 """,
     )
 
 
-def test_real_annotation_does_not_assume_float_unboxing():
-    llvm = emit_llvm("def identity(value: float) -> float:\n return value\n")
-    assert "call i32 @mule_assert_real" in llvm
-    assert "call i32 @mule_assert_float" not in llvm
+def test_float_annotation_asserts_exact_float_and_unboxes():
+    llvm = emit_llvm(
+        "def add_one(value: float) -> float:\n"
+        "    return value + 1.0\n"
+        "def use_add_one(x: float) -> float:\n"
+        "    return add_one(x) * 2.0\n"
+    )
+    assert "call i32 @mule_assert_float" in llvm
+    assert "call i32 @mule_assert_real" not in llvm
+    assert 'define internal double @"mule_fn_add_one.numeric.fixnum"(' in llvm

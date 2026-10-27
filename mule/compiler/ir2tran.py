@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from mule import ast
 
 from . import fndb, vops
+from .annotation_types import InferredReturnContract
 from .callconv import TupleDelivery, tuple_return_convention
 
 if TYPE_CHECKING:
@@ -273,6 +274,12 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
     if vop.info is vops.MOVE and vop.codegen_info is DEAD_LOCAL_STORE:
         return True
     name = vop.info.name
+    if name in (
+        "physical-field-read",
+        "physical-field-write",
+        "physical-field-borrow-end",
+    ):
+        return True
     if name in _FIXNUM_BINARY_VOPS | _FIXNUM_UNARY_VOPS | _FIXNUM_COMPARISON_VOPS:
         return True
     if name in _BORROWING_VOPS:
@@ -461,12 +468,18 @@ class BranchTargets:
     alternative: str
 
 
-def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
-    """Convert ``lambda_`` under ``context`` into VOPs."""
+def ir2_convert(
+    lambda_: Lambda, context: EntryContext, *, ltn_token: object | None = None
+) -> IR2Component:
+    """Convert ``lambda_`` under ``context`` into VOPs.
+
+    A token from LTN permits reuse of its derived types only while the graph
+    and context facts remain unchanged since that analysis.
+    """
     environment = IR2Environment(lambda_, context)
     component = IR2Component(lambda_, context, environment)
     component.tuple_return = tuple_return_convention(lambda_, context)
-    converter = _Converter(component)
+    converter = _Converter(component, ltn_token=ltn_token)
     converter.prepare_environment()
     blocks = list(linked(lambda_.component, lambda_, "component").blocks())
     for index, block in enumerate(blocks):
@@ -487,13 +500,12 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
                 vop.codegen_info = replace(vop.codegen_info, reuse_local=None)
     _fuse_text_codepoint_comparisons(component)
     _mark_last_local_reads(component)
-    if _propagate_local_aliases(component):
-        _mark_last_local_reads(component)
-    _fuse_text_slice_compares(component)
+    _propagate_local_aliases(component)
     _mark_boolean_comparisons(component)
     _mark_borrowed_local_reads(component)
     _specialize_list_getitems(component)
     _borrow_fixed_slot_reads(component)
+    _specialize_list_getitems(component)
     _clear_lvar_info(lambda_)
     return component
 
@@ -913,452 +925,6 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             const_tn.type = IntegerType(code, code)
 
 
-def _is_valid_text_slice_getslice(vop: VOP) -> bool:
-    if vop.info.name != "protocol-getslice" or len(vop.args) != 4 or not vop.results:
-        return False
-    seq_type = vop.args[0].tn.type or UNKNOWN
-    start_type = vop.args[1].tn.type or UNKNOWN
-    stop_type = vop.args[2].tn.type or UNKNOWN
-    step_type = vop.args[3].tn.type or UNKNOWN
-    return (
-        seq_type.fits_text(seq_type)
-        and (
-            start_type.fits_python_integer(start_type)
-            or start_type.fits_none(start_type)
-        )
-        and (stop_type.fits_python_integer(stop_type) or stop_type.fits_none(stop_type))
-        and (step_type.fits_none(step_type) or step_type.exact_integer() == 1)
-    )
-
-
-def _safe_slice_compare_intervening_step(vop: VOP) -> bool:
-    name = vop.info.name
-    if name in ("constant", "move"):
-        return True
-    if name == "type-check":
-        check: TypeCheck = linked(vop.codegen_info, vop, "type-check info")
-        actual = vop.args[0].tn.type or UNKNOWN
-        return not check.safety or actual.fits(check.contract.fact)
-    if name == "load-local":
-        access: LocalAccess = linked(vop.codegen_info, vop, "local access")
-        return bool(access.bound)
-    if name in _PURE_FIXNUM_VOPS and vop.results:
-        return (vop.results[0].tn.type or UNKNOWN).is_fixnum and all(
-            (arg.tn.type or UNKNOWN).is_fixnum for arg in vop.args
-        )
-    return False
-
-
-def _remove_vop_from_component(component: IR2Component, vop: VOP) -> None:
-    reads = component.reads
-    writes = component.writes
-    for ref in vop.args:
-        ref_list = reads.get(ref.tn)
-        if ref_list is not None and (vop, ref) in ref_list:
-            ref_list.remove((vop, ref))
-    for ref in vop.results:
-        ref_list = writes.get(ref.tn)
-        if ref_list is not None and (vop, ref) in ref_list:
-            ref_list.remove((vop, ref))
-
-
-def _slice_step_writer(
-    slice_vop: VOP, reads, writes, positions: dict[VOP, int]
-) -> VOP | None:
-    step_tn = slice_vop.args[3].tn
-    step_writes = writes.get(step_tn)
-    step_reads = reads.get(step_tn)
-    if (
-        step_writes is None
-        or len(step_writes) != 1
-        or step_reads is None
-        or len(step_reads) != 1
-    ):
-        return None
-    writer = step_writes[0][0]
-    if writer.info is not vops.CONSTANT or writer not in positions:
-        return None
-    return writer
-
-
-def _trace_slice_to_compare(
-    slice_index: int,
-    slice_vop: VOP,
-    reads,
-    writes,
-    positions: dict[VOP, int],
-    local_candidates: set,
-) -> tuple[VOP | None, VOP | None, VOP | None, TNRef | None]:
-    slice_res = slice_vop.results[0].tn
-    slice_res_writes = writes.get(slice_res)
-    slice_res_reads = reads.get(slice_res)
-    if (
-        slice_res_writes is None
-        or len(slice_res_writes) != 1
-        or slice_res_reads is None
-        or len(slice_res_reads) != 1
-    ):
-        return None, None, None, None
-    consumer, consumer_ref = slice_res_reads[0]
-    if consumer.info.name in ("compare-equal", "compare-not_equal"):
-        if consumer in positions and positions[consumer] > slice_index:
-            return None, None, consumer, consumer_ref
-    elif (
-        consumer.info is vops.MOVE
-        and consumer in positions
-        and positions[consumer] == slice_index + 1
-    ):
-        local_tn = consumer.results[0].tn
-        local_writes = writes.get(local_tn)
-        local_reads = reads.get(local_tn)
-        if (
-            local_tn in local_candidates
-            and local_writes is not None
-            and len(local_writes) == 1
-            and local_reads is not None
-            and len(local_reads) == 1
-        ):
-            reader, _ = local_reads[0]
-            if (
-                reader.info is vops.LOAD_LOCAL
-                and reader.codegen_info is not None
-                and reader.codegen_info.move
-                and reader.codegen_info.bound
-                and reader in positions
-                and positions[reader] > positions[consumer]
-            ):
-                loaded_tn = reader.results[0].tn
-                loaded_writes = writes.get(loaded_tn)
-                loaded_reads = reads.get(loaded_tn)
-                if (
-                    loaded_writes is not None
-                    and len(loaded_writes) == 1
-                    and loaded_reads is not None
-                    and len(loaded_reads) == 1
-                ):
-                    cmp_candidate, cmp_ref = loaded_reads[0]
-                    if (
-                        cmp_candidate.info.name
-                        in ("compare-equal", "compare-not_equal")
-                        and cmp_candidate in positions
-                        and positions[cmp_candidate] > positions[reader]
-                    ):
-                        return consumer, reader, cmp_candidate, cmp_ref
-    return None, None, None, None
-
-
-def _trace_operand_to_slice(
-    ref: TNRef,
-    compare_vop: VOP,
-    reads,
-    writes,
-    positions: dict[VOP, int],
-    removed: set[VOP],
-    local_candidates: set,
-) -> tuple[VOP, VOP, VOP | None, VOP | None] | None:
-    tn = ref.tn
-    tn_writes = writes.get(tn)
-    tn_reads = reads.get(tn)
-    if (
-        tn_writes is None
-        or len(tn_writes) != 1
-        or tn_reads is None
-        or len(tn_reads) != 1
-        or tn_reads[0][0] is not compare_vop
-    ):
-        return None
-    writer = tn_writes[0][0]
-    if writer in removed or writer not in positions:
-        return None
-    if _is_valid_text_slice_getslice(writer):
-        step_w = _slice_step_writer(writer, reads, writes, positions)
-        if step_w is not None and step_w not in removed:
-            return writer, step_w, None, None
-        return None
-    if (
-        writer.info is vops.LOAD_LOCAL
-        and writer.codegen_info is not None
-        and writer.codegen_info.move
-        and writer.codegen_info.bound
-    ):
-        local_tn = writer.args[0].tn
-        local_writes = writes.get(local_tn)
-        local_reads = reads.get(local_tn)
-        if (
-            local_tn in local_candidates
-            and local_writes is not None
-            and len(local_writes) == 1
-            and local_reads is not None
-            and len(local_reads) == 1
-        ):
-            move_w = local_writes[0][0]
-            if (
-                move_w.info is vops.MOVE
-                and move_w not in removed
-                and move_w in positions
-                and positions[move_w] < positions[writer]
-            ):
-                src_tn = move_w.args[0].tn
-                src_writes = writes.get(src_tn)
-                src_reads = reads.get(src_tn)
-                if (
-                    src_writes is not None
-                    and len(src_writes) == 1
-                    and src_reads is not None
-                    and len(src_reads) == 1
-                ):
-                    slice_w = src_writes[0][0]
-                    if (
-                        slice_w not in removed
-                        and slice_w in positions
-                        and positions[slice_w] + 1 == positions[move_w]
-                        and _is_valid_text_slice_getslice(slice_w)
-                    ):
-                        step_w = _slice_step_writer(slice_w, reads, writes, positions)
-                        if step_w is not None and step_w not in removed:
-                            return slice_w, step_w, move_w, writer
-    return None
-
-
-def _fuse_text_slice_compares(component: IR2Component) -> None:
-    """Fuse ``text[start:stop] == target`` and
-    ``left[start1:stop1] == right[start2:stop2]`` (and ``!=``) into an in-place
-    ``text-slice-compare`` or ``text-slice2-compare`` VOP when the sliced
-    sequences and target are proven ``str`` and the substring slices are not
-    read anywhere else."""
-    reads = component.reads
-    writes = component.writes
-    local_candidates = {
-        tn
-        for var in component.lambda_.locals
-        if not var.indirect
-        and not var.expression_temporary
-        and (tn := component.environment.vars.get(var)) is not None
-    }
-    for block in component.blocks:
-        vop_list = block.vops
-        positions = {step: pos for pos, step in enumerate(vop_list)}
-        removed: set[VOP] = set()
-        replacements: dict[VOP, list[VOP]] = {}
-
-        for slice_index, slice_vop in enumerate(vop_list):
-            if slice_vop in removed or not _is_valid_text_slice_getslice(slice_vop):
-                continue
-            step_writer = _slice_step_writer(slice_vop, reads, writes, positions)
-            if step_writer is None:
-                continue
-            move_vop, load_vop, compare_vop, compare_ref = _trace_slice_to_compare(
-                slice_index,
-                slice_vop,
-                reads,
-                writes,
-                positions,
-                local_candidates,
-            )
-            if compare_vop is None or compare_ref is None or compare_vop in removed:
-                continue
-            compare_index = positions[compare_vop]
-            if len(compare_vop.args) != 2 or not compare_vop.results:
-                continue
-            other_ref = (
-                compare_vop.args[1]
-                if compare_ref is compare_vop.args[0]
-                else compare_vop.args[0]
-            )
-            other_type = other_ref.tn.type or UNKNOWN
-            if not other_type.fits_text(other_type):
-                continue
-
-            slice_operand_tns = {
-                slice_vop.args[0].tn,
-                slice_vop.args[1].tn,
-                slice_vop.args[2].tn,
-            }
-            if other_ref.tn in slice_operand_tns:
-                continue
-            if any(
-                len(writes.get(tn, ())) != 1 or len(reads.get(tn, ())) != 1
-                for tn in slice_operand_tns
-            ):
-                continue
-
-            other_slice_info = _trace_operand_to_slice(
-                other_ref,
-                compare_vop,
-                reads,
-                writes,
-                positions,
-                removed,
-                local_candidates,
-            )
-            if other_slice_info is not None:
-                other_slice, other_step, other_move, other_load = other_slice_info
-                other_slice_index = positions[other_slice]
-                if other_slice is not slice_vop and other_slice_index > slice_index:
-                    other_operand_tns = {
-                        other_slice.args[0].tn,
-                        other_slice.args[1].tn,
-                        other_slice.args[2].tn,
-                    }
-                    if not (slice_operand_tns & other_operand_tns) and all(
-                        len(writes.get(tn, ())) == 1 and len(reads.get(tn, ())) == 1
-                        for tn in other_operand_tns
-                    ):
-                        allowed_steps = {
-                            move_vop,
-                            load_vop,
-                            other_step,
-                            other_slice,
-                            other_move,
-                            other_load,
-                        }
-                        intervening_two_ok = True
-                        for pos in range(slice_index + 1, compare_index):
-                            step = vop_list[pos]
-                            if step in allowed_steps:
-                                continue
-                            if (
-                                step in removed
-                                or not _safe_slice_compare_intervening_step(step)
-                            ):
-                                intervening_two_ok = False
-                                break
-                            step_tns = {ref.tn for ref in (*step.args, *step.results)}
-                            if step_tns & slice_operand_tns:
-                                intervening_two_ok = False
-                                break
-                            if pos > other_slice_index and (
-                                step_tns & other_operand_tns
-                            ):
-                                intervening_two_ok = False
-                                break
-                        if intervening_two_ok:
-                            invert = compare_vop.info.name == "compare-not_equal"
-                            for dead_vop in (
-                                step_writer,
-                                slice_vop,
-                                move_vop,
-                                load_vop,
-                                other_step,
-                                other_slice,
-                                other_move,
-                                other_load,
-                                compare_vop,
-                            ):
-                                if dead_vop is not None:
-                                    _remove_vop_from_component(component, dead_vop)
-                                    removed.add(dead_vop)
-                            fused_args = [
-                                TNRef(slice_vop.args[0].tn, False),
-                                TNRef(slice_vop.args[1].tn, False),
-                                TNRef(slice_vop.args[2].tn, False),
-                                TNRef(other_slice.args[0].tn, False),
-                                TNRef(other_slice.args[1].tn, False),
-                                TNRef(other_slice.args[2].tn, False),
-                            ]
-                            fused_results = [TNRef(compare_vop.results[0].tn, True)]
-                            fused_vop = VOP(
-                                vops.TEXT_SLICE2_COMPARE,
-                                compare_vop.node,
-                                fused_args,
-                                fused_results,
-                            )
-                            fused_vop.codegen_info = invert
-                            for ref in fused_args:
-                                reads[ref.tn].append((fused_vop, ref))
-                            for ref in fused_results:
-                                writes[ref.tn].append((fused_vop, ref))
-                            replacements[compare_vop] = [fused_vop]
-                            continue
-
-            intervening_ok = True
-            for step in vop_list[slice_index + 1 : compare_index]:
-                if step in (move_vop, load_vop):
-                    continue
-                if step in removed or not _safe_slice_compare_intervening_step(step):
-                    intervening_ok = False
-                    break
-                if any(
-                    ref.tn in slice_operand_tns for ref in (*step.args, *step.results)
-                ):
-                    intervening_ok = False
-                    break
-            if not intervening_ok:
-                continue
-
-            other_writes = writes.get(other_ref.tn)
-            other_reads = reads.get(other_ref.tn)
-            hoist_constant: VOP | None = None
-            place_at_slice = False
-            if (
-                other_writes is not None
-                and len(other_writes) == 1
-                and other_reads is not None
-                and other_reads[0][0] is compare_vop
-                and len(other_reads) == 1
-                and other_writes[0][0] in positions
-            ):
-                other_writer = other_writes[0][0]
-                writer_pos = positions[other_writer]
-                if writer_pos < slice_index:
-                    place_at_slice = True
-                elif other_writer.info is vops.CONSTANT and writer_pos < compare_index:
-                    hoist_constant = other_writer
-                    place_at_slice = True
-
-            invert = compare_vop.info.name == "compare-not_equal"
-            for dead_vop in (step_writer, slice_vop, move_vop, load_vop, compare_vop):
-                if dead_vop is not None:
-                    _remove_vop_from_component(component, dead_vop)
-                    removed.add(dead_vop)
-            if hoist_constant is not None:
-                removed.add(hoist_constant)
-
-            fused_args = [
-                TNRef(slice_vop.args[0].tn, False),
-                TNRef(slice_vop.args[1].tn, False),
-                TNRef(slice_vop.args[2].tn, False),
-                TNRef(other_ref.tn, False),
-            ]
-            fused_results = [TNRef(compare_vop.results[0].tn, True)]
-            fused_vop = VOP(
-                vops.TEXT_SLICE_COMPARE,
-                compare_vop.node,
-                fused_args,
-                fused_results,
-            )
-            fused_vop.codegen_info = invert
-            for ref in fused_args:
-                reads[ref.tn].append((fused_vop, ref))
-            for ref in fused_results:
-                writes[ref.tn].append((fused_vop, ref))
-            if place_at_slice:
-                replacements[slice_vop] = (
-                    [hoist_constant, fused_vop]
-                    if hoist_constant is not None
-                    else [fused_vop]
-                )
-            else:
-                replacements[compare_vop] = [fused_vop]
-
-        if removed:
-            dead_tns = {
-                ref.tn for step in removed for ref in (*step.args, *step.results)
-            }
-            new_vops: list[VOP] = []
-            for step in vop_list:
-                if step in replacements:
-                    new_vops.extend(replacements[step])
-                elif step not in removed:
-                    new_vops.append(step)
-            block.vops = new_vops
-            component.tns = [
-                tn
-                for tn in component.tns
-                if tn not in dead_tns or reads.get(tn) or writes.get(tn)
-            ]
-
-
 def _mark_boolean_comparisons(component: IR2Component) -> None:
     """Mark rich-comparison VOPs whose result is only tested for truthiness so
     the slow path coerces custom comparison results to ``bool`` once."""
@@ -1390,18 +956,18 @@ def _mark_boolean_comparisons(component: IR2Component) -> None:
             res_tn.primitive_type = BOOLEAN_T
 
 
-def _propagate_local_aliases(component: IR2Component) -> bool:
+def _propagate_local_aliases(component: IR2Component) -> None:
     """Substitute stable, uncaptured local copies before ownership selection.
 
     A local copy has the same value as its source, but may keep that value
     alive independently. The lifetime proof must cover its consumers and every
     reachable owner transfer, not just the textual assignment and last read.
+    Each rewrite refreshes last-read information before the next proof.
     """
     if component.context.plan is not None:
-        return False
-    changed = False
+        return
     while True:
-        proof = _BorrowedLifetime(component)
+        proof = None
         removed = set()
         for block in component.blocks:
             for acquisition in block.vops:
@@ -1435,6 +1001,8 @@ def _propagate_local_aliases(component: IR2Component) -> bool:
                     continue
                 consumers = {assignment, *loads}
                 ends = set()
+                if proof is None:
+                    proof = _BorrowedLifetime(component)
                 for load in loads:
                     aliases, uses = proof.consumers(load.results[0].tn, source)
                     if not aliases:
@@ -1458,8 +1026,7 @@ def _propagate_local_aliases(component: IR2Component) -> bool:
             if removed:
                 break
         if not removed:
-            return changed
-        changed = True
+            return
         component.reads.clear()
         component.writes.clear()
         for block in component.blocks:
@@ -1831,8 +1398,7 @@ class _BorrowedLifetime:
             )
         ):
             return bool(
-                container_borrow
-                and len(step.args) == 2
+                len(step.args) == 2
                 and all((arg.tn.type or UNKNOWN).fits(REAL) for arg in step.args)
             )
         if name in vops.TERMINATORS:
@@ -1917,6 +1483,16 @@ _PURE_BINARY_ARITH_VOPS = _FIXNUM_BINARY_VOPS | frozenset(
 
 def _can_borrow_list_getitem(reader: VOP, reader_ref: TNRef | None = None) -> bool:
     name = reader.info.name
+    if name in (
+        "physical-field-read",
+        "physical-field-read-name",
+        "physical-field-read-guarded",
+        "primitive-_instance_field",
+    ):
+        return (reader_ref is None or reader_ref is reader.args[0]) and all(
+            (arg.tn.type or UNKNOWN).accept(_INERT_LOCAL_VALUE)
+            for arg in reader.args[1:]
+        )
     if name in _BORROWED_LIST_GETITEM_READERS:
         if name.startswith("boxed-float-"):
             return (
@@ -1956,7 +1532,26 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
     if any(ref.tn in (seq_local, root_local) for ref in step.results):
         return False
     name = step.info.name
-    if name in ("constant", "coerce", "move"):
+    if name == "physical-field-borrow-end":
+        # This marker only extends the receiver's SSA lifetime.
+        return True
+    if name in (
+        "physical-field-read",
+        "physical-field-read-name",
+        "physical-field-read-guarded",
+        "primitive-_instance_field",
+    ):
+        # An unrelated read may destroy its last receiver or its result.
+        # Those releases can run callbacks even though the lookup is physical.
+        return False
+    if name == "move":
+        target = step.results[0].tn
+        return (
+            step.codegen_info is False
+            or target.borrowed_from is not None
+            or (target.type or UNKNOWN).accept(_INERT_LOCAL_VALUE)
+        )
+    if name in ("constant", "coerce"):
         return True
     if name == "type-check":
         check: TypeCheck = linked(step.codegen_info, step, "type-check info")
@@ -2212,7 +1807,14 @@ def _safe_container_local_region_step(
         if ref.tn in (local_tn, seq_local, root_local):
             return False
     name = step.info.name
-    if name in ("constant", "coerce", "jump", "insert-safepoint", "discard"):
+    if name in (
+        "constant",
+        "coerce",
+        "jump",
+        "insert-safepoint",
+        "discard",
+        "physical-field-borrow-end",
+    ):
         return True
     if name in _PURE_FLOAT_STEP_VOPS:
         return step.codegen_info is None or step.codegen_info.reuse_local is None
@@ -2497,7 +2099,7 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                     else seq_local
                 )
             elif (
-                seq_writer.info.name == "getattr"
+                seq_writer.info.name in ("getattr", "physical-field-read-borrow")
                 and seq_tn.borrowed_from is not None
                 and _plain_local(seq_tn.borrowed_from)
             ):
@@ -2533,7 +2135,10 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                 )
             ):
                 continue
-            if reader.info is vops.MOVE and reader_index == index + 1:
+            if reader.info is vops.MOVE and all(
+                step.info.name == "physical-field-borrow-end"
+                for step in block.vops[index + 1 : reader_index]
+            ):
                 if proof is None:
                     proof = _BorrowedLifetime(component)
                 _try_borrow_container_element_local(
@@ -2547,6 +2152,7 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                     root_local,
                     writer_index,
                     reader,
+                    move_index=reader_index,
                 )
                 continue
             if not _can_borrow_list_getitem(reader, reader_ref):
@@ -2602,13 +2208,18 @@ def _borrow_fixed_slot_reads(component: IR2Component) -> None:
         positions = {step: index for index, step in enumerate(block.vops)}
         endings = []
         for index, step in enumerate(block.vops):
-            if step.info.name != "getattr" or not step.results:
+            physical = step.info.name == "physical-field-read"
+            if (step.info.name != "getattr" and not physical) or not step.results:
                 continue
             value = step.results[0].tn
             receiver = step.args[0].tn
-            attribute = linked(step.codegen_info, step, "attribute access")
+            attribute_name = (
+                step.codegen_info.name
+                if physical
+                else linked(step.codegen_info, step, "attribute access").name
+            )
             if (
-                (receiver.type or UNKNOWN).fixed_slot_index(attribute.name) is None
+                (receiver.type or UNKNOWN).fixed_slot_index(attribute_name) is None
                 or value.leaf is not None
                 or value.borrowed_from is not None
             ):
@@ -2623,21 +2234,46 @@ def _borrow_fixed_slot_reads(component: IR2Component) -> None:
             if end is None or end <= index or load.info is not vops.LOAD_LOCAL:
                 continue
             access: LocalAccess = linked(load.codegen_info, load, "local access")
-            if not access.bound or access.move:
+            if not access.bound:
                 continue
             root = load.args[0].tn
             if not _plain_local(root):
                 continue
             physical_read = (
                 consumer.info.name
-                in ("primitive-_storage_read", "primitive-_storage_length")
+                in (
+                    "primitive-_storage_read",
+                    "primitive-_storage_length",
+                    "physical-field-read",
+                    "physical-field-read-name",
+                    "physical-field-read-guarded",
+                    "primitive-_instance_field",
+                )
                 and ref is consumer.args[0]
-                and _safe_list_borrow_step(consumer, root)
+                and (
+                    _can_borrow_list_getitem(consumer, ref)
+                    if consumer.info.name.startswith("physical-field-read")
+                    or consumer.info.name == "primitive-_instance_field"
+                    else _safe_list_borrow_step(consumer, root)
+                )
             )
             # Physical reads do not invoke the stored value's Python methods.
-            # Mutation consumers can destroy an old value and run callbacks.
+            # These physical mutations finish every array access before
+            # releasing an old element or a failed moved append argument.
+            terminal_storage = ref is consumer.args[0] and (
+                (
+                    consumer.info.name == "primitive-_storage_write"
+                    and len(consumer.args) == 3
+                    and (consumer.args[1].tn.type or UNKNOWN).is_fixnum
+                )
+                or (
+                    consumer.info.name == "primitive-_storage_append"
+                    and len(consumer.args) == 2
+                )
+            )
             if (
                 not physical_read
+                and not terminal_storage
                 and consumer.info.name not in ("compare-is", "compare-is_not")
                 and (
                     (value.type or UNKNOWN).may_run_user_code
@@ -2650,17 +2286,31 @@ def _borrow_fixed_slot_reads(component: IR2Component) -> None:
                 for other in block.vops[index + 1 : end]
             ):
                 continue
-            owner = component.tn(T, name="slot.fallback.owner")
-            owner.type = UNKNOWN
-            step.info = vops.GETATTR_BORROW
-            step.results.append(TNRef(owner, True))
             value.borrowed_from = root
-            ending = VOP(
-                vops.SLOT_BORROW_END,
-                consumer.node,
-                [TNRef(owner, False), TNRef(root, False)],
-                [],
-            )
+            # Keep the existing local owner until the consumer instead of
+            # moving its final read into a short-lived receiver temporary.
+            if access.move:
+                load.codegen_info = replace(access, move=False, borrow=True)
+                receiver.borrowed_from = root
+            if physical:
+                step.info = vops.PHYSICAL_FIELD_READ_BORROW
+                ending = VOP(
+                    vops.PHYSICAL_FIELD_BORROW_END,
+                    consumer.node,
+                    [TNRef(root, False)],
+                    [],
+                )
+            else:
+                owner = component.tn(T, name="slot.fallback.owner")
+                owner.type = UNKNOWN
+                step.info = vops.GETATTR_BORROW
+                step.results.append(TNRef(owner, True))
+                ending = VOP(
+                    vops.SLOT_BORROW_END,
+                    consumer.node,
+                    [TNRef(owner, False), TNRef(root, False)],
+                    [],
+                )
             endings.append((end + 1, ending))
         for index, ending in reversed(endings):
             block.vops.insert(index, ending)
@@ -2774,11 +2424,13 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         for vop in block.vops:
             if vop.info is vops.MOVE and vop.codegen_info is DEAD_LOCAL_STORE:
                 vop.codegen_info = True
-            if vop.info is vops.LOAD_LOCAL and (
+            elif vop.info is vops.LOAD_LOCAL and (
                 vop.args[0].tn in candidates
                 or vop.args[0].tn.borrowed_from is vop.args[0].tn
             ):
-                vop.codegen_info = replace(vop.codegen_info, move=False)
+                access: LocalAccess = linked(vop.codegen_info, vop, "local access")
+                if access.move:
+                    vop.codegen_info = replace(access, move=False)
     if not candidates:
         return
     blocks = component.blocks
@@ -3273,66 +2925,6 @@ class _ExactTextAffixCall(NodeVisitor):
         return True
 
 
-class _UnmutatedIntRef(NodeVisitor, LeafVisitor):
-    """Return ``node`` when it is a ``Ref`` to an unmutated ``GlobalVar('int')``."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Ref(self, node: Ref):
-        if node.leaf.accept(self):
-            return node
-        return None
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_GlobalVar(self, leaf: GlobalVar):
-        return leaf.name == "int" and not leaf.sets
-
-
-class _NoneLiteralCheck(ast.Visitor):
-    def visit_Node(self, node):
-        return False
-
-    def visit_NoneLiteral(self, node: ast.NoneLiteral):
-        return True
-
-
-class _NoneConstantRef(NodeVisitor, LeafVisitor):
-    """Return ``node`` when it is a ``Ref`` to ``Constant(NoneLiteral)``."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Ref(self, node: Ref):
-        if node.leaf.accept(self):
-            return node
-        return None
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf: Constant):
-        return leaf.value.accept(_NONE_LITERAL_CHECK)
-
-
-class _GetsliceProducer(NodeVisitor):
-    """Return ``node`` when it is a known ``%getslice`` combination."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node: Combination):
-        if (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is fndb.GETSLICE
-            and len(node.args) == 4
-        ):
-            return node
-        return None
-
-
 class _ScanIntParse(NodeVisitor):
     def __init__(self, converter: _Converter):
         self.converter = converter
@@ -3341,7 +2933,6 @@ class _ScanIntParse(NodeVisitor):
         return None
 
     def visit_Combination(self, node: Combination):
-        self.converter.note_int_parse(node)
         self.converter.note_range_prepare(node)
 
 
@@ -3374,24 +2965,26 @@ _CONSTANT_INDEX = _ConstantIndex()
 _EXACT_LIST_APPEND_CALL = _ExactListAppendCall()
 _EXACT_LIST_POP_CALL = _ExactListPopCall()
 _EXACT_DICT_GET_CALL = _ExactDictGetCall()
-_UNMUTATED_INT_REF = _UnmutatedIntRef()
-_NONE_LITERAL_CHECK = _NoneLiteralCheck()
-_NONE_CONSTANT_REF = _NoneConstantRef()
-_GETSLICE_PRODUCER = _GetsliceProducer()
 
 
 class _Converter(NodeVisitor):
-    def __init__(self, component: IR2Component):
+    def __init__(self, component: IR2Component, *, ltn_token: object | None = None):
         self.component = component
+        self.ltn_token = ltn_token
         self.environment = component.environment
         self.context = component.context
         self.lambda_ = component.lambda_
         self.current: IR2Block | None = None
         self._load_leaf: _LoadLeaf | None = _LoadLeaf(self)
         self._store_var: _StoreVar | None = _StoreVar(self)
-        self._scan_int_parse: _ScanIntParse | None = _ScanIntParse(self)
+        self._scan_int_parse: _ScanIntParse | None = (
+            _ScanIntParse(self)
+            if self.context.plan is None
+            and self.lambda_.policy.safety < 3
+            and not self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
+            else None
+        )
         self._skipped_nodes: set = set()
-        self._fused_int_calls: dict[Combination, Combination | None] = {}
         self._fused_range_prepares: dict[Combination, tuple] = {}
         self.stack_cells = {}
 
@@ -3400,7 +2993,6 @@ class _Converter(NodeVisitor):
         self._store_var = None
         self._scan_int_parse = None
         self._skipped_nodes.clear()
-        self._fused_int_calls.clear()
         self._fused_range_prepares.clear()
 
     # TNs
@@ -3469,9 +3061,16 @@ class _Converter(NodeVisitor):
             raise ValueError(f"{lvar!r} is a compile-time operand")
         if not info.locs:
             tn = self.component.tn(info.primitive_type)
-            value_type = BOTTOM
-            for producer in lvar.uses:
-                value_type = value_type.join(self.context.type_of(producer))
+            if (
+                self.ltn_token is not None
+                and info.ltn_token is self.ltn_token
+                and info.value_type is not None
+            ):
+                value_type = info.value_type
+            else:
+                value_type = BOTTOM
+                for producer in lvar.uses:
+                    value_type = value_type.join(self.context.type_of(producer))
             tn.type = value_type
             info.locs.append(tn)
         return info.locs[0]
@@ -3527,96 +3126,21 @@ class _Converter(NodeVisitor):
         if block.loop is not None and block.loop.is_header(block):
             self.emit(vops.INSERT_SAFEPOINT, block.start.next)
         self._skipped_nodes.clear()
-        self._fused_int_calls.clear()
         self._fused_range_prepares.clear()
         nodes = tuple(block.nodes())
-        scan = linked(self._scan_int_parse, self, "int-parse scanner")
-        for node in nodes:
-            node.accept(scan)
+        if self._scan_int_parse is not None:
+            for node in nodes:
+                node.accept(self._scan_int_parse)
         for node in nodes:
             if node not in self._skipped_nodes:
                 node.accept(self)
         self.convert_transfer(block)
 
-    def lvar_fits_text(self, lvar) -> bool:
-        return bool(lvar.uses) and all(
-            (vtype := self.context.type_of(use)).fits_text(TEXT_TYPE)
-            and not vtype.may_be_unbound
-            for use in lvar.uses
-        )
-
-    def lvar_fits_slice_bound(self, lvar) -> bool:
-        return bool(lvar.uses) and all(
-            (
-                (vtype := self.context.type_of(use)).fits(PYTHON_INTEGER)
-                or vtype.fits_none(NONE_TYPE)
-            )
-            and not vtype.may_be_unbound
-            for use in lvar.uses
-        )
-
-    def lvar_fits_none(self, lvar) -> bool:
-        return bool(lvar.uses) and all(
-            (vtype := self.context.type_of(use)).fits_none(NONE_TYPE)
-            and not vtype.may_be_unbound
-            for use in lvar.uses
-        )
-
-    def note_int_parse(self, node: Combination) -> None:
-        if (
-            node.kind is not CallKind.FULL
-            or self.context.plan is not None
-            or self.lambda_.policy.safety >= 3
-            or self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
-            or len(node.args) != 1
-            or (node.info is not None and node.info.keywords)
-            or len(node.fun.uses) != 1
-            or node.fun.dest is not node
-        ):
-            return
-        fun_ref = node.fun.use().accept(_UNMUTATED_INT_REF)
-        if fun_ref is None or fun_ref.block is not node.block:
-            return
-        arg_lvar = node.args[0]
-        if len(arg_lvar.uses) != 1 or arg_lvar.dest is not node:
-            return
-        arg_use = arg_lvar.use()
-        arg_type = self.context.type_of(arg_use)
-        if not (arg_type.fits_text(TEXT_TYPE) and not arg_type.may_be_unbound):
-            return
-        slice_node = arg_use.accept(_GETSLICE_PRODUCER)
-        if (
-            slice_node is not None
-            and slice_node.block is node.block
-            and slice_node.next is node.prev
-        ):
-            seq_lvar, start_lvar, stop_lvar, step_lvar = slice_node.args
-            if len(step_lvar.uses) == 1 and step_lvar.dest is slice_node:
-                step_ref = step_lvar.use().accept(_NONE_CONSTANT_REF)
-                if (
-                    step_ref is not None
-                    and step_ref.block is node.block
-                    and self.lvar_fits_text(seq_lvar)
-                    and self.lvar_fits_slice_bound(start_lvar)
-                    and self.lvar_fits_slice_bound(stop_lvar)
-                    and self.lvar_fits_none(step_lvar)
-                ):
-                    self._skipped_nodes.add(fun_ref)
-                    self._skipped_nodes.add(step_ref)
-                    self._skipped_nodes.add(slice_node)
-                    self._fused_int_calls[node] = slice_node
-                    return
-        self._skipped_nodes.add(fun_ref)
-        self._fused_int_calls[node] = None
-
     def note_range_prepare(self, node: Combination) -> None:
         if (
             node.kind is not CallKind.KNOWN
             or node.fun_info is not fndb.RANGE_PREPARE
-            or self.context.plan is not None
-            or self.lambda_.policy.safety >= 3
             or node.lexenv.policy.safety >= 3
-            or self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
         ):
             return
         state = node.info
@@ -3830,6 +3354,7 @@ class _Converter(NodeVisitor):
     def visit_Cast(self, node: Cast):
         operand = self.lvar_tn(node.value)
         actual = operand.type or UNKNOWN
+        target_type = self.context.type_of(node)
         checked = (
             node.type_check
             and bool(node.safety)
@@ -3838,29 +3363,48 @@ class _Converter(NodeVisitor):
         if (
             not checked
             and self.context.plan is None
-            and node.lvar is not None
-            and len(node.lvar.uses) == 1
-            and not node.lvar.info.locs
-            and operand.leaf is None
             and node not in self.context.element_contracts
         ):
-            target_type = self.context.type_of(node)
-            target_ptype = node.lvar.info.primitive_type
-            if actual.fits(target_type) and operand.primitive_type is target_ptype:
-                node.lvar.info.locs.append(operand)
-                return
-            writes = self.component.writes.get(operand, ())
             if (
-                (not target_type.is_fixnum or actual.is_fixnum)
-                and len(writes) == 1
-                and not self.component.reads.get(operand)
-                and writes[0][0].info.translate is not None
-                and template_results_ok(writes[0][0].info, target_ptype)
+                node.lvar is not None
+                and len(node.lvar.uses) == 1
+                and not node.lvar.info.locs
+                and operand.leaf is None
             ):
-                operand.type = target_type
-                operand.primitive_type = target_ptype
-                node.lvar.info.locs.append(operand)
+                target_ptype = node.lvar.info.primitive_type
+                if actual.fits(target_type) and operand.primitive_type is target_ptype:
+                    node.lvar.info.locs.append(operand)
+                    return
+                writes = self.component.writes.get(operand, ())
+                if (
+                    (not target_type.is_fixnum or actual.is_fixnum)
+                    and len(writes) == 1
+                    and not self.component.reads.get(operand)
+                    and writes[0][0].info.translate is not None
+                    and template_results_ok(writes[0][0].info, target_ptype)
+                ):
+                    operand.type = target_type
+                    operand.primitive_type = target_ptype
+                    node.lvar.info.locs.append(operand)
+                    return
+            if actual.fits(target_type):
+                result, discard = self.result_tn(node)
+                if operand is not result:
+                    self.emit(vops.MOVE, node, args=(operand,), results=(result,))
+                if discard:
+                    self.emit_discard(node, result)
                 return
+        contract = node.contract
+        if (
+            checked
+            and node.declaration is not None
+            and node.declaration[0] == "inferred-return"
+            and contract.checked_type is PYTHON_INTEGER
+            and target_type.is_fixnum
+        ):
+            contract = InferredReturnContract(
+                contract.name, target_type.widen_constant()
+            )
         result, discard = self.result_tn(node)
         self.emit(
             vops.TYPE_CHECK,
@@ -3868,7 +3412,7 @@ class _Converter(NodeVisitor):
             args=(operand,),
             results=(result,),
             info=TypeCheck(
-                node.contract, node.location, node.safety if node.type_check else 0
+                contract, node.location, node.safety if node.type_check else 0
             ),
         )
         if discard:
@@ -3935,6 +3479,8 @@ class _Converter(NodeVisitor):
 
     def convert_template(self, node, args, info=None):
         """Emit the template LTN selected (``ir2-convert-template``)."""
+        if info is None:
+            info = self.context.codegen_info.get(node, node.info)
         template = node.template
         if template is None:
             raise ValueError(f"{node!r} has no template")
@@ -3979,31 +3525,6 @@ class _Converter(NodeVisitor):
             if discard:
                 self.emit_discard(node, result)
             return
-        if node in self._fused_int_calls:
-            slice_node = self._fused_int_calls[node]
-            result, discard = self.result_tn(node)
-            if slice_node is not None:
-                seq_lvar, start_lvar, stop_lvar, _ = slice_node.args
-                self.emit(
-                    vops.PARSE_INT_SLICE,
-                    node,
-                    args=(
-                        self.lvar_tn(seq_lvar),
-                        self.lvar_tn(start_lvar),
-                        self.lvar_tn(stop_lvar),
-                    ),
-                    results=(result,),
-                )
-            else:
-                self.emit(
-                    vops.PARSE_INT_TEXT,
-                    node,
-                    args=(self.lvar_tn(node.args[0]),),
-                    results=(result,),
-                )
-            if discard:
-                self.emit_discard(node, result)
-            return
         if self.context.plan is None and is_predictable_len_call(node):
             arg = node.args[0]
             arg_type = (
@@ -4034,18 +3555,29 @@ class _Converter(NodeVisitor):
             code_target is target or (node.kind is CallKind.GUARDED and node.proven)
         )
         info = node.info
+        keywords = info.keywords if info is not None else ()
+        order = (
+            target.call_order(keywords, len(node.args))
+            if target is not None and target in self.context.borrowed_callees
+            else None
+        )
+        borrowable = (
+            frozenset(
+                arg_idx
+                for param_idx, arg_idx in enumerate(order)
+                if arg_idx is not None
+                and arg_idx >= 0
+                and param_idx in self.context.borrowed_callees[target]
+            )
+            if order is not None
+            else frozenset()
+        )
         site = CallSite(
-            info.keywords if info is not None else (),
+            keywords,
             info.location if info is not None else None,
             target,
             proven,
-            self.context.borrowed_callees.get(target, frozenset())
-            if target is not None
-            and (info is None or not info.keywords)
-            and target is not None
-            and target in self.context.borrowed_callees
-            and target.call_order((), len(node.args)) == tuple(range(len(node.args)))
-            else frozenset(),
+            borrowable,
         )
         result, discard = self.result_tn(node)
         if discard and not proven:

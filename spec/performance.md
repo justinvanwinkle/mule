@@ -733,7 +733,7 @@ swap-out activity during those accepted comparisons and no I/O-wait saturation.
 An earlier run in `/tmp/mule-6g-before` exceeded the CPU-noise limit and included
 active swapping; none of its timings contributed to this table.
 
-## General fixed-slot access and singleton fill (verification pending, 2026-10-27)
+## General fixed-slot access and singleton fill (verified, 2026-10-27)
 
 Section 6J replaces the compiler's `_Table` field maps with owner-derived class
 layouts and guarded attribute access. Singleton repetition uses the compiled
@@ -784,9 +784,65 @@ helpers contribute about 147 additional instructions per hash. Retain/release
 helpers contribute about 60 additional instructions relative to the baseline.
 These partial instrumented snapshots identify work; they are not timing samples.
 
-The current branch is not merged into `master`. Further removal of ordinary
+At that checkpoint the branch was not merged into `master`. Removal of ordinary
 attribute guards cannot assume that mutable Python descriptors or hooks are
 absent. One proposed direction is general lowering of the existing physical
 `instance_field` / `set_instance_field` primitives, with explicit use of those
 operations in private dictionary storage algorithms. That source-level semantic
-change awaits approval and is not implemented here.
+change received approval. Its implementation and updated before/after
+verification proceeded through the clean comparisons below.
+
+A clean physical-access comparison used baseline `a65df009` and the candidate
+working tree with that baseline integrated. The reports are
+`20261027T070215.226560Z` in the baseline worktree and
+`20261027T082054.883451Z` in `general-slot-fill`. Settings remained unchanged.
+
+| Workload | Baseline kernel seconds | Candidate kernel seconds |
+| --- | --- | --- |
+| word_frequency | 2.952241 | 3.525844 |
+| account_ledger | 1.850329 | 1.840648 |
+
+External CPU utilization was 0.536 and 0.402 cores. Neither resource capture
+showed swap-out. The word-frequency regression is approximately 19%, so this
+candidate does not establish performance parity.
+
+Bounded Callgrind runs used the saved executables with size 2,000, seed 42,
+one loop, and no warmup. Both produced `(500, 759926, 752216)`. Whole-process
+instruction totals were 79,655,113 and 86,107,775. The extra work includes
+reference-count traffic in the dictionary kernels. Inspection found that the
+physical reader unconditionally retained values even when representation
+selection chose non-owning immediate storage. It also used generic retain
+logic for known heap values. The ownership correction uses those existing
+representation and type facts. It preserves missing-field checks and the
+callback restrictions on borrowed values.
+
+The final comparison used `d714a6c` as the baseline and the verified candidate
+with that revision integrated. Reports are `20261027T091511.164711Z` and
+`20261027T100121.208363Z`. Raw reports and build artifacts are retained in the
+main checkout's ignored `perf/results/` directory after worktree cleanup.
+
+| Workload | Baseline kernel seconds | Final kernel seconds | Change |
+| --- | --- | --- | --- |
+| word_frequency | 3.003716 | 2.849528 | 5.1% less time |
+| account_ledger | 1.814499 | 1.815919 | Effectively unchanged |
+
+The three word-frequency samples ranged from 2.998284 to 3.016507 seconds in
+the baseline and from 2.844797 to 2.882662 seconds in the candidate. Ledger
+sample ranges overlapped. External CPU utilization was 0.474 and 0.392 cores.
+Both captures showed no swap-out; the candidate's peak I/O wait was zero.
+All runtime results matched the Python oracle. Settings remained Mule `-O2`,
+no LTO, Rust `-O3`, four scenario jobs, three samples, seed 42, one loop,
+and one separate warmup.
+
+The final ownership correction also restores element borrowing through an
+existing local. A physical-field lifetime marker had prevented the consumer
+proof from finding the actual local assignment. Recognizing that marker and
+its real assignment position removes redundant key retains and releases.
+It does not remove null checks or permit callbacks inside the protected
+region. Terminal physical storage mutations finish array access before
+releasing an overwritten value. A native weak-reference callback that clears
+the owning dictionary during release matches Python.
+
+The final default suite passed with 4,252 tests. The targeted native integration
+suite passed at `-O2` and `-O3`, including real dictionary protocol loops,
+guarded layouts, singleton fill, ownership, and mutation behavior. Ruff passed.

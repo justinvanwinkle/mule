@@ -38,7 +38,13 @@ from mule import ast
 from mule.diagnostics import phase
 
 from . import argument_layout, fndb, vops
-from .callconv import CallConvention, tuple_return_convention
+from .callconv import (
+    NumericEntry,
+    entry_steps,
+    numeric_entry,
+    select_numeric_calls,
+    tuple_return_convention,
+)
 from .ctype import (
     BOTTOM,
     FIXNUM_MAX,
@@ -65,7 +71,7 @@ from .node import (
     linked,
 )
 from .represent import (
-    can_use_double,
+    assign_variable_primitive_types,
     emit_moves_and_coercions,
     fresh_box_returns,
     mark_private_boxes,
@@ -77,7 +83,6 @@ from .traceback_sites import SourceHighlights
 from .vop import (
     BOOLEAN,
     BOOLEAN_T,
-    BOXED_FLOAT,
     CLASS,
     DESCRIPTOR,
     DOUBLE,
@@ -92,7 +97,6 @@ from .vop import (
     SIGNED,
     TN,
     BoxLayout,
-    TNRef,
 )
 
 if TYPE_CHECKING:
@@ -211,6 +215,13 @@ declare i32 @mule_native_type_error() cold
 declare i32 @mule_native_initializer_error() cold
 declare i32 @mule_native_overflow() cold
 declare ptr @mule_get_attr_cached(ptr, ptr, ptr)
+declare ptr @mule_instance_field(ptr, ptr)
+declare ptr @mule_set_instance_field(ptr, ptr, ptr)
+declare void @mule_instance_field_missing(ptr, ptr, i64) cold
+declare ptr @mule_instance_field_name(ptr, ptr, i64)
+declare ptr @mule_set_instance_field_name(ptr, ptr, i64, ptr)
+declare i64 @mule_instance_layout_id(ptr) nounwind readonly
+declare i64 @mule_reference_layout_id(ptr) nounwind readonly
 declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_method(ptr, ptr, ptr, ptr)
 declare ptr @mule_resolve_super_method(ptr, ptr, ptr, ptr, ptr, ptr)
@@ -380,6 +391,7 @@ class ForeignFunction:
     takes_closure: bool
     return_type: ValueType = UNKNOWN
     namespace: str = ""
+    borrowed_parameters: frozenset[int] = frozenset()
     entry_parameter_types: tuple[ValueType, ...] | None = None
 
     def as_lambda(self) -> None:
@@ -390,6 +402,17 @@ class ForeignFunction:
 
     def implementation_type(self, domain: ValueType) -> ValueType:
         return UNKNOWN
+
+    def supports_escape_summary(self) -> bool:
+        return not self.signature.variadic
+
+    def classify_call_escape(
+        self, solver, source, param_index: int, *, direct_positional: bool = True
+    ) -> None:
+        if param_index in self.borrowed_parameters:
+            solver.allocation_only_escape(source)
+        else:
+            solver.escape(source)
 
     def global_constant_type(self) -> ValueType:
         return UNKNOWN
@@ -644,7 +667,9 @@ def generate(program: Program) -> str:
     return llvm
 
 
-def compile_component(lambda_: Lambda, context, *, select_calls=None):
+def compile_component(
+    lambda_: Lambda, context, *, select_calls=None, emit_coercions: bool = True
+):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
     with specialized_ir1_context(lambda_, context):
@@ -655,14 +680,14 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
                 base_facts=context.base_escape_facts,
             )
         with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
-            ltn_analyze(lambda_, context)
+            ltn_token = ltn_analyze(lambda_, context)
         with phase(
             "IR2 conversion %s context %s",
             lambda_.name,
             context.id,
             level=logging.DEBUG,
         ):
-            component = ir2_convert(lambda_, context)
+            component = ir2_convert(lambda_, context, ltn_token=ltn_token)
             replace_local_aggregates(component)
         with phase(
             "representation selection %s context %s",
@@ -670,11 +695,13 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
             context.id,
             level=logging.DEBUG,
         ):
+            assign_variable_primitive_types(component)
+            if select_calls is not None:
+                select_calls(component)
             select_representations(component)
-            if select_calls is not None and select_calls(component):
-                select_representations(component)
-            emit_moves_and_coercions(component)
-            _specialize_list_getitems(component)
+            if emit_coercions:
+                emit_moves_and_coercions(component)
+                _specialize_list_getitems(component)
         return component
 
 
@@ -719,42 +746,6 @@ class _NestedTuples(ast.Visitor):
         self.module.constant_tuple(node)
 
 
-def _entry_steps(module, function, sources) -> tuple:
-    """The entry contexts a direct call of ``function`` tries in order, each
-    with the parameter checks its arguments' static types do not already
-    prove, ending in the general body when no context fits statically."""
-    sources = tuple(sources)
-    contexts = sorted(
-        (
-            context
-            for context in module.variants_of(function)
-            if all(
-                source.may_dispatch_fit(expected)
-                for source, expected in zip(sources, context.parameters, strict=True)
-            )
-        ),
-        key=lambda context: (
-            sum(
-                0 if expected is not UNKNOWN and source.dispatch_fits(expected) else 1
-                for source, expected in zip(sources, context.parameters, strict=True)
-            ),
-            sum(fact.dispatch_rank() for fact in context.parameters),
-        ),
-    )
-    steps: list[tuple[EntryContext | None, tuple[ValueType | None, ...]]] = []
-    for context in contexts:
-        needed = tuple(
-            None if source.dispatch_fits(expected) else expected
-            for source, expected in zip(sources, context.parameters, strict=True)
-        )
-        steps.append((context, needed))
-        if all(expected is None for expected in needed):
-            break
-    else:
-        steps.append((None, ()))
-    return tuple(steps)
-
-
 class _ModuleCollector(NodeVisitor):
     """Collects native method predictions and imported modules in first-use order."""
 
@@ -796,28 +787,6 @@ class TupleConstant:
     slot: str
     entry: str
     borrowed_entry: str = ""
-
-
-@dataclass(slots=True)
-class NumericEntry:
-    function: Lambda
-    context: EntryContext
-    symbol: str
-    proven: bool = True
-    result_contract: object = None
-
-
-def _numeric_argument_fits(actual, expected) -> bool:
-    # Boolean facts can fit integer bounds, but their singleton pointers do
-    # not have the tagged fixnum representation that a scalar entry decodes.
-    if expected.is_fixnum and not actual.is_fixnum:
-        return False
-    if (
-        primitive_type_of(expected) is BOXED_FLOAT
-        and primitive_type_of(actual) is not BOXED_FLOAT
-    ):
-        return False
-    return actual.fits(expected)
 
 
 class ModuleGenerator:
@@ -883,7 +852,6 @@ class ModuleGenerator:
                     and not self.local_environments.is_local(function)
                 )
                 or function.signature.variadic
-                or function.signature.default_parameters
                 or function.method_class is not None
                 # CO_GENERATOR, CO_COROUTINE, CO_ASYNC_GENERATOR.
                 or (function.code is not None and function.code.flags & 0x2A0)
@@ -1934,7 +1902,7 @@ class ModuleGenerator:
                 order = function.call_order(keywords, arity, receiver=bound)
                 if order is not None:
                     if not any(idx < -1 for idx in order):
-                        steps = _entry_steps(
+                        steps = entry_steps(
                             self,
                             function,
                             (supply_types[idx + 1] for idx in order),
@@ -2313,7 +2281,10 @@ class ModuleGenerator:
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
             if borrowed_arguments:
-                context = self.borrowed_context(function, context, borrowed_arguments)
+                borrowed_params = frozenset(
+                    pos for pos, idx in enumerate(order) if idx in borrowed_arguments
+                )
+                context = self.borrowed_context(function, context, borrowed_params)
             entered = f"entered.{tag}"
             builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
             builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
@@ -2762,42 +2733,22 @@ class ModuleGenerator:
             self.backend_contexts[key] = context
         return context
 
-    def numeric_entry(self, function: Lambda, context: EntryContext) -> NumericEntry:
+    def numeric_entry(
+        self,
+        function: Lambda,
+        context: EntryContext,
+        borrowed_parameters: frozenset[int] = frozenset(),
+    ) -> NumericEntry:
         """Select an internal ABI without changing the entry's semantic facts."""
-        key = function, context.id
-        existing = self.numeric_entries.get(key)
-        if existing is not None:
-            return existing
-        returned = (
-            DOUBLE if primitive_type_of(context.return_type) is BOXED_FLOAT else SIGNED
-        )
-        parameters = tuple(
-            DOUBLE
-            if primitive_type_of(fact) is BOXED_FLOAT
-            else SIGNED
-            if fact.is_fixnum
-            else DESCRIPTOR
-            for fact in context.parameters
-        )
-        numeric = replace(context, convention=CallConvention(parameters, returned))
-        # Signature probing does not select calls or retain cloned IR1 nodes.
-        # Object-sensitive parameter uses must keep the incoming object itself.
-        component = compile_component(function, numeric)
-        parameters = tuple(
-            DESCRIPTOR
-            if sc is DOUBLE
-            and not can_use_double(component, component.environment.vars[var])
-            else sc
-            for var, sc in zip(function.vars, parameters, strict=True)
-        )
-        numeric.convention = CallConvention(parameters, returned)
-        entry = NumericEntry(
+        return numeric_entry(
+            self,
             function,
-            numeric,
-            _symbol(f"{function.name}.numeric.{context.id or 'general'}"),
+            context,
+            borrowed_parameters,
+            probe_component=lambda fn, ctx: compile_component(
+                fn, ctx, emit_coercions=False
+            ),
         )
-        self.numeric_entries[key] = entry
-        return entry
 
     def guarded_numeric_call_helper(self, entry: NumericEntry) -> str:
         convention = linked(entry.context.convention, entry, "convention")
@@ -2825,6 +2776,8 @@ class ModuleGenerator:
         zero = "0.0" if convention.returned is DOUBLE else "0"
         fallback_helper = self.positional_call_helper(arity)
         builder = _HelperBuilder(self)
+        has_descriptors = any(sc is DESCRIPTOR for sc in convention.parameters)
+        frame_fail_label = "frame.failed" if has_descriptors else "failed"
         builder.lines = [
             f"define internal {ret_type} {symbol}({', '.join(params)}) {{",
             "entry:",
@@ -2835,13 +2788,32 @@ class ModuleGenerator:
             "direct:",
             "  %frame = call i32 @mule_enter_frame()",
             "  %frame.bad = icmp slt i32 %frame, 0",
-            "  br i1 %frame.bad, label %failed, label %entered",
-            "entered:",
-            "  %callee.globals = load ptr, ptr %fn.globals.slot",
+            f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered",
         ]
+        if has_descriptors:
+            builder.lines.append("frame.failed:")
+            for i, sc in enumerate(convention.parameters):
+                if sc is DESCRIPTOR:
+                    builder.lines.append(
+                        f"  call void @mule.fast.release(ptr %arg.{i})"
+                    )
+            builder.lines.append("  br label %failed")
+        builder.lines.extend(
+            [
+                "entered:",
+                "  %callee.globals = load ptr, ptr %fn.globals.slot",
+            ]
+        )
+        closure_args = []
+        if self.closure_of(entry.function):
+            builder.lines.append(
+                "  %closure = call ptr @mule_function_closure_of(ptr %callee)"
+            )
+            closure_args.append("ptr %closure")
         direct_args = [
             "ptr %callee.globals",
             "ptr %numeric.error",
+            *closure_args,
             *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
         ]
         builder.lines.extend(
@@ -2859,11 +2831,13 @@ class ModuleGenerator:
                     f"  %box.{i} = call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double %arg.{i})"
                 )
                 boxed_args.append(f"ptr %box.{i}")
-            else:
+            elif sc is SIGNED:
                 builder.line(f"  %shl.{i} = shl i64 %arg.{i}, 1")
                 builder.line(f"  %tag.{i} = or disjoint i64 %shl.{i}, 1")
                 builder.line(f"  %box.{i} = inttoptr i64 %tag.{i} to ptr")
                 boxed_args.append(f"ptr %box.{i}")
+            else:
+                boxed_args.append(f"ptr %arg.{i}")
         fallback_call_args = ", ".join(["ptr %callee", *boxed_args])
         builder.lines.extend(
             [
@@ -2915,153 +2889,7 @@ class ModuleGenerator:
 
     def select_numeric_calls(self, component) -> bool:
         """Use scalar locations for proven or guarded calls and compatible consumers."""
-        if component.context.plan is not None or component.context.borrowed_parameters:
-            return False
-        changed = False
-        block_by_vop = {vop: block for block in component.blocks for vop in block.vops}
-        pending = [
-            vop
-            for block in component.blocks
-            for vop in block.vops
-            if vop.info in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
-        ]
-        while pending:
-            remaining = []
-            progress = False
-            for vop in pending:
-                site = vop.codegen_info
-                # Immediates have no counted ownership to specialize; borrowing
-                # one must not prevent an otherwise valid numeric convention.
-                if any(
-                    ref.tn.borrowed_from is not None and ref.tn.sc.owned
-                    for ref in vop.args[1:]
-                ):
-                    continue
-                target = site.target
-                if (
-                    site.keywords
-                    or target not in self.owned
-                    or (
-                        target in self.native_plans
-                        and (site.proven or self.native_plans[target].dependencies)
-                    )
-                    or target is component.lambda_
-                    or target.call_order((), len(vop.args) - 1)
-                    != tuple(range(len(target.vars)))
-                ):
-                    continue
-                assertion_vop = None
-                result_contract = None
-                if site.proven:
-                    result = vop.results[0].tn
-                else:
-                    if self.closure_of(target):
-                        continue
-                    block = block_by_vop.get(vop)
-                    if block is None or vop not in block.vops:
-                        continue
-                    idx = block.vops.index(vop)
-                    if (
-                        idx + 1 >= len(block.vops)
-                        or block.vops[idx + 1].info is not vops.TYPE_CHECK
-                    ):
-                        continue
-                    assertion_vop = block.vops[idx + 1]
-                    delivered = vop.results[0].tn
-                    if (
-                        assertion_vop.args[0].tn is not delivered
-                        or len(component.writes.get(delivered, ())) != 1
-                        or len(component.reads.get(delivered, ())) != 1
-                    ):
-                        continue
-                    result = assertion_vop.results[0].tn
-                    if assertion_vop.codegen_info.safety:
-                        result_contract = assertion_vop.codegen_info.contract
-                fact = result.type or UNKNOWN
-                ignore_vops = (
-                    (vop, assertion_vop) if assertion_vop is not None else (vop,)
-                )
-                if primitive_type_of(fact) is BOXED_FLOAT:
-                    if not can_use_double(component, result, ignore=ignore_vops):
-                        remaining.append(vop)
-                        continue
-                elif not fact.is_fixnum or not site.proven:
-                    continue
-                arguments = tuple(arg.tn.type or UNKNOWN for arg in vop.args[1:])
-                general, variants = self.contexts(target)
-                context = next(
-                    (
-                        candidate
-                        for candidate in (*variants, general)
-                        if all(
-                            _numeric_argument_fits(actual, expected)
-                            for actual, expected in zip(
-                                arguments, candidate.parameters, strict=True
-                            )
-                        )
-                        and (
-                            candidate.return_type.is_fixnum
-                            if fact.is_fixnum
-                            else primitive_type_of(candidate.return_type) is BOXED_FLOAT
-                        )
-                        and candidate.return_type.fits(fact)
-                    ),
-                    None,
-                )
-                if context is None:
-                    continue
-                entry = self.numeric_entry(target, context)
-                convention = linked(entry.context.convention, entry, "convention")
-                if not site.proven and any(
-                    sc not in (DOUBLE, SIGNED) for sc in convention.parameters
-                ):
-                    continue
-                if assertion_vop is not None:
-                    delivered = vop.results[0].tn
-                    block = block_by_vop[vop]
-                    block.vops.remove(assertion_vop)
-                    component.reads.pop(delivered, None)
-                    component.writes.pop(delivered, None)
-                    vop.results[0] = TNRef(result, True)
-                    component.writes[result] = [(vop, vop.results[0])]
-                restrictions = tuple(
-                    (DESCRIPTOR, DOUBLE)
-                    if sc is DOUBLE
-                    else (IMMEDIATE, SIGNED)
-                    if sc is SIGNED
-                    else OBJECT
-                    for sc in convention.parameters
-                )
-                vop.info = replace(
-                    vops.LOCAL_CALL,
-                    args=(
-                        (REFERENCE,) if site.local_environment else OBJECT,
-                        *restrictions,
-                    ),
-                    arg_escapes=(
-                        False,
-                        *(sc is DESCRIPTOR for sc in convention.parameters),
-                    ),
-                    results=(
-                        (DOUBLE,)
-                        if convention.returned is DOUBLE
-                        else (IMMEDIATE, SIGNED),
-                    ),
-                )
-                vop.codegen_info = (
-                    entry
-                    if site.proven
-                    else replace(
-                        entry,
-                        proven=False,
-                        result_contract=result_contract,
-                    )
-                )
-                progress = changed = True
-            if not progress:
-                break
-            pending = remaining
-        return changed
+        return select_numeric_calls(self, component)
 
     def fresh_box_result(self, component, vop):
         """Transfer fresh object ownership only across proven factory calls."""
@@ -3084,7 +2912,7 @@ class ModuleGenerator:
         sources = tuple(ref.tn.type or UNKNOWN for ref in vop.args[1:])
         general, variants = self.contexts(target)
         contexts = {None: general, **{context.id: context for context in variants}}
-        for selected, _guards in _entry_steps(self, target, sources):
+        for selected, _guards in entry_steps(self, target, sources):
             context = contexts[None if selected is None else selected.id]
             if primitive_type_of(context.return_type).boxed_layout is not layout:
                 return None
@@ -4228,7 +4056,12 @@ class _ArgumentGuard(ValueTypeVisitor):
     def visit_InstanceType(self, fact) -> str:
         if fact.may_be_unbound:
             return self.visit_ValueType(fact)
-        layout = self.gen.operation(f"call i64 @mule.attr.layout(ptr {self.value})")
+        helper = (
+            "mule_reference_layout_id"
+            if fact.fixed_slots
+            else "mule_instance_layout_id"
+        )
+        layout = self.gen.operation(f"call i64 @{helper}(ptr {self.value})")
         expected = self.gen.operation(
             f"load i64, ptr {self.gen.module.class_layout_slot(fact.identity)}"
         )
@@ -5106,7 +4939,11 @@ class FunctionGenerator:
             raw_owned = []
             for ref, sc in zip(arguments, convention.parameters, strict=True):
                 taken = self.take(ref)
-                if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
+                if (
+                    sc is not DESCRIPTOR
+                    and ref.tn.sc in OBJECT
+                    and ref.tn.borrowed_from is None
+                ):
                     raw_owned.append(taken)
             operands = [
                 f"ptr {callee}",
@@ -5159,7 +4996,11 @@ class FunctionGenerator:
         raw_owned = []
         for ref, sc in zip(arguments, convention.parameters, strict=True):
             taken = self.take(ref)
-            if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
+            if (
+                sc is not DESCRIPTOR
+                and ref.tn.sc in OBJECT
+                and ref.tn.borrowed_from is None
+            ):
                 raw_owned.append(taken)
         operands = [f"ptr {callee_globals}", "ptr %numeric.error"]
         if closure is not None:
@@ -5577,7 +5418,7 @@ class FunctionGenerator:
         if any(index < 0 for index in order):
             steps = ((None, ()),)
         else:
-            steps = _entry_steps(module, target, (supplied[index] for index in order))
+            steps = entry_steps(module, target, (supplied[index] for index in order))
         helper = module.direct_call_helper(
             target,
             (),
@@ -5639,7 +5480,7 @@ class FunctionGenerator:
         if len(supplied_sources) != len(order):
             steps = ((None, ()),)
         else:
-            steps = _entry_steps(module, function, supplied_sources)
+            steps = entry_steps(module, function, supplied_sources)
         if unpack_arity is not None:
             helper = module.unpacked_direct_call_helper(
                 function,

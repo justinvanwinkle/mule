@@ -679,19 +679,11 @@ annotations are not evaluated. Functions with annotations have a compiled
 `__annotate__` thunk. The function class lazily evaluates and caches
 `__annotations__`; supported contract expressions additionally guide analysis.
 
-Builtin `float` annotations accept Python integers, including booleans, as
-required by the [typing specification's numeric rule](https://typing.python.org/en/latest/spec/special-types.html#special-cases-for-float-and-complex).
-They preserve the actual object and integer precision; they do not coerce the
-value to binary64. Their compiler fact represents the real-number union, while
-explicit `mule_types.float32`/`mule_types.float64` contracts retain their floating category.
-SBCL `src/code/type.lisp`, `%type-union2` and `type-union2`, represents union
-membership independently of machine storage; `src/compiler/checkgen.lisp`,
-`cast-check-types`, compares inferred and asserted sets before generating checks.
-Mule follows that split with an owned real-number fact and double-dispatched
-membership and joins. Python's integer acceptance is the concrete adaptation;
-a broad real fact does not establish an unboxed floating representation.
-Raw arithmetic still requires concrete integer or floating proofs, and checked
-boxed entries validate physical numeric storage without replacing the value.
+Builtin `float` annotations enforce exact `float` (`FLOAT`, binary64), matching
+SBCL's `double-float` declarations (`PythonFloatContract` inherits `FloatContract`
+with `@mule_assert_float` and rejects `int`/`bool`). This enables direct unboxed
+`double` representations and `.numeric.` calling conventions on `float`-annotated
+functions without requiring `mule_types.float64`.
 
 ### Function annotation thunks
 

@@ -165,7 +165,7 @@ class _BoxedConstant(ast.Visitor):
 
     def visit_TextLiteral(self, node):
         if _is_inline_text_compare_only(self.gen, self.result.tn, node.value):
-            self.gen.native_result(self.result, self.gen.fresh("inline.text"))
+            self.gen.native_result(self.result, "null")
             return
         if not self.result.tn.sc.owned or (self.result.tn.type or UNKNOWN).is_immortal:
             self.gen.native_result(
@@ -267,7 +267,9 @@ def load_local(gen, vop):
     if access.move:
         gen.line(f"store ptr null, ptr {source.tn.slot}")
     if access.bound:
-        gen.record_facts(source.tn, value)
+        # Slot loads already record their facts; register loads do not.
+        if source.tn in gen.registers:
+            gen.record_facts(source.tn, value)
         gen.record_facts(result.tn, value)
         if (
             not access.move
@@ -592,13 +594,6 @@ class _ContractAssertion(ContractVisitor):
         name = self.gen.module.text(contract.display_name)
         status = self.gen.operation(
             f"call i32 @mule_assert_float(ptr {self.value}, ptr {name})"
-        )
-        self.gen.check_status(status)
-
-    def visit_PythonFloatContract(self, contract):
-        name = self.gen.module.text(contract.display_name)
-        status = self.gen.operation(
-            f"call i32 @mule_assert_real(ptr {self.value}, ptr {name})"
         )
         self.gen.check_status(status)
 
@@ -976,7 +971,13 @@ def fast_len(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
-@define_vop("parse-int-text", args=(OBJECT,), results=(OBJECT,))
+@define_vop(
+    "parse-int-text",
+    translate=fndb.PARSE_INT_TEXT,
+    args=(OBJECT,),
+    results=(OBJECT,),
+    arg_escapes=(False,),
+)
 def parse_int_text(gen, vop):
     value = gen.take(vop.args[0])
     gen.pointer_result(
@@ -984,7 +985,13 @@ def parse_int_text(gen, vop):
     )
 
 
-@define_vop("parse-int-slice", args=(OBJECT, OBJECT, OBJECT), results=(OBJECT,))
+@define_vop(
+    "parse-int-slice",
+    translate=fndb.PARSE_INT_SLICE,
+    args=(OBJECT, OBJECT, OBJECT),
+    results=(OBJECT,),
+    arg_escapes=(False, False, False),
+)
 def parse_int_slice(gen, vop):
     sequence, start, stop = (gen.take(operand) for operand in vop.args)
     gen.pointer_result(
@@ -1691,13 +1698,15 @@ for _operator, _opcode in UNARY_OPCODES.items():
 def _pack_inline_latin1_words(
     literal: str | None,
 ) -> tuple[int, tuple[int, ...]] | None:
-    if literal is None or not (2 <= len(literal) <= 24):
+    if literal is None or len(literal) > 24:
         return None
     try:
         raw = literal.encode("latin-1")
     except UnicodeEncodeError:
         return None
     n = len(raw)
+    if n == 0:
+        return 0, ()
     padded = raw.ljust(24, b"\x00")
     w0 = int.from_bytes(padded[0:8], "little", signed=True)
     if n <= 8:
@@ -1737,14 +1746,23 @@ def _tn_exact_text(gen, tn, value_type) -> str | None:
     return _constant_text_value(gen, tn)
 
 
-def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
-    if not (left_type.fits_text(left_type) and right_type.fits_text(right_type)):
-        return False
+def _uses_pointer_text_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
     if (
+        _pack_inline_latin1_words(_constant_text_value(gen, left_tn)) is not None
+        or _pack_inline_latin1_words(_constant_text_value(gen, right_tn)) is not None
+    ):
+        return False
+    return (
         left_type.singleton_text() is not None
         or right_type.singleton_text() is not None
         or (left_type.is_interned_text and right_type.is_interned_text)
-    ):
+    )
+
+
+def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
+    if not (left_type.fits_text(left_type) and right_type.fits_text(right_type)):
+        return False
+    if _uses_pointer_text_compare(gen, left_tn, left_type, right_tn, right_type):
         return False
     return (
         _pack_inline_latin1_words(_tn_exact_text(gen, right_tn, right_type)) is not None
@@ -1756,7 +1774,11 @@ def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -
 def _is_inline_text_compare_only(gen, tn, value: str) -> bool:
     if (
         gen.raw
-        or tn.borrowed_from is None
+        or (
+            tn.borrowed_from is None
+            and tn.sc.owned
+            and not (tn.type or UNKNOWN).is_immortal
+        )
         or tn not in gen.registers
         or _pack_inline_latin1_words(value) is None
     ):
@@ -1854,10 +1876,8 @@ def _define_compare(operator, opcode):
             and left_type.fits_text(left_type)
             and right_type.fits_text(right_type)
         ):
-            if opcode in (0, 1) and (
-                left_type.singleton_text() is not None
-                or right_type.singleton_text() is not None
-                or (left_type.is_interned_text and right_type.is_interned_text)
+            if opcode in (0, 1) and _uses_pointer_text_compare(
+                gen, left.tn, left_type, right.tn, right_type
             ):
                 predicate = "eq" if opcode == 0 else "ne"
                 condition = gen.operation(f"icmp {predicate} ptr {lhs}, {rhs}")
@@ -1865,15 +1885,13 @@ def _define_compare(operator, opcode):
                     f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
                 )
             elif opcode in (0, 1):
-                right_inline = _pack_inline_latin1_words(
-                    _tn_exact_text(gen, right.tn, right_type)
-                )
+                right_exact = _tn_exact_text(gen, right.tn, right_type)
+                left_exact = _tn_exact_text(gen, left.tn, left_type)
+                right_inline = _pack_inline_latin1_words(right_exact)
                 left_inline = (
                     None
                     if right_inline is not None
-                    else _pack_inline_latin1_words(
-                        _tn_exact_text(gen, left.tn, left_type)
-                    )
+                    else _pack_inline_latin1_words(left_exact)
                 )
                 if right_inline is not None:
                     boolean = _emit_inline_latin1_compare(
@@ -1883,7 +1901,7 @@ def _define_compare(operator, opcode):
                     boolean = _emit_inline_latin1_compare(
                         gen, rhs, left_inline[0], left_inline[1], opcode
                     )
-                else:
+                elif right_exact is not None or left_exact is not None:
                     matched = gen.operation(
                         f"call i32 @mule_text_eq(ptr {lhs}, ptr {rhs})"
                     )
@@ -1891,6 +1909,11 @@ def _define_compare(operator, opcode):
                     condition = gen.operation(f"icmp {predicate} i32 {matched}, 0")
                     boolean = gen.operation(
                         f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                    )
+                else:
+                    helper_name = "eq" if opcode == 0 else "ne"
+                    boolean = gen.operation(
+                        f"call ptr @mule.fast.text.{helper_name}(ptr {lhs}, ptr {rhs})"
                     )
             else:
                 boolean = gen.operation(
@@ -1971,6 +1994,190 @@ def slot_borrow_end(gen, vop):
     gen.release(gen.take(vop.args[0]))
     # The explicit receiver operand extends the root's live range.
     gen.load(vop.args[1])
+
+
+def _read_physical_field(
+    gen,
+    receiver,
+    name,
+    index,
+    *,
+    borrowed=False,
+    retain_value=True,
+    result_type=UNKNOWN,
+    join=None,
+):
+    slot = _attribute_slot(gen, receiver, None, index)
+    value = gen.operation(f"load ptr, ptr {slot}")
+    unset = gen.operation(f"icmp eq ptr {value}, null")
+    missing = gen.fresh("physical.missing")[1:]
+    loaded = gen.fresh("physical.borrowed" if borrowed else "physical.loaded")[1:]
+    done = gen.fresh("physical.join")[1:] if join is None else join
+    gen.line(f"br i1 {unset}, label %{missing}, label %{loaded}")
+    gen.lines.append(loaded + ":")
+    if retain_value and not borrowed:
+        retain = "heap.retain" if result_type.is_heap_object else "fast.retain"
+        gen.line(f"call ptr @mule.{retain}(ptr {value})")
+    gen.line(f"br label %{done}")
+    gen.lines.append(missing + ":")
+    gen.line(
+        f"call void @mule_instance_field_missing(ptr {receiver}, "
+        f"ptr {gen.module.text(name)}, i64 {len(name.encode('utf-8'))})"
+    )
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+    # The error arm reports this load's null observation; it never rereads a
+    # slot that another thread or callback could initialize in the meantime.
+    return gen.operation(f"phi ptr [{value}, %{loaded}], [null, %{missing}]")
+
+
+def physical_field_read(gen, vop, values):
+    """Physical primitive emitter: operands are borrowed, result is owned."""
+    return gen.operation(
+        f"call ptr @mule_instance_field(ptr {values[0]}, ptr {values[1]})"
+    )
+
+
+def _write_physical_field(gen, receiver, value, name, index):
+    slot = _attribute_slot(gen, receiver, None, index)
+    old = gen.operation(f"load ptr, ptr {slot}")
+    retained = gen.retain(value)
+    gen.line(f"store ptr {retained}, ptr {slot}")
+    gen.release(old)
+    return "@mule.none"
+
+
+def physical_field_write(gen, vop, values):
+    return gen.operation(
+        f"call ptr @mule_set_instance_field(ptr {values[0]}, "
+        f"ptr {values[1]}, ptr {values[2]})"
+    )
+
+
+@define_vop("physical-field-read", args=(OBJECT,), results=(OBJECT,))
+def physical_field_read_fixed(gen, vop):
+    receiver = gen.take(vop.args[0])
+    plan = vop.codegen_info
+    value = _read_physical_field(
+        gen,
+        receiver,
+        plan.name,
+        plan.index,
+        retain_value=vop.results[0].tn.sc.owned,
+        result_type=vop.results[0].tn.type or UNKNOWN,
+    )
+    gen.publish(vop.results[0], value)
+    gen.release(receiver)
+    gen.check_pointer(value)
+    gen.refine(vop.results[0].tn, value)
+
+
+@define_vop("physical-field-write", args=(OBJECT, OBJECT), results=(OBJECT,))
+def physical_field_write_fixed(gen, vop):
+    receiver, value = (gen.take(ref) for ref in vop.args)
+    plan = vop.codegen_info
+    result = _write_physical_field(gen, receiver, value, plan.name, plan.index)
+    gen.publish(vop.results[0], result)
+    gen.release(receiver)
+    gen.release(value)
+    gen.refine(vop.results[0].tn, result)
+
+
+@define_vop("physical-field-read-borrow", args=(OBJECT,), results=(OBJECT,))
+def physical_field_read_borrow(gen, vop):
+    receiver = gen.take(vop.args[0])
+    plan = vop.codegen_info
+    value = _read_physical_field(gen, receiver, plan.name, plan.index, borrowed=True)
+    gen.publish(vop.results[0], value)
+    gen.release(receiver)
+    gen.check_pointer(value)
+    gen.refine(vop.results[0].tn, value)
+
+
+@define_vop("physical-field-borrow-end", args=(OBJECT,), arg_escapes=(False,))
+def physical_field_borrow_end(gen, vop):
+    gen.load(vop.args[0])
+
+
+def _physical_name_call(gen, receiver, plan, value=None):
+    arguments = (
+        f"ptr {receiver}, ptr {gen.module.text(plan.name)}, "
+        f"i64 {len(plan.name.encode('utf-8'))}"
+    )
+    function = "mule_instance_field_name"
+    if value is not None:
+        function = "mule_set_instance_field_name"
+        arguments += f", ptr {value}"
+    return gen.operation(f"call ptr @{function}({arguments})")
+
+
+def _guarded_physical_field(gen, receiver, plan, value=None):
+    actual = gen.operation(f"call i64 @mule_reference_layout_id(ptr {receiver})")
+    matches = "false"
+    for identity in plan.identities:
+        expected = gen.operation(
+            f"load i64, ptr {gen.module.class_layout_slot(identity)}"
+        )
+        known = gen.operation(f"icmp ne i64 {expected}, 0")
+        same = gen.operation(f"icmp eq i64 {actual}, {expected}")
+        same = gen.operation(f"and i1 {known}, {same}")
+        matches = gen.operation(f"or i1 {matches}, {same}")
+    hit = gen.fresh("physical.guard.hit")[1:]
+    miss = gen.fresh("physical.guard.miss")[1:]
+    done = gen.fresh("physical.guard.join")[1:]
+    gen.line(f"br i1 {matches}, label %{hit}, label %{miss}")
+    gen.lines.append(hit + ":")
+    if value is None:
+        fast_block = gen.fresh("physical.read.join")[1:]
+        fast = _read_physical_field(
+            gen, receiver, plan.name, plan.index, join=fast_block
+        )
+    else:
+        fast = _write_physical_field(gen, receiver, value, plan.name, plan.index)
+        fast_block = hit
+    gen.line(f"br label %{done}")
+    gen.lines.append(miss + ":")
+    slow = _physical_name_call(gen, receiver, plan, value)
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+    return gen.operation(f"phi ptr [{fast}, %{fast_block}], [{slow}, %{miss}]")
+
+
+def _emit_planned_physical(gen, vop, *, write=False, guarded=False):
+    values = [gen.take(ref) for ref in vop.args]
+    receiver = values[0]
+    value = values[1] if write else None
+    plan = vop.codegen_info
+    result = (
+        _guarded_physical_field(gen, receiver, plan, value)
+        if guarded
+        else _physical_name_call(gen, receiver, plan, value)
+    )
+    gen.publish(vop.results[0], result)
+    for argument in values:
+        gen.release(argument)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
+@define_vop("physical-field-read-name", args=(OBJECT,), results=(OBJECT,))
+def physical_field_read_name(gen, vop):
+    _emit_planned_physical(gen, vop)
+
+
+@define_vop("physical-field-write-name", args=(OBJECT, OBJECT), results=(OBJECT,))
+def physical_field_write_name(gen, vop):
+    _emit_planned_physical(gen, vop, write=True)
+
+
+@define_vop("physical-field-read-guarded", args=(OBJECT,), results=(OBJECT,))
+def physical_field_read_guarded(gen, vop):
+    _emit_planned_physical(gen, vop, guarded=True)
+
+
+@define_vop("physical-field-write-guarded", args=(OBJECT, OBJECT), results=(OBJECT,))
+def physical_field_write_guarded(gen, vop):
+    _emit_planned_physical(gen, vop, write=True, guarded=True)
 
 
 def _read_attribute(gen, receiver, name, result_tn=None, *, slot_index=None):
@@ -3017,8 +3224,10 @@ def protocol_getslice(gen, vop):
 
 @define_vop(
     "text-slice-compare",
+    translate=fndb.TEXT_SLICE_COMPARE,
     args=(OBJECT, OBJECT, OBJECT, OBJECT),
     results=(OBJECT,),
+    arg_escapes=(False, False, False, False),
 )
 def text_slice_compare(gen, vop):
     sequence = gen.take(vop.args[0])
@@ -3035,8 +3244,10 @@ def text_slice_compare(gen, vop):
 
 @define_vop(
     "text-slice2-compare",
+    translate=fndb.TEXT_SLICE2_COMPARE,
     args=(OBJECT, OBJECT, OBJECT, OBJECT, OBJECT, OBJECT),
     results=(OBJECT,),
+    arg_escapes=(False, False, False, False, False, False),
 )
 def text_slice2_compare(gen, vop):
     left = gen.take(vop.args[0])
@@ -4765,6 +4976,63 @@ slow:
 }}"""
 
 
+def _text_compare_helper(op: int) -> str:
+    name = "eq" if op == 0 else "ne"
+    same_res = "@mule.true" if op == 0 else "@mule.false"
+    diff_res = "@mule.false" if op == 0 else "@mule.true"
+    slow_pred = "ne" if op == 0 else "eq"
+    return f"""define internal ptr @mule.fast.text.{name}(ptr %lhs, ptr %rhs) alwaysinline {{
+entry:
+  %same.ptr = icmp eq ptr %lhs, %rhs
+  br i1 %same.ptr, label %equal, label %check.header
+check.header:
+  %lh.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_KIND_TAG_OFFSET}
+  %rh.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_KIND_TAG_OFFSET}
+  %lh = load i16, ptr %lh.ptr, align 8
+  %rh = load i16, ptr %rh.ptr, align 8
+  %or.h = or i16 %lh, %rh
+  %kinds = and i16 %or.h, 255
+  %both.inline = icmp eq i16 %kinds, 0
+  br i1 %both.inline, label %inline.header, label %slow
+inline.header:
+  %same.header = icmp eq i16 %lh, %rh
+  br i1 %same.header, label %inline.w0, label %unequal
+inline.w0:
+  %lw0.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_INLINE_WORDS_OFFSET}
+  %rw0.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_INLINE_WORDS_OFFSET}
+  %lw0 = load i64, ptr %lw0.ptr, align 8
+  %rw0 = load i64, ptr %rw0.ptr, align 8
+  %eq.w0 = icmp eq i64 %lw0, %rw0
+  br i1 %eq.w0, label %check.len, label %unequal
+check.len:
+  %more = icmp ugt i16 %lh, 2048
+  br i1 %more, label %inline.rest, label %equal
+inline.rest:
+  %lw1.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_INLINE_WORDS_OFFSET + 8}
+  %rw1.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_INLINE_WORDS_OFFSET + 8}
+  %lw1 = load i64, ptr %lw1.ptr, align 8
+  %rw1 = load i64, ptr %rw1.ptr, align 8
+  %lw2.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_INLINE_WORDS_OFFSET + 16}
+  %rw2.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_INLINE_WORDS_OFFSET + 16}
+  %lw2 = load i64, ptr %lw2.ptr, align 8
+  %rw2 = load i64, ptr %rw2.ptr, align 8
+  %eq.w1 = icmp eq i64 %lw1, %rw1
+  %eq.w2 = icmp eq i64 %lw2, %rw2
+  %eq.rest = and i1 %eq.w1, %eq.w2
+  %inline.res = select i1 %eq.rest, ptr {same_res}, ptr {diff_res}
+  ret ptr %inline.res
+equal:
+  ret ptr {same_res}
+unequal:
+  ret ptr {diff_res}
+slow:
+  %matched = call i32 @mule_text_eq(ptr %lhs, ptr %rhs)
+  %cond = icmp {slow_pred} i32 %matched, 0
+  %slow.res = select i1 %cond, ptr @mule.true, ptr @mule.false
+  ret ptr %slow.res
+}}"""
+
+
 # Exact ordering of a machine integer against a binary64: doubles beyond the
 # i64 range order by sign, and in-range doubles split into an integer part,
 # which is compared as an integer, and a fraction that breaks ties.
@@ -4990,6 +5258,7 @@ def helpers(*, bootstrap: bool = False) -> str:
             *(_unary_helper(op, fixnum=True) for op in range(3)),
             *(_compare_helper(op) for op in range(8)),
             *(_compare_bool_helper(op) for op in range(6)),
+            *(_text_compare_helper(op) for op in range(2)),
         ]
     )
 
@@ -5065,6 +5334,14 @@ class BorrowedLiteralEmitter(LiteralEmitter):
 INSERT_SAFEPOINT = insert_safepoint
 GETATTR_BORROW = getattr_borrow
 SLOT_BORROW_END = slot_borrow_end
+PHYSICAL_FIELD_READ = physical_field_read_fixed
+PHYSICAL_FIELD_WRITE = physical_field_write_fixed
+PHYSICAL_FIELD_READ_BORROW = physical_field_read_borrow
+PHYSICAL_FIELD_BORROW_END = physical_field_borrow_end
+PHYSICAL_FIELD_READ_NAME = physical_field_read_name
+PHYSICAL_FIELD_WRITE_NAME = physical_field_write_name
+PHYSICAL_FIELD_READ_GUARDED = physical_field_read_guarded
+PHYSICAL_FIELD_WRITE_GUARDED = physical_field_write_guarded
 CONSTANT = constant
 LOAD_LOCAL = load_local
 LOAD_GLOBAL = load_global

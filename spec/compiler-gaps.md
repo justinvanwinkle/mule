@@ -11,7 +11,8 @@ constant-lvar/dead-operand helpers, and monotonic `derive_node_type`
 (Section 3), loop optimizations / loop-invariant code motion / induction-variable
 range and relational constraint inference (Section 4), and identity-aware float
 storage and coercions, flow-proven fixnum locals, numeric internal calling
-conventions, LLVM-visible private leaf boxes (parts of Section 5), and general
+conventions, LLVM-visible private leaf boxes (parts of Section 5),
+module-level constant folding via write-set tracking (Section 6A), general
 tuple delivery with per-store liveness (Section 6G), and fixed-slot access and
 singleton-list fill (Section 6J); **proposed** for Sections
 1C–2, the rest of Section 5, and the remaining Section 6 replacements of
@@ -373,15 +374,15 @@ suite failure or performance measurement.
 - **SBCL reference**: `src/compiler/seqtran.lisp` (3,371 lines in SBCL vs
   `mule/compiler/seqtran.py` and `mule/compiler/containtran.py`).
 - **Remaining gaps and proposed transforms**:
-  1. **IR1-level slice-comparison and slice-parse fusion**: Currently,
-     `text[start:stop] == "lit"` (`_fuse_text_slice_compares`),
-     `text[i] == "c"` (`_fuse_char_index_compares`), `text.find(...)`
-     (`exact_text_find`), and `int(text[start:stop])` (`_fuse_int_slice_parse`)
-     are recognized in `ir2tran.py` so they work in `EntryContext`s. Once
-     Section 1B provides per-context IR1 specialization, express these
-     rewrites as `@deftransform`s on `%compare_*`, `%resolve_method`, and `int`
-     in `seqtran.py` so their result types (`BOOLEAN`, `FIXNUM`, `INTEGER`) feed
-     directly back into `constraint.py` and downstream IR1 transforms.
+  1. **IR1-level character-comparison and text-method transforms**: `str[a:b] == target`
+     (`%text_slice_compare` / `%text_slice2_compare`) and `int(str[a:b])`
+     (`%parse_int_text` / `%parse_int_slice`) are now lowered in IR1 via
+     `@deftransform`s and `splice_fun_args` in `seqtran.py` and `srctran.py`,
+     with multi-use local slice forwarding in `escape.py` and `scalar.py`.
+     Remaining IR2 pattern matchers for `text[i] == "c"`
+     (`_fuse_text_codepoint_comparisons`) and `text.find(...)`
+     (`convert_call_resolved`) should likewise move to IR1 `@deftransform`s
+     (see Sections 6D and 6F).
   2. **Pure comprehension and generator fusion**: Lower `sum([...])`,
      `any([...])`, `all([...])`, `min([...])`, `max([...])`, and
      `list(x for x in seq)` directly into counted or iterator-driven
@@ -556,13 +557,19 @@ suite failure or performance measurement.
 
 ---
 
-## 3. Escape analysis and allocation elimination (`envanal.lisp` / `ltn.lisp`)
+## 3. Escape analysis and allocation elimination (`envanal.lisp` / `ltn.lisp`) (implemented)
 
 - **SBCL reference**: `src/compiler/envanal.lisp` and `dynamic-extent` handling
   in `src/compiler/ltn.lisp` and `src/compiler/ir2tran.lisp`.
 - **Implemented**:
   - `escape.py` extends the existing variable/parameter escape solver with
-    allocation-result and alias facts and implicit environment containment.
+    allocation-result and alias facts, implicit environment containment,
+    keyword and default-parameter call mapping (`call_order`), cross-unit
+    `ForeignFunction.borrowed_parameters` summaries in `BuiltinsInterface` and
+    `ModuleInterface`, and non-escaping consumer classifications for builtin
+    container truthiness, disjoint identity comparisons, reflexive containment,
+    non-user-code value comparisons and `math.sqrt`, exact builtin subscript
+    keys, and exact builtin `str`/`list`/`bytearray`/`dict` methods.
   - Stable direct-only local functions use a compiler-owned environment ABI.
     Mutable captures reference home-frame slots when every retaining closure
     has local extent. Escaping siblings keep the authoritative heap cell.
@@ -571,23 +578,25 @@ suite failure or performance measurement.
     aliases, native scalar entries, and existing unpacked returns retain their
     respective semantics.
   - `scalar.py` consumes allocation escape proofs for fixed lists and tuples,
-    including interprocedural non-escaping calls to local and proven guarded
-    functions. Constant-index reads, fixed-index list writes, length,
-    structural unpack, and aliases become scalar operations within a block or
-    across multiple blocks for a single local with inert children, and scalar
-    child slots participate in unboxed representation selection (`DOUBLE_REG`)
-    and frame slot packing. Normal and error cleanup preserve child ownership
-    and reverse destruction order.
+    including interprocedural non-escaping calls (positional, keyword, and
+    defaulted) to local and proven guarded functions. Constant-index reads,
+    bounded runtime-index reads, fixed-index list writes, length, truthiness
+    (`unary-not` and `branch`), disjoint-type identity comparisons (`is` / `is
+    not`), reflexive-equality containment (`in` / `not in` via
+    `scalar-contains`), structural unpack, and aliases become scalar operations
+    within a block or across multiple blocks (including multiple aliases,
+    conditional expression temporaries, and non-inert child teardown across
+    branches when forward dataflow proves consistent live owners and a single
+    cleanup anchor), and scalar child slots participate in unboxed
+    representation selection (`DOUBLE_REG`) and frame slot packing. Normal and
+    error cleanup preserve child ownership and reverse destruction order.
 - **Conservative allocation boundaries**: Observable functions and cells,
   defaults/decorators, suspended owning activations, unknown uses, resizing,
   overlapping aggregate lifetimes, pending element checks, and unrepresentable
   cleanup order retain ordinary allocations. This is not arbitrary heap-object
   scalar replacement or stack allocation of materialized Python containers.
-- **Remaining extensions**: Broader inter-block aggregate lifetime proofs,
-  escape summaries across additional call boundaries, and more container
-  consumers can extend the existing analysis and lowering. Existing tuple
-  projection and unpacked-return mechanisms remain in use. The precise
-  [local allocation extent contract](native-lowering.md#local-allocation-extent)
+  Existing tuple projection and unpacked-return mechanisms remain in use. The
+  precise [local allocation extent contract](native-lowering.md#local-allocation-extent)
   documents the SBCL adaptation and lifetime restrictions.
 
 ---
@@ -846,31 +855,52 @@ shaped around individual benchmarks rather than general SBCL analyses and
 transforms. Each item below states the current special case, the corresponding
 SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
 
-### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`)
+### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`) — **implemented**
 
-- **Current special case**: `_GlobalConstantStores.visit_GlobalVar`
-  (`mule/compiler/locall.py:756-792`) only folds module-level bindings whose
-  identifier satisfies `leaf.name.startswith("_") and leaf.name.isupper()`
-  (matching `_VOCAB`, `_TAGS`, `_RECORDS` in benchmark suites), while
-  `_import_constant_leaf` (`mule/compiler/locall.py:2051-2069`) requires the
-  opposite (`not orig_name.startswith("_") and orig_name.isupper()`).
-- **SBCL reference**: `find-free-var` and `ir1-convert-var` in
-  `src/compiler/ir1tran.lisp`, `:variable :kind :constant` / `:global` in
-  `src/compiler/globaldb.lisp`, and `leaf-ever-set` / `basic-var-sets` on
-  `BasicVar` in `src/compiler/node.lisp`. Constantness is determined by binding
-  write sets and declaration/module policy, never by identifier spelling or case.
-- **Required implementation**:
-  1. Remove all `startswith("_")` and `.isupper()` identifier checks from
-     `_GlobalConstantStores`, `_GlobalBindingUses`, and `_import_constant_leaf`
-     in `mule/compiler/locall.py`.
-  2. Populate `GlobalVar.sets` during IR1 conversion (`ir1tran.py`) in the same
-     way as `LambdaVar.sets`, and record whether the module component contains
-     dynamic module-namespace mutations (`globals()[...]`, `setattr(sys.modules[...], ...)`).
-  3. Treat any module-level `GlobalVar` with a single top-level assignment to an
-     immutable constant or frozen container initializer and no other writes in
-     the compilation unit (or an explicit `Final` annotation) as a constant/proven
-     binding, and export that binding fact in compiled module summaries for
-     cross-module imports.
+- **Status**: **Implemented**.
+  - Removed all `startswith("_")` and `.isupper()` identifier-spelling checks
+    from `_GlobalConstantStores` and cross-module constant import propagation in
+    `mule/compiler/locall.py`, and from `_GlobalConstantScan` in
+    `mule/compiler/main.py`.
+  - Tracked module-level `GlobalVar.sets` alongside dominance/post-dominance
+    (`_unconditional_toplevel_stores` in `mule/compiler/locall.py`) and
+    module-namespace dynamic mutation flags (`Component.mutates_module_namespace`
+    in `mule/compiler/node.py` / `ir1tran.py` and `has_module_namespace_mutations`
+    in `mule/compiler/locall.py` covering `from ... import *`, mutating uses of
+    `globals()`, `exec`/`eval`, and `setattr`/`delattr`/`.attr = ...` on
+    `sys.modules[...]`).
+  - Recognized single unconditional top-level assignments to immutable constants
+    (including through `Cast` nodes), frozen container initializers
+    (`frozenset(...)`, `tuple(...)`, `bytes(...)`), and explicit `Final` /
+    `Final[T]` / `typing.Final` annotations, and exported proven constant
+    bindings in module summaries for cross-module imports without treating
+    imported function bindings as value constants.
+  - Preserved exact constant types (`IntegerType(c, c)`, `BooleanType(b, b)`,
+    `TEXT_TYPE`, `TupleType` with exact element types) on `Final`-annotated
+    top-level bindings (`locall.py`) and folded proven intra-module and
+    cross-module `Final` global references directly to `Constant` leaves in IR1
+    (`_GlobalConstantScan` / `_fold_protocol_constants` in `main.py`, matching
+    SBCL's `defconstant` reference conversion in `src/compiler/ir1tran.lisp:355`),
+    while widening unannotated module globals via `_widen_user_constant_type` so
+    external `module.attr = ...` rebinding remains valid.
+  - Implemented `fold-call-derived-to-constant` (`_fold_call_derived_to_constant`
+    in `ir1opt.py`, matching `src/compiler/ir1opt.lisp:1550, 2450`) across all
+    flushable known calls and exact container/string length derivation on
+    `_storage_length` and `_text_length` (`_derive_storage_length`,
+    `_derive_text_length`, and `"flushable"` protocol query attributes in
+    `protocols.py`, matching `vector-length-type` in
+    `src/compiler/array-tran.lisp:2233-2257`), folding `len` on constant/global
+    sequences and flow-narrowed locals to `Constant` leaves in IR1 and flushing
+    dead `Ref` operands.
+  - Extended IR1 constant folding (`_constant_fold`, `_constant_fold_unary` in
+    `ir1opt.py`, matching `%constant-fold-call` in
+    `src/compiler/ir1opt.lisp:2289-2295`), integer interval comparison folding
+    (`_integer_interval_comparison` in `typetran.py`), and integer power-of-two
+    strength reduction (`_RewriteIntConstant.visit_GlobalVar` in `srctran.py`)
+    to fold flushable pure bound references with singleton `derived_type`
+    alongside syntactic `Constant` leaves, and widened non-integer `min`/`max`
+    derivation (`derive_min2_types` / `derive_max2_types` in `fndb.py`) so
+    unordered singleton types do not claim a foldable constant result.
 
 ### 6B. Call-site argument propagation (`propagate-to-args`) vs. unannotated parameter guessing
 
@@ -899,40 +929,28 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
      attribute-name guessing once `propagate-to-args` and declared annotations
      drive entry specialization.
 
-### 6C. IR1 combination matching (`cmatch` / `splice-fun-args`) to replace physical IR1 adjacency and IR2 slice peepholes
+### 6C. IR1 combination matching (`cmatch` / `splice-fun-args`) to replace physical IR1 adjacency and IR2 slice peepholes (completed)
 
-- **Current special case**:
-  - IR1 transforms in `mule/compiler/modarith.py:89-161`
-    (`_match_assoc_int_binary`), `mule/compiler/containtran.py:362-525`
-    (`_transform_small_containment`), and `mule/compiler/seqtran.py:1168-1331`
-    (`_optimize_getslice`) require physical node adjacency
-    (`inner_node.next is fun_ref.prev`).
-  - IR2 `mule/compiler/ir2tran.py` contains a 445-line VOP peephole pass for
-    `str[a:b] == target` (`_fuse_text_slice_compares`, lines 717-1143, with
-    `_safe_slice_compare_intervening_step` tailored to skip `i = end + 1` in
-    `json_tokenizer.py`) and `note_int_parse` (lines 3183-3229) for
-    `int(str[a:b])`.
-- **SBCL reference**: `lvar-matches` and `cmatch` in
-  `src/compiler/combination-match.lisp`, `splice-fun-args` and
-  `almost-immediately-used-p` in `src/compiler/ir1util.lisp`,
-  `deftransform string=*` in `src/compiler/seqtran.lisp`, and `%subseq` splicing
-  in `src/compiler/srctran.lisp`.
-- **Required implementation**:
-  1. Implement `lvar_matches`, `almost_immediately_used_p`, and
-     `splice_fun_args` in `mule/compiler/ir1opt.py`, matching producer
-     `Combination`s through `Lvar.uses` and single-assignment local `LambdaVar`
-     references (`ok-lvar-lambda-var`) across intervening flushable or
-     non-interfering nodes.
-  2. Canonicalize commutative constants (`const + x -> x + const`,
-     `const & x -> x & const`, `const == x -> x == const`) as in SBCL's
-     `associate-arguments` (`src/compiler/srctran.lisp`), and replace all
-     `node.next is fun_ref.prev` checks in `modarith.py`, `containtran.py`, and
-     `seqtran.py` with `lvar_matches` / `splice_fun_args` / `constant_lvar_value`.
-  3. Move `str[a:b] == target` and `int(str[a:b])` into IR1 `@deftransform`s in
-     `seqtran.py` and `srctran.py` using `splice_fun_args` on `%getslice`,
-     extend `scalar.py` to forward `(seq, start, stop)` across non-escaping
-     multi-use local slice bindings (`if word == "a" or word == "b":`), and
-     delete `_fuse_text_slice_compares` and `note_int_parse` from `ir2tran.py`.
+- **Implemented architecture**:
+  - `ok_lvar_lambda_var`, `almost_immediately_used_p`, `lvar_matches`, and
+    `splice_fun_args` in `mule/compiler/ir1opt.py` match producer
+    `Combination`s through `Lvar.uses` and single-assignment local `LambdaVar`
+    references across intervening flushable or effectless nodes, following
+    SBCL's `lvar-matches` (`src/compiler/combination-match.lisp`) and
+    `almost-immediately-used-p` / `splice-fun-args` (`src/compiler/ir1util.lisp`).
+  - `_canonicalize_commutative_constant` in `mule/compiler/ir1opt.py`
+    canonicalizes commutative constants (`const + x -> x + const`,
+    `const & x -> x & const`, `const == x -> x == const`), and IR1 transforms
+    in `modarith.py`, `containtran.py`, `srctran.py`, `typetran.py`, and
+    `seqtran.py` match through `splice_fun_args` and `almost_immediately_used_p`
+    rather than requiring physical `inner_node.next is fun_ref.prev` adjacency.
+  - `str[a:b] == target` (`%text_slice_compare` / `%text_slice2_compare`) and
+    `int(str[a:b])` (`%parse_int_text` / `%parse_int_slice`) are IR1
+    `@deftransform`s in `mule/compiler/seqtran.py` and `mule/compiler/srctran.py`
+    using `splice_fun_args` on `%getslice`; `escape.py` and `scalar.py` forward
+    `(seq, start, stop)` across non-escaping multi-use local slice bindings;
+    and `_fuse_text_slice_compares` and `note_int_parse` have been removed from
+    `mule/compiler/ir2tran.py`.
 
 ### 6D. Single-character string comparison transforms and codepoint representations (`seqtran.lisp` / `represent.lisp`)
 
@@ -1164,25 +1182,21 @@ describe the Python mutation and ownership adaptations to SBCL.
      containers) and remove the `element_contracts` side-table and
      `_IsElementPreservingBuiltin`.
 
-### 6L. Pre-representation calling-convention selection (`locall.lisp`) and general inline string equality (`seqtran.lisp`)
+### 6L. Pre-representation calling-convention selection (`locall.lisp`) and general inline string equality (`seqtran.lisp`) — Implemented
 
-- **Current special case**:
-  - `select_numeric_calls` (`mule/compiler/codegen.py:2831-3130`) runs inside
-    `codegen.py` after `represent.py`, skips self-recursive functions
-    (`target is component.lambda_`), and rejects guarded `-> int` returns
-    (`return_checks.py:322`).
-  - `_emit_inline_latin1_compare` (`mule/compiler/vops.py:1679-1793`) only
-    handles `TextLiteral`s of length `2..24` and synthesizes fake `inline.text`
-    SSA names.
-- **SBCL reference**: `convert-local-call` and `merge-tail-sets` in
-  `src/compiler/locall.lisp`, `src/compiler/represent.lisp`, and `string=*` in
-  `src/compiler/seqtran.lisp`.
-- **Required implementation**:
-  1. Select `CallingConvention` (`FIXNUM` / `DOUBLE` parameter and return SCs)
-     in `callconv.py` before `represent.py:select_representations`, support
-     self-recursive calls to `numeric_entry`, and support guarded `-> int`
-     return conventions symmetrically with `-> float`.
-  2. Handle length-0 and length-1 `TextLiteral` equality via direct length /
-     `latin1_character` pointer comparison and use a clean `alwaysinline` helper
-     for general `InlineLatin1` equality on both literal and variable operands
-     without fake SSA names.
+- **Implemented architecture**:
+  - `NumericEntry`, `numeric_entry`, and `select_numeric_calls` live in
+    `mule/compiler/callconv.py` alongside `CallConvention` and run in
+    `compile_component` after `assign_variable_primitive_types(component)` and
+    before `represent.py:select_representations(component)` (so representation
+    selection runs once with final call operand/result restrictions).
+    `select_numeric_calls` supports self-recursive and mutually recursive calls
+    (both annotated with `-> int` / `-> float` and unannotated, tail and non-tail),
+    closures, and guarded mixed `(SIGNED/DOUBLE, DESCRIPTOR)` conventions.
+  - `_pack_inline_latin1_words` and `_emit_inline_latin1_compare`
+    (`mule/compiler/vops.py`) cover length `0..24` Latin-1 literals (comparing
+     only the 16-bit `(len << 8) | kind_tag` header for `""` and the header plus
+    `words[0]` for single-character literals without materializing a borrowed
+    text slot or synthesizing fake `inline.text` SSA names), and general `str`
+    equality uses the `alwaysinline` `@mule.fast.text.eq` /
+    `@mule.fast.text.ne` helpers before falling back to `@mule_text_eq`.

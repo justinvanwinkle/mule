@@ -11,6 +11,8 @@ the program being generated.
 
 from __future__ import annotations
 
+from mule import ast
+
 from .ctype import (
     BOOLEAN,
     BOOLEAN_FALSE,
@@ -36,8 +38,9 @@ from .ctype import (
     UniqueObjectType,
     ValueType,
 )
-from .fndb import defknown
-from .knownfun import defconstrain, defpropagate
+from .fndb import _DERIVATION_MODE, _arg_type, defknown
+from .ir1opt import bound_constant_literal
+from .knownfun import defconstrain, defpropagate, deftransform
 from .main import compile_toplevel, ir1_phases
 from .node import ForeignCallTarget
 from .vops import (
@@ -47,6 +50,8 @@ from .vops import (
     invalid_initializer,
     lookup_method,
     numeric_modulo,
+    physical_field_read,
+    physical_field_write,
     primitive,
     read_int64,
     render_text,
@@ -133,6 +138,8 @@ _COMPILED_CALLS = {
     "_hex_protocol": "mule_format__hex",
 }
 _EMITTERS = {
+    "_instance_field": physical_field_read,
+    "_set_instance_field": physical_field_write,
     "_dir_method": lookup_method("__dir__", include_object_defaults=True),
     **{name: lookup_method(method) for name, method in _LOOKUPS.items()},
     **{name: text_access(function) for name, function in _TEXT_ACCESS.items()},
@@ -148,13 +155,72 @@ _EMITTERS = {
     "_write_int64": write_int64,
 }
 
+
+class _StorageLiteralLength(ast.Visitor):
+    def visit_Node(self, node) -> int | None:
+        return None
+
+    def visit_Tuple(self, node: ast.Tuple) -> int:
+        return len(node.elements)
+
+    def visit_BytesLiteral(self, node: ast.BytesLiteral) -> int:
+        return len(node.value)
+
+
+_STORAGE_LITERAL_LENGTH = _StorageLiteralLength()
+
+
+class _TextLiteralLength(ast.Visitor):
+    def visit_Node(self, node) -> int | None:
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> int:
+        return len(node.value)
+
+
+_TEXT_LITERAL_LENGTH = _TextLiteralLength()
+
+
+def _derive_storage_length(node) -> ValueType:
+    if not _DERIVATION_MODE.active and len(node.args) == 1:
+        seq_type = _arg_type(node.args[0])
+        if seq_type is BOTTOM:
+            return BOTTOM
+        exact_len = seq_type.exact_length()
+        if (
+            exact_len is None
+            and (lit := bound_constant_literal(node.args[0])) is not None
+        ):
+            exact_len = lit.accept(_STORAGE_LITERAL_LENGTH)
+        if exact_len is not None:
+            return IntegerType(exact_len, exact_len)
+    return IntegerType(0, (1 << 60) - 1)
+
+
+def _derive_text_length(node) -> ValueType:
+    if not _DERIVATION_MODE.active and len(node.args) == 1:
+        text_type = _arg_type(node.args[0])
+        if text_type is BOTTOM:
+            return BOTTOM
+        exact_len = text_type.exact_length()
+        if (
+            exact_len is None
+            and (lit := bound_constant_literal(node.args[0])) is not None
+        ):
+            exact_len = lit.accept(_TEXT_LITERAL_LENGTH)
+        if exact_len is not None:
+            return IntegerType(exact_len, exact_len)
+    return IntegerType(0, (1 << 58) - 1)
+
+
 _RESULT_TYPES = {
+    "_instance_field": lambda node: None,
     "_tuple_storage": lambda node: BooleanType(),
     "_text_storage": lambda node: BooleanType(),
     "_storage_compatible": lambda node: BooleanType(),
     "_class_is_subclass": lambda node: BooleanType(),
-    "_storage_length": lambda node: IntegerType(0, (1 << 60) - 1),
-    "_text_length": lambda node: IntegerType(0, (1 << 58) - 1),
+    "_storage_length": _derive_storage_length,
+    "_text_length": _derive_text_length,
     "_text_codepoint": lambda node: IntegerType(0, 0x10FFFF),
     "_integer_storage": lambda node: IntegerType(),
     "_storage_hash": lambda node: OPTIONAL_FIXNUM,
@@ -184,6 +250,8 @@ _NON_INTEGER_FIRST_PRIMITIVES = frozenset(
 )
 
 _BORROWED_PRIMITIVE_ARGS = {
+    "_instance_field": frozenset({0, 1}),
+    "_set_instance_field": frozenset({0, 1}),
     "_storage_reserve": frozenset({0, 1}),
     "_tuple_storage": frozenset({0}),
     "_text_storage": frozenset({0}),
@@ -209,7 +277,7 @@ _BORROWED_PRIMITIVE_ARGS = {
 PRIMITIVES = {
     name: defknown(
         name,
-        *(() if name in _RESULT_TYPES else ("call", "unsafe")),
+        *(("flushable",) if name in _RESULT_TYPES else ("call", "unsafe")),
         derive_type=_RESULT_TYPES.get(
             name,
             (lambda node: TEXT_TYPE) if name in _COMPILED_CALLS else None,
@@ -226,6 +294,35 @@ for _name, _emit in _EMITTERS.items():
         _emit,
         consumes_arguments=_name in _COMPILED_CALLS or _name == "_initialize",
     )
+
+
+@deftransform("_instance_field")
+def _transform_instance_field(node):
+    from .ir1opt import transform_physical_field_ref
+
+    return transform_physical_field_ref(node)
+
+
+@deftransform("_set_instance_field")
+def _transform_set_instance_field(node):
+    from .ir1opt import transform_physical_field_set
+
+    return transform_physical_field_set(node)
+
+
+@defpropagate("_instance_field")
+def _propagate_instance_field(visitor, node):
+    # Constraint analysis loads before protocol registration during startup.
+    from .constraint import _propagate_instance_field as propagate
+
+    return propagate(visitor, node)
+
+
+@defpropagate("_set_instance_field")
+def _propagate_set_instance_field(visitor, node):
+    from .constraint import _propagate_set_instance_field as propagate
+
+    return propagate(visitor, node)
 
 
 @defpropagate("_storage_append")
@@ -278,6 +375,23 @@ def _propagate_storage_length(visitor, node) -> ValueType | None:
         if seq_type is BOTTOM:
             return BOTTOM
         exact_len = seq_type.exact_length()
+        if exact_len is None and (lit := bound_constant_literal(args[0])) is not None:
+            exact_len = lit.accept(_STORAGE_LITERAL_LENGTH)
+        if exact_len is not None:
+            return IntegerType(exact_len, exact_len)
+    return None
+
+
+@defpropagate("_text_length")
+def _propagate_text_length(visitor, node) -> ValueType | None:
+    args = node.args
+    if len(args) == 1:
+        text_type = visitor.type_of(args[0])
+        if text_type is BOTTOM:
+            return BOTTOM
+        exact_len = text_type.exact_length()
+        if exact_len is None and (lit := bound_constant_literal(args[0])) is not None:
+            exact_len = lit.accept(_TEXT_LITERAL_LENGTH)
         if exact_len is not None:
             return IntegerType(exact_len, exact_len)
     return None
@@ -383,7 +497,7 @@ def _propagate_allocate_instance(visitor, node) -> ValueType | None:
         arg_type = visitor.type_of(args[0])
         if arg_type is BOTTOM:
             return BOTTOM
-        return arg_type.allocate_instance_type()
+        return visitor.walk.allocated_instance_type(arg_type)
     return None
 
 

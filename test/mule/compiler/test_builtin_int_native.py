@@ -77,7 +77,9 @@ def test_boolean_int_local_preserves_boolean_storage_and_identity(tmp_path):
         ),
         (
             (
-                "def calculate() -> int:\n value: int = 9223372036854775807\n"
+                "def calculate() -> int:\n"
+                " flag: int = len([1])\n"
+                " value: int = 9223372036854775807 if flag else 9223372036854775806\n"
                 " result: int = (value + 1) - 1\n return result\n"
             ),
             "",

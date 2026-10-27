@@ -42,13 +42,12 @@ from .ir1opt import (
     constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
+    splice_fun_args,
 )
 from .ir1util import (
-    _flush_operand,
     is_flushable_ref,
     replace_combination_with_lvar,
     retarget_known_combination,
-    unlink_node,
 )
 from .knownfun import deftransform, fun_info
 from .node import (
@@ -82,64 +81,38 @@ def _has_invertible_total_order(left_type: ValueType, right_type: ValueType) -> 
     )
 
 
-class _KnownCombinationProducer(NodeVisitor):
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node: Combination):
-        if node.kind is CallKind.KNOWN and node.fun_info is not None:
-            return node
-        return None
-
-
-_KNOWN_COMBINATION_PRODUCER = _KnownCombinationProducer()
+_INVERTIBLE_PRODUCER_NAMES = frozenset(
+    {"%unary_not", *_INVERTED_COMPARISONS, *_INVERTED_ORDER_COMPARISONS}
+)
 
 
 @deftransform("%unary_not")
 def _transform_unary_not(node: Combination) -> bool:
-    if len(node.args) != 1 or len(node.fun.uses) != 1:
+    if len(node.args) != 1:
         return False
-    fun_ref = node.fun.uses[0]
     arg = node.args[0]
-    if len(arg.uses) != 1:
-        return False
-    producer = arg.uses[0].accept(_KNOWN_COMBINATION_PRODUCER)
-    if (
-        producer is None
-        or producer.prev is None
-        or fun_ref.prev is None
-        or fun_ref.next is not node.prev
-        or producer.next is not fun_ref.prev
-    ):
+    producer = splice_fun_args(arg, _INVERTIBLE_PRODUCER_NAMES, splice=False)
+    if producer is None or producer.fun_info is None:
         return False
     name = producer.fun_info.name
     if name == "%unary_not" and len(producer.args) == 1:
         inner = producer.args[0]
         if not lvar_type(inner).fits(BOOLEAN):
             return False
-        producer.args = []
-        arg.dest = None
-        inner.dest = node
-        node.args = [inner]
+        splice_fun_args(arg, (name,), 1)
         replace_combination_with_lvar(node, inner)
-        _flush_operand(producer.fun)
-        unlink_node(producer)
         return True
     inverted_name = _INVERTED_COMPARISONS.get(name)
     if inverted_name is not None and len(producer.args) == 2:
         left, right = producer.args
-        producer.args = []
-        _flush_operand(producer.fun)
-        unlink_node(producer)
+        splice_fun_args(arg, (name,), 2)
         retarget_known_combination(node, fun_info(inverted_name), [left, right])
         return True
     inverted_order = _INVERTED_ORDER_COMPARISONS.get(name)
     if inverted_order is not None and len(producer.args) == 2:
         left, right = producer.args
         if _has_invertible_total_order(lvar_type(left), lvar_type(right)):
-            producer.args = []
-            _flush_operand(producer.fun)
-            unlink_node(producer)
+            splice_fun_args(arg, (name,), 2)
             retarget_known_combination(node, inverted_order, [left, right])
             return True
     return False
@@ -459,8 +432,6 @@ def _integer_interval_comparison(
 ) -> bool | None:
     if not (left_type.fits(INTEGER) and right_type.fits(INTEGER)):
         return None
-    if left_type.exact_integer() is not None and right_type.exact_integer() is not None:
-        return None
     lmin, lmax = left_type.minimum, left_type.maximum
     rmin, rmax = right_type.minimum, right_type.maximum
     if operator is ast.ComparisonOperator.LESS:
@@ -488,11 +459,27 @@ def _integer_interval_comparison(
             lmin is not None and rmax is not None and lmin > rmax
         ):
             return False
+        if (
+            lmin is not None
+            and lmin == lmax
+            and rmin is not None
+            and rmin == rmax
+            and lmin == rmin
+        ):
+            return True
     elif operator is ast.ComparisonOperator.NOT_EQUAL:
         if (lmax is not None and rmin is not None and lmax < rmin) or (
             lmin is not None and rmax is not None and lmin > rmax
         ):
             return True
+        if (
+            lmin is not None
+            and lmin == lmax
+            and rmin is not None
+            and rmin == rmax
+            and lmin == rmin
+        ):
+            return False
     return None
 
 

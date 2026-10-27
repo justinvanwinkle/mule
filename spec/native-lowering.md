@@ -38,6 +38,16 @@ type from the lvar's derived type. A common float or fixnum representation can
 therefore survive a return or control-flow merge; genuinely heterogeneous
 alternatives retain the existing object representation.
 
+SBCL caches this type on the lvar in `src/compiler/node.lisp`,
+`lvar-derived-type`, and invalidates it when the IR1 value changes. Mule's
+producer facts vary by entry context, so LTN keeps the joined type on its
+temporary IR2 lvar annotation instead. IR2 conversion reuses it only when its
+LTN token matches the annotation's token. The caller must pass the token from
+the preceding LTN invocation and keep the graph and context facts unchanged
+between those phases. Older annotations and native-plan selections that did
+not compute a join use the current facts instead. The annotation is cleared
+after conversion.
+
 ## Proven floats in object entries
 
 LTN distinguishes a proven, bound Python float from an unknown descriptor and
@@ -218,6 +228,54 @@ both the owner and receiver root after the consumer, so packing, expiration and
 error cleanup observe their actual live ranges. This avoids field retains on
 hits without leaking or prematurely releasing descriptor results on misses.
 
+Compiler-private `_instance_field` and `_set_instance_field` operations have
+different semantics from Python attribute access. They access the actual
+reference-slot map directly, without descriptors, attribute hooks, or the
+instance dictionary. Their runtime fallback shares the existing physical
+`instance_field` / `set_instance_field` implementation. An owned read retains
+the value. A write retains the replacement before storing it and releasing the
+previous value. Missing and unset fields raise `AttributeError`.
+
+An IR1 `deftransform` canonicalizes a proven constant field name into
+`PhysicalFieldInfo`. It preserves nonconstant name evaluation and unbound
+checks. LTN selects the physical access plan before ordinary IR2 conversion;
+it does not remove name operands or rewrite access templates in a VOP post-pass.
+An unconditional constant-index operation requires an unmodified parameter of
+a runtime-guarded entry with matching reference-layout metadata. An inferred
+`InstanceType` from a mutable field is only a prediction, not that proof.
+Predicted layouts receive an actual reference-layout guard and a physical-name
+fallback. Other receivers use the UTF-8-name runtime ABI without constructing
+a text object for the constant name. Physical-call entry selection retains
+actual argument guards even when predicted dispatch facts match.
+IR1 retains useful argument narrowing through known calls even when their
+general return remains unknown. Call planning preserves guarded layout
+specialization instead of selecting a less-specialized scalar body.
+Native payloads, incomplete slot declarations, private-name layout expansion,
+nonunique class bindings, and unknown class construction retain the fallback.
+Builtin storage domains are scoped to compiled protocol definitions, not user
+classes that happen to share a builtin spelling.
+
+A proven physical read uses the same rooted, callback-free borrowing region as
+ordinary slots. It needs only an explicit receiver-root end operand: there is
+no successful descriptor fallback and no nullable fallback owner to release.
+The unset arm reports the original null observation without rereading the slot.
+Owned reads use the selected representation's ownership category: immediate
+values need no retain, and proven heap values use heap-only retention.
+Rooted physical fields also supply container-element borrowing. The local owner
+remains live through the consumer, including when its receiver read was the
+last use. Element borrowing still rejects callbacks or owner mutation inside
+the protected region.
+An array borrow may end at a physical storage write or append. These primitives
+finish array access before releasing an overwritten element or a failed moved
+append value. The compiler does not dereference that array after the callback.
+Unrelated assignments that can destroy an old binding remain barriers, even
+when the assigned value is otherwise unused.
+Dictionary and set algorithms use these explicit physical operations for their
+private table fields. Their stores evaluate the RHS first and delete their
+single-assignment staging locals immediately after the write. Copied-list
+inference follows a single-read forwarding alias without discarding that
+lifetime-ending deletion.
+
 ## Closure and value-cell slot lowering
 
 SBCL's `src/compiler/envanal.lisp`, `compute-closure` and
@@ -279,7 +337,11 @@ cleanup rather than adding CPython's traceback-local lifetimes.
 Fixed tuple/list allocations instead become scalar locals when every use,
 alias, and lifetime is representable. The consumer supports constant-index
 reads, bounded runtime-index reads, fixed-index list replacement, length,
-structural unpack, and local aliases. Runtime projections require a builtin
+truthiness (`bool`, `not`, and conditional branches), disjoint-type identity
+comparisons (`is` and `is not` against `None`, `bool`, `int`, `float`, `str`,
+`bytes`, `bytearray`, `dict`, or `range`), reflexive-equality containment
+(`in` and `not in` for arity 1–8), structural unpack, and local aliases.
+Runtime projections require a builtin
 fixnum index whose complete inferred range lies within the aggregate's positive
 and negative index bounds. Negative indices normalize before selecting an
 existing scalar child. The projection preserves the child's object identity and
@@ -287,9 +349,11 @@ acquires its own reference before the aggregate's final owner releases the
 scalar slots. Unproved indices and dynamic replacement retain ordinary container
 allocation and indexing behavior.
 
-Aliasing families close within one IR2 block, while a single named
-local with inert children and no local exception handlers may also span multiple
-blocks (`if/else` joins and loop-carried state). Element evaluation order and
+Aliasing families may close within one IR2 block or span multiple blocks
+(`if/else` joins, conditional expression temporaries, multi-alias lifetimes,
+explicit `del` across branches, and loop-carried state) when forward dataflow
+proves consistent incoming live owners at every control-flow join and no local
+exception handlers intervene. Element evaluation order and
 fixed-index list replacement remain observable. Deleting or replacing the last
 aggregate alias releases its children at the original destruction point. When
 all children are inert (`int`, `float`, `bool`, `None`, `str`, `bytes`), the
@@ -304,10 +368,11 @@ For potentially observable children, a raising operation requires only unhidden
 named owners and no local exception handler. Every such operation must share
 the same last live owner in the backend's cleanup order. Scalar child slots
 occupy that owner's cleanup position, in reverse element order. Normal last-owner
-destruction clears the slots earlier. Temporary owners, changing cleanup owners,
-cross-block lifetimes, and projections with pending element-contract checks
-retain the ordinary allocation path. Child releases for materialized sequences
-also follow reverse order, which weak-reference callbacks can observe.
+destruction clears the slots earlier. Temporary owners across fallible
+operations, changing cleanup owners, and projections with pending
+element-contract checks retain the ordinary allocation path. Child releases for
+materialized sequences also follow reverse order, which weak-reference
+callbacks can observe.
 
 SBCL `find-lvar-dynamic-extents` starts from dynamic-extent declarations and
 trusted downward-function-argument information, then proves compatible uses and
@@ -672,9 +737,9 @@ per-value type lattice and applies it to representation-specific VOP emission.
 
 ### Numeric conventions in mixed bodies
 
-Same-unit proven positional calls can select a numeric internal entry without
-requiring a whole-function native plan. The selected semantic context must fit
-the caller's proven argument facts without guards. A numeric-use float result
+Same-unit proven and guarded positional calls can select a numeric internal entry
+without requiring a whole-function native plan. The selected semantic context must
+fit the caller's proven argument facts without guards. A numeric-use float result
 returns as `double`; a non-boolean integer proven within the fixnum range returns
 as `i64`. A numeric entry can still execute object operations and retains the
 ordinary frame, traceback, handler, and descriptor cleanup paths.
@@ -689,8 +754,10 @@ before delivering the result; zero and NaN are not failure sentinels.
 Object and unknown callers retain the ordinary object entry. In particular,
 numeric float entries are selected only when every assignment-connected caller
 consumer admits doubles, not for identity comparisons or escaping objects.
-Keywords, default/reordered arguments, foreign units, and direct self-recursive
-edges retain the existing object convention in this increment. See
+Self-recursive, mutually recursive, closure, and guarded same-unit calls use
+numeric conventions when their argument and return representations qualify;
+keywords, default/reordered arguments, and foreign units retain the object
+convention. See
 [numeric calling conventions](compiler-gaps.md#numeric-internal-calling-conventions-implemented).
 
 ## Borrowed local lifetimes
@@ -824,16 +891,21 @@ to reference-counted parameter lifetimes. Foreign, generator, native, numeric,
 and protocol entry paths remain owning until their contracts explicitly support
 ownership specialization. Generic container drop fusion remains separate.
 
-The initial call-site support is explicit positional same-unit calls with
-matching arity and stable, noncaptured parameter locals. Default, variadic,
-method, closure, unpacked-return, and exported cross-unit entry contracts do
-not select borrowed bodies. Initial function-database noncapture declarations
-cover identity comparisons (`is` and `is not`); unused parameters and safe local
-assignment dependencies can also qualify. Other operations conservatively
-escape until their effects are declared. In particular, truth and callable
-operations may publish their receivers through user callbacks. Guarded recursive
-forwarding remains escaping; the local dependency solver is not a claim of
-general interprocedural borrowing for dynamic calls.
+Call-site support covers same-unit calls (positional, keyword, and
+default-parameter calls mapped through `call_order`) with stable, noncaptured
+parameter locals. Variadic, method, non-local closure, unpacked-return, and
+exported cross-unit entry contracts do not select borrowed bodies directly,
+though cross-unit `ForeignFunction` interfaces (`BuiltinsInterface` and
+`ModuleInterface`) export `borrowed_parameters` summaries so callers' escape
+analyses can prove that arguments passed to non-capturing imported functions do
+not escape. Escape analysis also classifies non-user-code truthiness, value
+comparisons, `math.sqrt`, exact builtin container subscript keys, and exact
+builtin method calls (`str`, `list`, `bytearray`, `dict`) as non-escaping.
+Other operations conservatively escape until their effects are declared. In
+particular, unknown truth and callable operations may publish their receivers
+through user callbacks. Guarded recursive forwarding remains escaping; the local
+dependency solver is not a claim of general interprocedural borrowing for
+dynamic calls.
 
 Exact-dictionary protocol calls transfer operands they already own and acquire
 references only for borrowed operands. The consuming compiled protocol releases

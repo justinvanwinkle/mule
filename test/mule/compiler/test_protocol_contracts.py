@@ -68,7 +68,7 @@ def test_protocol_preparation_keeps_general_body_and_adds_declared_entry():
         )
         indices = [
             node
-            for node in known_calls(function, "%getattr")
+            for node in known_calls(function, "%physical_field_ref")
             if node.info.name == "_indices"
         ]
         assert indices

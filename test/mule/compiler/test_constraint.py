@@ -10,7 +10,6 @@ from mule.compiler.ctype import (
     FLOAT,
     INTEGER,
     PYTHON_INTEGER,
-    REAL,
     UNBOUND,
     UNKNOWN,
     BooleanType,
@@ -195,9 +194,14 @@ def test_constant_representation_is_proven(literal, expected, fixnum, immortal):
 def test_integer_ranges_detect_promotion(
     operator, left, right, minimum, maximum, fixnum
 ):
-    # Operands flow through locals so the operation is derived, not folded.
-    compilation = lower(f"a = {left}\nb = {right}\nx = a {operator} b\n")
-    result = last_fact(compilation, function(compilation, 0), binaries)
+    # Operands flow through a non-singleton branch so the operation is derived, not folded.
+    compilation = lower(
+        f"def f(c):\n a = {left}\n b = {right}\n"
+        f" x = (a if c else {left}) {operator} b\n return x\n"
+        f"a = {left}\nb = {right}\nx = a {operator} b\n"
+    )
+    entry = function(compilation, 0)
+    result = operand_fact(compilation, entry, stored_value(entry, "x"))
     assert (result.minimum, result.maximum) == (minimum, maximum)
     assert result.is_fixnum is fixnum
 
@@ -213,12 +217,14 @@ def test_literal_arithmetic_is_folded_to_a_constant():
 
 
 def test_bool_arithmetic_does_not_decode_heap_bool_as_integer_tag():
-    compilation = lower("a = True\nb = False\ns = a + b\n")
-    entry = function(compilation, 0)
-    first = loads(entry)[0]
-    assert not fact(compilation, entry, first).is_fixnum
-    assert fact(compilation, entry, first).is_immortal
-    assert last_fact(compilation, entry, binaries).is_fixnum
+    compilation = lower(
+        "def f(c):\n a = True if c else False\n b = False\n return a + b\n"
+    )
+    body = function(compilation, 1)
+    first = loads(body)[1]
+    assert not fact(compilation, body, first).is_fixnum
+    assert fact(compilation, body, first).is_immortal
+    assert last_fact(compilation, body, binaries).is_fixnum
 
 
 def test_unknown_parameter_operator_can_return_arbitrary_object():
@@ -230,8 +236,10 @@ def test_unknown_parameter_operator_can_return_arbitrary_object():
 
 @pytest.mark.parametrize("operator", ["-", "~"])
 def test_unary_range_follows_integer_bounds(operator):
-    compilation = lower(f"a = {-(2**62)}\nr = {operator}a\n")
-    result = last_fact(compilation, function(compilation, 0), unaries)
+    compilation = lower(
+        f"def f(c):\n a = {-(2**62)} if c else {-(2**62) + 1}\n return {operator}a\n"
+    )
+    result = last_fact(compilation, function(compilation, 1), unaries)
     assert result.is_fixnum is (operator == "~")
 
 
@@ -461,7 +469,7 @@ def test_joined_global_functions_require_unanimous_proven_identity(same_target):
     second = "first" if same_target else "second"
     compilation = lower(
         "def first():\n return 7\ndef second():\n return 'text'\n"
-        f"c = 1\nif c < 2:\n f = first\nelse:\n f = {second}\nresult = f()\n"
+        f"c = len([1])\nif c < 2:\n f = first\nelse:\n f = {second}\nresult = f()\n"
     )
     result = last_fact(compilation, function(compilation, 0), calls)
     assert result.is_fixnum is same_target
@@ -769,7 +777,7 @@ def test_python_integer_branch_narrowing_recovers_fixnum_outside_boolean_domain(
     assert narrowed.is_fixnum
 
 
-def test_real_annotation_propagates_numeric_and_float_operations():
+def test_float_annotation_propagates_float_operations():
     compilation = lower(
         "def compute(x: float, y: float):\n"
         " s = x + y\n"
@@ -780,10 +788,10 @@ def test_real_annotation_propagates_numeric_and_float_operations():
         " return s, q, f, n, c\n"
     )
     fn = function(compilation, 1)
-    assert fact(compilation, fn, stored_value(fn, "s").use()) == REAL
+    assert fact(compilation, fn, stored_value(fn, "s").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "q").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "f").use()) == FLOAT
-    assert fact(compilation, fn, stored_value(fn, "n").use()) == REAL
+    assert fact(compilation, fn, stored_value(fn, "n").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "c").use()) == BooleanType()
 
 

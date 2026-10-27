@@ -38,10 +38,10 @@ for index in range(n):
 print(len(table))
 """,
     )
-    # The real shared lookup has an observed receiver union. Its borrowed
-    # internal entries are the paths ordinary dict methods call.
-    lookup = case.function_ir(
-        r"mule_fn__table_lookup\.borrow\.observed", unit="builtins"
+    # Inspect the real shared lookup even when LLVM incorporates its loop into
+    # a caller. The original call edges identify that caller, not a symbol guess.
+    lookup = case.inlined_function_ir(
+        r"mule_fn__table_lookup\.(?:numeric\.)?borrow\.observed", unit="builtins"
     )
     assert re.search(
         rf"getelementptr i8, ptr %[-\w.]+, i64 {INSTANCE_FIELDS_OFFSET}\b", lookup
@@ -103,11 +103,13 @@ exercise(len(input()))
         comparisons = re.findall(r"icmp eq i64 (%[-\w.]+), (%[-\w.]+)", body)
         assert any(left in decoded and right in decoded for left, right in comparisons)
         assert not re.search(r"@mule\.fast\.storage\.(?:read|write|length)\(", body)
+        assert not re.search(r"@mule\.attr\.(?:hit|layout)\(", body)
+        assert not re.search(r"@mule_(?:set_)?instance_field(?:_name)?\(", body)
         if operation != "dict_setitem":
             unoptimized = case.function_ir(
                 re.escape(selected[1]) + "$", unit="builtins", optimized=False
             )
-            assert "attr.borrowed" in unoptimized
-            assert "attr.loaded" not in unoptimized
+            assert "physical.borrowed" in unoptimized
+            assert "physical.loaded" not in unoptimized
     case.compare("abcdef\n")
     case.compare("\n")

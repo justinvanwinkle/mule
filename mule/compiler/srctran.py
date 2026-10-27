@@ -44,6 +44,7 @@ from .ctype import (
     BOOLEAN,
     BYTES_TYPE,
     INTEGER,
+    NONE_TYPE,
     PYTHON_INTEGER,
     REAL,
     TEXT_TYPE,
@@ -56,11 +57,11 @@ from .ir1opt import (
     is_imported_module_global,
     lvar_type,
     replace_combination_with_constant,
+    splice_fun_args,
 )
 from .ir1util import (
     _flush_operand,
     delete_ref,
-    flush_combination,
     is_flushable_ref,
     is_pure_bound_ref,
     replace_combination_with_lvar,
@@ -299,6 +300,19 @@ class _RewriteIntConstant(NodeVisitor, LeafVisitor):
         ref.derived_type = IntegerType(self.value, self.value)
         return True
 
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        ref = self._ref
+        if ref is None or not is_flushable_ref(ref):
+            return False
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        span = ref.source.span if ref.source is not None else None
+        new_leaf = Constant(ast.IntegerLiteral(self.value, span=span))
+        ref.leaf = new_leaf
+        new_leaf.refs.append(ref)
+        ref.derived_type = IntegerType(self.value, self.value)
+        return True
+
 
 def _rewrite_int_constant_lvar(lvar: Lvar, value: int) -> bool:
     if len(lvar.uses) != 1:
@@ -312,49 +326,14 @@ def _rewrite_int_constant_lvar(lvar: Lvar, value: int) -> bool:
 _rewrite_constant_int = _rewrite_int_constant_lvar
 
 
-class _UnaryProducer(NodeVisitor):
-    def __init__(self, name: str):
-        self.name = name
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node: Combination):
-        if (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.name == self.name
-            and len(node.args) == 1
-        ):
-            return node
-        return None
-
-
 def _reduce_unary_involution(node: Combination, name: str) -> bool:
-    if len(node.args) != 1 or len(node.fun.uses) != 1:
+    if len(node.args) != 1:
         return False
-    fun_ref = node.fun.uses[0]
-    arg = node.args[0]
-    if len(arg.uses) != 1:
+    inner_node = splice_fun_args(node.args[0], (name,), 1, splice=False)
+    if inner_node is None or not _is_exact_int_type(lvar_type(inner_node.args[0])):
         return False
-    inner_node = arg.uses[0].accept(_UnaryProducer(name))
-    if (
-        inner_node is None
-        or inner_node.prev is None
-        or fun_ref.prev is None
-        or fun_ref.next is not node.prev
-        or inner_node.next is not fun_ref.prev
-    ):
-        return False
-    inner = inner_node.args[0]
-    if not _is_exact_int_type(lvar_type(inner)):
-        return False
-    inner_node.args = []
-    inner.dest = node
-    node.args = [inner]
-    arg.dest = None
-    flush_combination(inner_node)
-    replace_combination_with_lvar(node, inner)
+    splice_fun_args(node.args[0], (name,), 1)
+    replace_combination_with_lvar(node, node.args[0])
     return True
 
 
@@ -718,6 +697,49 @@ def _transform_max(node: Combination) -> bool:
     return True
 
 
+def _is_unit_slice_step(step_lvar: Lvar) -> bool:
+    if not is_pure_bound_ref(step_lvar):
+        return False
+    if lvar_type(step_lvar).fits_none(NONE_TYPE):
+        return True
+    return _exact_int_literal(step_lvar) == 1
+
+
+def _is_slice_bound_lvar(bound_lvar: Lvar) -> bool:
+    bound_type = lvar_type(bound_lvar)
+    if bound_type.is_fixnum:
+        return True
+    return bound_type.fits_none(NONE_TYPE) and is_pure_bound_ref(bound_lvar)
+
+
+@deftransform("int", (TEXT_TYPE,))
+def _transform_int_text(node: Combination) -> bool:
+    retarget_known_combination(node, fndb.PARSE_INT_TEXT, [node.args[0]])
+    return True
+
+
+@deftransform("%parse_int_text")
+def _transform_parse_int_slice(node: Combination) -> bool:
+    if len(node.args) != 1:
+        return False
+    slice_node = splice_fun_args(node.args[0], ("%getslice",), 4, splice=False)
+    if slice_node is None:
+        return False
+    seq_lvar, start_lvar, stop_lvar, step_lvar = slice_node.args
+    if (
+        not lvar_type(seq_lvar).fits_text(TEXT_TYPE)
+        or not _is_slice_bound_lvar(start_lvar)
+        or not _is_slice_bound_lvar(stop_lvar)
+        or not _is_unit_slice_step(step_lvar)
+    ):
+        return False
+    splice_fun_args(node.args[0], ("%getslice",), 4)
+    retarget_known_combination(
+        node, fndb.PARSE_INT_SLICE, [node.args[0], node.args[1], node.args[2]]
+    )
+    return True
+
+
 @deftransform("math.sqrt")
 def _transform_math_sqrt(node: Combination) -> bool:
     if len(node.args) != 1 or not lvar_type(node.args[0]).fits(REAL):
@@ -821,6 +843,8 @@ __all__ = [
     "_exact_text_literal",
     "_is_exact_int_type",
     "_is_pure_bound_ref",
+    "_is_slice_bound_lvar",
+    "_is_unit_slice_step",
     "_power_of_two_exponent",
     "_replace_with_zero_and_cleanup",
     "_rewrite_constant_int",

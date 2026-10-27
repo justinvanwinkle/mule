@@ -16,7 +16,6 @@ from .ctype import (
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
-    REAL,
     TEXT_TYPE,
     UNKNOWN,
     ClassType,
@@ -282,24 +281,8 @@ class PythonFloatContract(FloatContract):
     def definition_contract(self):
         pass
 
-    @property
-    def fact(self):
-        return REAL
-
-    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
-        return FLOAT
-
     def accept(self, visitor):
         return visitor.visit_PythonFloatContract(self)
-
-    def integer_conflict(self, actual):
-        return False
-
-    def boolean_conflict(self, actual):
-        return False
-
-    def float_conflict(self, actual):
-        return False
 
     @property
     def display_name(self):

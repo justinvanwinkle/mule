@@ -200,6 +200,9 @@ class _ConstantLeaf(NodeVisitor, LeafVisitor):
     def visit_Ref(self, node: Ref):
         return node.leaf.accept(self)
 
+    def visit_Cast(self, node: Cast):
+        return node.value.uses[0].accept(self) if len(node.value.uses) == 1 else None
+
     def visit_Leaf(self, leaf):
         return None
 
@@ -217,11 +220,15 @@ class _GlobalConstantScan(NodeVisitor, LeafVisitor):
         imported_types: Mapping[tuple[str, str], ValueType] | None = None,
         imported_targets: Mapping[tuple[str, str], object] | None = None,
         constants_table: dict | None = None,
+        allowed_stores: set[Set] | None = None,
+        allowed_names: set[str] | None = None,
     ):
         self.toplevel = toplevel
         self.imported_types = imported_types
         self.imported_targets = imported_targets
         self.constants_table = constants_table
+        self.allowed_stores = allowed_stores
+        self.allowed_names = allowed_names
         self.counts: dict[str, int] = {}
         self.constants: dict[str, Constant] = {}
         self._store: Set | None = None
@@ -235,7 +242,11 @@ class _GlobalConstantScan(NodeVisitor, LeafVisitor):
         self.counts[leaf.name] = self.counts.get(leaf.name, 0) + 1
         store = self._store
         if self.toplevel and store is not None and store.value is not None:
-            constant = store.value.use().accept(_CONSTANT_LEAF)
+            if self.allowed_stores is not None and store not in self.allowed_stores:
+                return
+            constant = None
+            if self.allowed_names is None or leaf.name in self.allowed_names:
+                constant = store.value.use().accept(_CONSTANT_LEAF)
             if (
                 constant is None
                 and self.imported_types is not None
@@ -243,13 +254,8 @@ class _GlobalConstantScan(NodeVisitor, LeafVisitor):
                 and len(store.value.uses) == 1
             ):
                 origin = store.value.uses[0].accept(ir1opt._ImportedAttrOrigin())
-                if (
-                    origin is not None
-                    and origin[1].isupper()
-                    and (
-                        self.imported_targets is None
-                        or origin not in self.imported_targets
-                    )
+                if origin is not None and (
+                    self.imported_targets is None or origin not in self.imported_targets
                 ):
                     vtype = self.imported_types.get(origin)
                     if vtype is not None:
@@ -276,6 +282,10 @@ class _ReplaceGlobalConstantRefs(NodeVisitor, LeafVisitor):
         ref = self._ref
         if constant is None or ref is None:
             return
+        if ref.lexenv.policy.safety >= 3 or (
+            ref.home_lambda is not None and ref.home_lambda.policy.safety >= 3
+        ):
+            return
         if ref in leaf.refs:
             leaf.refs.remove(ref)
         ref.leaf = constant
@@ -289,8 +299,22 @@ class _ReplaceGlobalConstantRefs(NodeVisitor, LeafVisitor):
 
 
 def _fold_protocol_constants(compilation: Compilation) -> bool:
-    if not compilation.entry.is_protocol:
-        return False
+    is_protocol = compilation.entry.is_protocol
+    allowed_names: set[str] | None = None
+    allowed_stores: set[Set] | None = None
+    if not is_protocol:
+        if compilation.entry.policy.safety >= 3:
+            return False
+        allowed_names = {
+            name
+            for name, expr in compilation.entry.annotation_expressions.items()
+            if expr.accept(locall._IS_FINAL_ANNOTATION)
+        }
+        if (
+            not allowed_names and not compilation.imported_function_types
+        ) or locall.has_module_namespace_mutations(compilation.lambdas):
+            return False
+        allowed_stores = locall._unconditional_toplevel_stores(compilation.entry)
     counts: dict[str, int] = {}
     constants: dict[str, Constant] = {}
     entry_constants = (
@@ -306,6 +330,8 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
             imported_types=compilation.imported_function_types,
             imported_targets=compilation.imported_targets,
             constants_table=entry_constants,
+            allowed_stores=allowed_stores,
+            allowed_names=allowed_names,
         )
         for block in lambda_.component.blocks():
             for node in block.nodes():

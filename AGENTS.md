@@ -49,7 +49,7 @@ optimization level 3. See the [command and build reference](spec/native-compiler
 
 ## Performance
 
-The chart below includes **all 14 workloads** from the recorded October 26,
+The chart below includes **all 14 workloads** from the recorded October 27,
 2026 suite run. It compares Mule `-O2` without LTO and SBCL with CPython 3.15.0.
 Each panel shows median elapsed **milliseconds** for CPython, Mule, and SBCL.
 **Shorter bars mean faster execution.** Every panel uses its own linear scale
@@ -65,7 +65,7 @@ timer. Each result was checked against CPython. SBCL runs corresponding Common
 Lisp implementations, not the Python sources.
 
 **This is a measured snapshot, not a general speed claim.** The measured checkout
-was `238b379ab`. Mule still trails CPython on
+was `9c56a4e03`. Mule still trails CPython on
 several workloads. Raw samples, variation, commands, input sizes, hashes, and
 revision identity are in the [published results](docs/assets/results.json).
 The [report HTML source](docs/assets/index.html) also includes whole-process timings.
@@ -204,6 +204,24 @@ are not blanket justifications: explain each concrete departure. Convenience,
 missing compiler infrastructure, or an easier Rust implementation do not by
 themselves justify a different architecture. Identify missing stages explicitly
 and implement the corresponding compiler machinery.
+
+**SBCL parity is the completion standard.** Do not commit, merge, or report a
+compiler task as complete until the answer to "Is this at least as good as SBCL?"
+is unambiguously **yes**:
+
+- **Stage and mechanism parity:** The analysis or transformation lives in the
+  same compiler phase and uses the same producer/consumer IR architecture as
+  SBCL (for example, IR1 `deftransform` / `seqtran` rather than ad-hoc inspection
+  during VOP code emission, and `locall` / `ltn` / `ir2tran` call-convention
+  selection rather than post-pass VOP surgery or throwaway compilation probes).
+- **Generality and coverage parity:** It handles the full domain SBCL handles
+  (annotated and unannotated functions, self and mutual recursion, closures,
+  mixed scalar and descriptor conventions, and general bounds/lengths), not a
+  narrow subset tailored to a single benchmark or test case.
+- **No test workarounds for compiler gaps:** If a natural program form (such as
+  a top-level annotated recursive function) fails to get the optimization, treat
+  that as an unfinished defect in the compiler and fix it before completing the
+  task. Never reshape a test to work around a case where Mule still trails SBCL.
 
 The compiler is written in Python and must eventually self host. Language-level
 runtime and standard-library code must be written in Mule Python and compiled

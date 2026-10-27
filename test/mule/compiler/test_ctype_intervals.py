@@ -163,10 +163,21 @@ def test_interned_text_equality_and_identity_llvm_lowering():
         "def eq_inline_latin1_literal(x):\n"
         " s = str(x)\n"
         " return s == 'alpha_beta'\n"
+        "def eq_empty_literal(x):\n"
+        " s = str(x)\n"
+        " return s == ''\n"
+        "def eq_single_char_literal(x):\n"
+        " s = str(x)\n"
+        " return s == 'a'\n"
+        "def eq_variable_texts(x, y):\n"
+        " a = str(x)\n"
+        " b = str(y)\n"
+        " return a == b\n"
         "def eq_heap_latin1_literal(x):\n"
         " s = str(x)\n"
         " return s == 'alpha_beta_gamma_delta_epsilon'\n"
     )
+    assert "inline.text" not in ir
     same_body = ir.split('define internal ptr @"mule_fn_same_literal.body"')[1].split(
         "\n}"
     )[0]
@@ -182,6 +193,24 @@ def test_interned_text_equality_and_identity_llvm_lowering():
     assert "icmp eq i64" in inline_body
     assert "@mule_text_eq" not in inline_body
     assert "@mule.borrowed.text" not in inline_body
+    empty_body = ir.split('define internal ptr @"mule_fn_eq_empty_literal.body"')[
+        1
+    ].split("\n}")[0]
+    assert "icmp eq i16" in empty_body
+    assert "icmp eq i64" not in empty_body
+    assert "@mule_text_eq" not in empty_body
+    assert "@mule.borrowed.text" not in empty_body
+    single_body = ir.split(
+        'define internal ptr @"mule_fn_eq_single_char_literal.body"'
+    )[1].split("\n}")[0]
+    assert "icmp eq i16" in single_body
+    assert "icmp eq i64" in single_body
+    assert "@mule_text_eq" not in single_body
+    assert "@mule.borrowed.text" not in single_body
+    var_body = ir.split('define internal ptr @"mule_fn_eq_variable_texts.body"')[
+        1
+    ].split("\n}")[0]
+    assert "call ptr @mule.fast.text.eq(" in var_body
     heap_body = ir.split('define internal ptr @"mule_fn_eq_heap_latin1_literal.body"')[
         1
     ].split("\n}")[0]

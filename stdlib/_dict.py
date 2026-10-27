@@ -130,25 +130,35 @@ def _table_hash_fallback(key):
 
 
 def _table_clear(self):
-    self._indices = _empty_indices(_MINIMUM_SIZE)
-    self._hashes = []
-    self._keys = []
-    self._values = []
-    self._used = 0
+    new_indices = _empty_indices(_MINIMUM_SIZE)
+    _set_instance_field(self, "_indices", new_indices)
+    del new_indices
+    empty_hashes = []
+    _set_instance_field(self, "_hashes", empty_hashes)
+    del empty_hashes
+    empty_keys = []
+    _set_instance_field(self, "_keys", empty_keys)
+    del empty_keys
+    empty_values = []
+    _set_instance_field(self, "_values", empty_values)
+    del empty_values
+    cleared_used = 0
+    _set_instance_field(self, "_used", cleared_used)
+    del cleared_used
 
 
 def _table_find(self, key, code):
     """The index-table slot for ``key`` and its entry, or -1 for none."""
     if code < _FIXNUM_MIN or code > _FIXNUM_MAX:
         code = (code ^ (code >> 62)) & _PERTURB_MASK
-    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(self._indices, slot)
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(self._hashes, entry) == code:
-                existing = _storage_read(self._keys, entry)
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
                 if existing is key or existing == key:
                     return slot, entry
         elif entry is _EMPTY:
@@ -161,14 +171,14 @@ def _table_lookup(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(self._indices, slot)
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(self._hashes, entry) == code:
-                existing = _storage_read(self._keys, entry)
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
                 if existing is key or existing == key:
                     return entry
         elif entry is _EMPTY:
@@ -179,7 +189,11 @@ def _table_lookup(self, key):
 
 def _table_get_value(self, key, default):
     entry = _table_lookup(self, key)
-    return _storage_read(self._values, entry) if entry >= 0 else default
+    return (
+        _storage_read(_instance_field(self, "_values"), entry)
+        if entry >= 0
+        else default
+    )
 
 
 def _table_resize(self, minimum):
@@ -187,9 +201,9 @@ def _table_resize(self, minimum):
     while size * 2 < minimum * 3:
         size *= 2
     hashes, keys, values = [], [], []
-    old_hashes = self._hashes
-    old_keys = self._keys
-    old_values = self._values
+    old_hashes = _instance_field(self, "_hashes")
+    old_keys = _instance_field(self, "_keys")
+    old_values = _instance_field(self, "_values")
     count = _storage_length(old_keys)
     index = 0
     while index < count:
@@ -200,10 +214,18 @@ def _table_resize(self, minimum):
             _storage_append(values, _storage_read(old_values, index))
         index += 1
     indices = _empty_indices(size * 2)
-    self._indices = indices
-    self._hashes = hashes
-    self._keys = keys
-    self._values = values
+    new_indices = indices
+    _set_instance_field(self, "_indices", new_indices)
+    del new_indices
+    compacted_hashes = hashes
+    _set_instance_field(self, "_hashes", compacted_hashes)
+    del compacted_hashes
+    compacted_keys = keys
+    _set_instance_field(self, "_keys", compacted_keys)
+    del compacted_keys
+    compacted_values = values
+    _set_instance_field(self, "_values", compacted_values)
+    del compacted_values
     mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     live_count = _storage_length(keys)
     index = 0
@@ -221,34 +243,42 @@ def _table_insert(self, key, value):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(self._indices, slot)
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(self._hashes, entry) == code:
-                existing = _storage_read(self._keys, entry)
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
                 if existing is key or existing == key:
-                    _storage_write(self._values, entry, value)
+                    _storage_write(_instance_field(self, "_values"), entry, value)
                     return
         elif entry is _EMPTY:
             break
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
-    if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
-        _table_resize(self, self._used + 1)
-        mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
+    if (_storage_length(_instance_field(self, "_keys")) + 1) * 3 > _storage_length(
+        _instance_field(self, "_indices")
+    ) * 2:
+        _table_resize(self, _instance_field(self, "_used") + 1)
+        mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
-        while _storage_read(self._indices, slot) is not _EMPTY:
+        while _storage_read(_instance_field(self, "_indices"), slot) is not _EMPTY:
             perturb >>= 5
             slot = (slot * 5 + perturb + 1) & mask
-    _storage_write(self._indices, slot, _storage_length(self._keys))
-    _storage_append(self._hashes, code)
-    _storage_append(self._keys, key)
-    _storage_append(self._values, value)
-    self._used = (self._used + 1) & _MASK_LIMIT
+    _storage_write(
+        _instance_field(self, "_indices"),
+        slot,
+        _storage_length(_instance_field(self, "_keys")),
+    )
+    _storage_append(_instance_field(self, "_hashes"), code)
+    _storage_append(_instance_field(self, "_keys"), key)
+    _storage_append(_instance_field(self, "_values"), value)
+    next_used = (_instance_field(self, "_used") + 1) & _MASK_LIMIT
+    _set_instance_field(self, "_used", next_used)
+    del next_used
 
 
 def _table_remove(self, key):
@@ -256,20 +286,22 @@ def _table_remove(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(self._indices) - 1) & _MASK_LIMIT
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(self._indices, slot)
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
         if entry >= 0:
-            if _storage_read(self._hashes, entry) == code:
-                existing = _storage_read(self._keys, entry)
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
                 if existing is key or existing == key:
-                    value = _storage_read(self._values, entry)
-                    _storage_write(self._indices, slot, _DUMMY)
-                    _storage_write(self._keys, entry, _DELETED)
-                    _storage_write(self._values, entry, None)
-                    self._used = (self._used - 1) & _MASK_LIMIT
+                    value = _storage_read(_instance_field(self, "_values"), entry)
+                    _storage_write(_instance_field(self, "_indices"), slot, _DUMMY)
+                    _storage_write(_instance_field(self, "_keys"), entry, _DELETED)
+                    _storage_write(_instance_field(self, "_values"), entry, None)
+                    remaining_used = (_instance_field(self, "_used") - 1) & _MASK_LIMIT
+                    _set_instance_field(self, "_used", remaining_used)
+                    del remaining_used
                     return value
         elif entry is _EMPTY:
             return _MISSING
@@ -280,7 +312,7 @@ def _table_remove(self, key):
 def _table_live(self):
     """The live entries' indices, in insertion order."""
     positions = []
-    keys = self._keys
+    keys = _instance_field(self, "_keys")
     count = _storage_length(keys)
     index = 0
     while index < count:
@@ -296,11 +328,21 @@ class _Table:
     __mule_slots__ = ("_indices", "_hashes", "_keys", "_values", "_used")
 
     def _clear_table(self):
-        self._indices = _empty_indices(_MINIMUM_SIZE)
-        self._hashes = []
-        self._keys = []
-        self._values = []
-        self._used = 0
+        new_indices = _empty_indices(_MINIMUM_SIZE)
+        _set_instance_field(self, "_indices", new_indices)
+        del new_indices
+        empty_hashes = []
+        _set_instance_field(self, "_hashes", empty_hashes)
+        del empty_hashes
+        empty_keys = []
+        _set_instance_field(self, "_keys", empty_keys)
+        del empty_keys
+        empty_values = []
+        _set_instance_field(self, "_values", empty_values)
+        del empty_values
+        cleared_used = 0
+        _set_instance_field(self, "_used", cleared_used)
+        del cleared_used
 
     def _find(self, key, code):
         return _table_find(self, key, code)
@@ -324,7 +366,7 @@ class _Table:
         return _table_live(self)
 
     def __len__(self):
-        return self._used
+        return _instance_field(self, "_used")
 
 
 def _empty_indices(size):
@@ -338,18 +380,18 @@ class _TableIterator:
         self.table = table
         self.kind = kind
         self.index = 0
-        self.used = table._used
-        self.keys = table._keys
-        self.entries = _storage_length(table._keys)
+        self.used = _instance_field(table, "_used")
+        self.keys = _instance_field(table, "_keys")
+        self.entries = _storage_length(_instance_field(table, "_keys"))
 
     def __iter__(self):
         return self
 
     def __next__(self):
         table = self.table
-        keys = table._keys
+        keys = _instance_field(table, "_keys")
         if (
-            table._used != self.used
+            _instance_field(table, "_used") != self.used
             or keys is not self.keys
             or _storage_length(keys) != self.entries
         ):
@@ -364,9 +406,12 @@ class _TableIterator:
             key = _storage_read(keys, index)
             if key is not _DELETED:
                 if self.kind == 2:
-                    return _storage_read(table._values, index)
+                    return _storage_read(_instance_field(table, "_values"), index)
                 if self.kind == 3:
-                    return (key, _storage_read(table._values, index))
+                    return (
+                        key,
+                        _storage_read(_instance_field(table, "_values"), index),
+                    )
                 return key
         raise StopIteration
 
@@ -377,19 +422,19 @@ class _TableReverseIterator:
     def __init__(self, table, kind):
         self.table = table
         self.kind = kind
-        self.index = _storage_length(table._keys)
-        self.used = table._used
-        self.keys = table._keys
-        self.entries = _storage_length(table._keys)
+        self.index = _storage_length(_instance_field(table, "_keys"))
+        self.used = _instance_field(table, "_used")
+        self.keys = _instance_field(table, "_keys")
+        self.entries = _storage_length(_instance_field(table, "_keys"))
 
     def __iter__(self):
         return self
 
     def __next__(self):
         table = self.table
-        keys = table._keys
+        keys = _instance_field(table, "_keys")
         if (
-            table._used != self.used
+            _instance_field(table, "_used") != self.used
             or keys is not self.keys
             or _storage_length(keys) != self.entries
         ):
@@ -404,9 +449,12 @@ class _TableReverseIterator:
             key = _storage_read(keys, index)
             if key is not _DELETED:
                 if self.kind == 2:
-                    return _storage_read(table._values, index)
+                    return _storage_read(_instance_field(table, "_values"), index)
                 if self.kind == 3:
-                    return (key, _storage_read(table._values, index))
+                    return (
+                        key,
+                        _storage_read(_instance_field(table, "_values"), index),
+                    )
                 return key
         raise StopIteration
 
@@ -418,7 +466,9 @@ def _representation(open, items, close):
 def _dict_update_table(self, other):
     for index in _table_live(other):
         _table_insert(
-            self, _storage_read(other._keys, index), _storage_read(other._values, index)
+            self,
+            _storage_read(_instance_field(other, "_keys"), index),
+            _storage_read(_instance_field(other, "_values"), index),
         )
 
 
@@ -459,7 +509,7 @@ class dict(_Table):
 
     def __len__(self):
         _require_dict(self)
-        return self._used
+        return _instance_field(self, "_used")
 
     def __init__(self, /, *args, **kwargs):
         _require_dict(self)
@@ -472,8 +522,8 @@ class dict(_Table):
                 for index in _table_live(other):
                     _table_insert(
                         self,
-                        _storage_read(other._keys, index),
-                        _storage_read(other._values, index),
+                        _storage_read(_instance_field(other, "_keys"), index),
+                        _storage_read(_instance_field(other, "_values"), index),
                     )
             elif _type_of(other) is list or _type_of(other) is tuple:
                 for item in other:
@@ -485,8 +535,8 @@ class dict(_Table):
             for index in _table_live(kwargs):
                 _table_insert(
                     self,
-                    _storage_read(kwargs._keys, index),
-                    _storage_read(kwargs._values, index),
+                    _storage_read(_instance_field(kwargs, "_keys"), index),
+                    _storage_read(_instance_field(kwargs, "_values"), index),
                 )
 
     @classmethod
@@ -500,7 +550,7 @@ class dict(_Table):
         _require_dict(self)
         entry = _table_lookup(self, key)
         if entry >= 0:
-            return _storage_read(self._values, entry)
+            return _storage_read(_instance_field(self, "_values"), entry)
         owner = class_of(self)
         if owner is not dict:
             absent = _binding_missing()
@@ -535,15 +585,17 @@ class dict(_Table):
         _require_dict(self)
         if not _is_dict(other):
             return False
-        if self._used != other._used:
+        if _instance_field(self, "_used") != _instance_field(other, "_used"):
             return False
         for index in _table_live(self):
-            entry = _table_lookup(other, _storage_read(self._keys, index))
+            entry = _table_lookup(
+                other, _storage_read(_instance_field(self, "_keys"), index)
+            )
             if entry < 0:
                 return False
             mine, theirs = (
-                _storage_read(self._values, index),
-                _storage_read(other._values, entry),
+                _storage_read(_instance_field(self, "_values"), index),
+                _storage_read(_instance_field(other, "_values"), entry),
             )
             if not (mine is theirs or mine == theirs):
                 return False
@@ -566,9 +618,9 @@ class dict(_Table):
             for index in _table_live(self):
                 _storage_append(
                     items,
-                    repr(_storage_read(self._keys, index))
+                    repr(_storage_read(_instance_field(self, "_keys"), index))
                     + ": "
-                    + repr(_storage_read(self._values, index)),
+                    + repr(_storage_read(_instance_field(self, "_values"), index)),
                 )
             return _representation("{", items, "}")
         finally:
@@ -594,13 +646,17 @@ class dict(_Table):
                 return self.get(key, default)
             _require_dict(self)
         entry = _table_lookup(self, key)
-        return _storage_read(self._values, entry) if entry >= 0 else default
+        return (
+            _storage_read(_instance_field(self, "_values"), entry)
+            if entry >= 0
+            else default
+        )
 
     def setdefault(self, key, default=None):
         _require_dict(self)
         entry = _table_lookup(self, key)
         if entry >= 0:
-            return _storage_read(self._values, entry)
+            return _storage_read(_instance_field(self, "_values"), entry)
         _table_insert(self, key, default)
         return default
 
@@ -620,8 +676,8 @@ class dict(_Table):
             raise KeyError("popitem(): dictionary is empty")
         index = _storage_read(positions, _storage_length(positions) - 1)
         key, value = (
-            _storage_read(self._keys, index),
-            _storage_read(self._values, index),
+            _storage_read(_instance_field(self, "_keys"), index),
+            _storage_read(_instance_field(self, "_values"), index),
         )
         _table_remove(self, key)
         return (key, value)
@@ -683,7 +739,7 @@ class _DictView:
         self.mapping = mapping
 
     def __len__(self):
-        return self.mapping._used
+        return _instance_field(self.mapping, "_used")
 
     def _entries(self):
         result = []
@@ -816,7 +872,7 @@ class dict_items(_SetView):
         entry = _table_lookup(self.mapping, key)
         if entry < 0:
             return False
-        stored = self.mapping._values[entry]
+        stored = _instance_field(self.mapping, "_values")[entry]
         return stored is value or stored == value
 
     def __repr__(self):
@@ -869,11 +925,11 @@ class _SetBase(_Table):
     def __repr__(self):
         _require_any_set(self)
         name = _type_name(self)
-        if not self._used:
+        if not _instance_field(self, "_used"):
             return name + "()"
         items = []
         for index in _table_live(self):
-            items.append(repr(self._keys[index]))
+            items.append(repr(_instance_field(self, "_keys")[index]))
         if name == "set":
             return _representation("{", items, "}")
         return _representation(name + "({", items, "})")
@@ -882,7 +938,9 @@ class _SetBase(_Table):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self._used == other._used and self.issubset(other)
+        return _instance_field(self, "_used") == _instance_field(
+            other, "_used"
+        ) and self.issubset(other)
 
     def __ne__(self, other):
         _require_any_set(self)
@@ -899,7 +957,9 @@ class _SetBase(_Table):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self._used < other._used and self.issubset(other)
+        return _instance_field(self, "_used") < _instance_field(
+            other, "_used"
+        ) and self.issubset(other)
 
     def __ge__(self, other):
         _require_any_set(self)
@@ -911,7 +971,9 @@ class _SetBase(_Table):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self._used > other._used and self.issuperset(other)
+        return _instance_field(self, "_used") > _instance_field(
+            other, "_used"
+        ) and self.issuperset(other)
 
     def __or__(self, other):
         _require_any_set(self)
@@ -942,7 +1004,7 @@ class _SetBase(_Table):
         if not _is_set(other):
             other = set(other)
         for index in _table_live(self):
-            if _set_lookup(other, self._keys[index]) < 0:
+            if _set_lookup(other, _instance_field(self, "_keys")[index]) < 0:
                 return False
         return True
 
@@ -964,7 +1026,7 @@ class _SetBase(_Table):
         _require_any_set(self)
         result = self._same_kind()
         for index in _table_live(self):
-            _table_insert(result, self._keys[index], None)
+            _table_insert(result, _instance_field(self, "_keys")[index], None)
         for other in others:
             for item in other:
                 _table_insert(result, item, None)
@@ -974,7 +1036,7 @@ class _SetBase(_Table):
         _require_any_set(self)
         result = self._same_kind()
         for index in _table_live(self):
-            key = self._keys[index]
+            key = _instance_field(self, "_keys")[index]
             kept = True
             for other in others:
                 if key not in other:
@@ -988,7 +1050,7 @@ class _SetBase(_Table):
         _require_any_set(self)
         result = self._same_kind()
         for index in _table_live(self):
-            key = self._keys[index]
+            key = _instance_field(self, "_keys")[index]
             kept = True
             for other in others:
                 if key in other:
@@ -1004,11 +1066,11 @@ class _SetBase(_Table):
             other = set(other)
         result = self._same_kind()
         for index in _table_live(self):
-            key = self._keys[index]
+            key = _instance_field(self, "_keys")[index]
             if _set_lookup(other, key) < 0:
                 _table_insert(result, key, None)
         for index in _table_live(other):
-            key = other._keys[index]
+            key = _instance_field(other, "_keys")[index]
             if _set_lookup(self, key) < 0:
                 _table_insert(result, key, None)
         return result
@@ -1082,7 +1144,7 @@ class set(_SetBase):
 
     def __len__(self):
         _require_mutable_set(self)
-        return self._used
+        return _instance_field(self, "_used")
 
     def __init__(self, *args):
         _require_mutable_set(self)
@@ -1132,7 +1194,7 @@ class set(_SetBase):
         positions = _table_live(self)
         if not positions:
             raise KeyError("pop from an empty set")
-        key = self._keys[positions[0]]
+        key = _instance_field(self, "_keys")[positions[0]]
         _table_remove(self, key)
         return key
 
@@ -1177,7 +1239,7 @@ class frozenset(_SetBase):
 
     def __len__(self):
         _require_frozenset(self)
-        return self._used
+        return _instance_field(self, "_used")
 
     def __init__(self, *args):
         _require_frozenset(self)
@@ -1196,9 +1258,9 @@ class frozenset(_SetBase):
         # CPython's frozenset hash: an order-independent mix of element hashes.
         accumulator = 0
         for index in _table_live(self):
-            code = self._hashes[index] & _WORD
+            code = _instance_field(self, "_hashes")[index] & _WORD
             accumulator ^= ((code ^ 89869747) ^ (code << 16)) * 3644798167 & _WORD
-        accumulator ^= (self._used + 1) * 1927868237 & _WORD
+        accumulator ^= (_instance_field(self, "_used") + 1) * 1927868237 & _WORD
         accumulator ^= (accumulator >> 11) ^ (accumulator >> 25)
         accumulator = (accumulator * 69069 + 907133923) & _WORD
         if accumulator == _WORD:

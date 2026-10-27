@@ -2,9 +2,12 @@
 
 from mule.compiler.ctype import (
     BOOLEAN,
+    BYTES_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    FROZENSET_TYPE,
     INTEGER,
+    NONE_TYPE,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -12,7 +15,8 @@ from mule.compiler.ctype import (
 )
 from mule.compiler.locall import collect_global_constants
 from mule.compiler.main import compile_source, compile_toplevel
-from mule.compiler.node import GlobalVar, Ref
+from mule.compiler.modules import ModuleCompiler
+from mule.compiler.node import Combination, Constant, GlobalVar, Ref
 
 
 def _refs_to_global(lambda_, name: str) -> list[Ref]:
@@ -59,14 +63,20 @@ def test_collect_global_constants_filters_and_widens_user_constants():
         "_BIG_MASK",
         "_FLAG",
         "_VOCAB",
+        "c",
+        "_lower",
+        "PUBLIC",
     }
     assert by_name["_EMPTY"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
     assert by_name["_PERTURB_MASK"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
     assert by_name["_BIG_MASK"] is INTEGER
     assert by_name["_FLAG"] is BOOLEAN
     assert by_name["_VOCAB"] == TupleType(2, (TEXT_TYPE, TEXT_TYPE))
+    assert by_name["c"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+    assert by_name["_lower"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+    assert by_name["PUBLIC"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 
-    for excluded in ("_X", "_MUTATED_IN_FN", "c", "_lower", "PUBLIC", "_CACHE"):
+    for excluded in ("_X", "_MUTATED_IN_FN", "_CACHE"):
         assert excluded not in by_name
 
 
@@ -108,7 +118,7 @@ def test_global_constant_refs_receive_derived_types_and_propagate():
     assert vocab_refs[0].lvar.derived_type == TupleType(2, (TEXT_TYPE, TEXT_TYPE))
 
     assert len(c_refs) == 1
-    assert c_refs[0].derived_type is UNKNOWN
+    assert c_refs[0].derived_type == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 
     assert len(cache_refs) == 1
     assert cache_refs[0].derived_type is UNKNOWN
@@ -120,7 +130,7 @@ def test_global_constant_refs_receive_derived_types_and_propagate():
             TEXT_TYPE,
             IntegerType(0, 0x7FFFFFFF),
             BOOLEAN,
-            UNKNOWN,
+            IntegerType(FIXNUM_MIN, FIXNUM_MAX),
             UNKNOWN,
         ),
     )
@@ -131,8 +141,9 @@ def test_protocol_module_keeps_exact_constant_types():
         "_EMPTY = -1\n"
         "_PERTURB_MASK = 0x3FFFFFFFFFFFFFFF\n"
         "_helper_const = 8\n"
+        "public_const = 16\n"
         "def probe(code: int):\n"
-        " return code & _PERTURB_MASK, _EMPTY, _helper_const\n"
+        " return code & _PERTURB_MASK, _EMPTY, _helper_const, public_const\n"
     )
     compilation = compile_toplevel(
         source,
@@ -147,3 +158,182 @@ def test_protocol_module_keeps_exact_constant_types():
         0x3FFFFFFFFFFFFFFF, 0x3FFFFFFFFFFFFFFF
     )
     assert by_name["_helper_const"] == IntegerType(8, 8)
+    assert by_name["public_const"] == IntegerType(16, 16)
+
+
+def test_final_annotations_and_frozen_container_constants(tmp_path):
+    (tmp_path / "typing.py").write_text("Final = object()\n", encoding="utf-8")
+    source = (
+        "from typing import Final\n"
+        "import typing\n"
+        "LIMIT: Final = 100\n"
+        "TYPED_LIMIT: Final[int] = 200\n"
+        "QUALIFIED_FINAL: typing.Final[str] = 'ok'\n"
+        "EMPTY_SENTINEL: Final = None\n"
+        "FROZEN_WORDS = frozenset(('a', 'b'))\n"
+        "TUPLE_WORDS = tuple(('x', 'y'))\n"
+        "RAW_BYTES = bytes(b'abc')\n"
+        "def read(word: str):\n"
+        " return LIMIT, TYPED_LIMIT, QUALIFIED_FINAL, EMPTY_SENTINEL, word in FROZEN_WORDS, TUPLE_WORDS, RAW_BYTES\n"
+    )
+    main_path = tmp_path / "main.py"
+    main_path.write_text(source, encoding="utf-8")
+    compilation = ModuleCompiler(str(main_path), roots=(tmp_path,)).compile(
+        source, str(main_path)
+    )
+    by_name = {
+        leaf.name: vtype
+        for leaf, vtype in collect_global_constants(compilation.lambdas).items()
+        if leaf.namespace == "__main__"
+    }
+    assert by_name["LIMIT"] == IntegerType(100, 100)
+    assert by_name["TYPED_LIMIT"] == IntegerType(200, 200)
+    assert by_name["QUALIFIED_FINAL"] is TEXT_TYPE
+    assert by_name["EMPTY_SENTINEL"] is NONE_TYPE
+    assert by_name["FROZEN_WORDS"] is FROZENSET_TYPE
+    assert by_name["TUPLE_WORDS"] == TupleType()
+    assert by_name["RAW_BYTES"] is BYTES_TYPE
+
+    read_fn = compilation.lambdas[1]
+    for final_name in ("LIMIT", "TYPED_LIMIT", "QUALIFIED_FINAL", "EMPTY_SENTINEL"):
+        assert _refs_to_global(read_fn, final_name) == []
+    constant_values = {
+        getattr(node.leaf.value, "value", None)
+        for block in read_fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Ref) and isinstance(node.leaf, Constant)
+    }
+    assert {100, 200, "ok", None}.issubset(constant_values)
+    assert compilation.facts is not None
+    assert compilation.facts[read_fn].return_type == TupleType(
+        7,
+        (
+            IntegerType(100, 100),
+            IntegerType(200, 200),
+            TEXT_TYPE,
+            NONE_TYPE,
+            BOOLEAN,
+            TupleType(),
+            BYTES_TYPE,
+        ),
+    )
+
+
+def test_flushable_known_call_with_singleton_derived_type_folds_and_flushes_global_ref():
+    source = (
+        "_RECORDS = ('a', 'b', 'c', 'd', 'e', 'f')\n"
+        "_VOCAB = ('alpha', 'bravo', 'charlie', 'delta')\n"
+        "def pick(state: int) -> tuple[str, str]:\n"
+        " next_state = state & 0x7FFFFFFF\n"
+        " rec = _RECORDS[(next_state >> 8) % len(_RECORDS)]\n"
+        " word = _VOCAB[(next_state >> 8) % len(_VOCAB)]\n"
+        " return rec, word\n"
+    )
+    compilation = compile_source(source)
+    pick_fn = compilation.lambdas[1]
+
+    records_refs = _refs_to_global(pick_fn, "_RECORDS")
+    vocab_refs = _refs_to_global(pick_fn, "_VOCAB")
+    assert len(records_refs) == 1
+    assert len(vocab_refs) == 1
+
+    call_names = [
+        node.fun_info.name
+        for block in pick_fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Combination) and node.fun_info is not None
+    ]
+    assert "_storage_length" not in call_names
+    assert "len" not in call_names
+    assert call_names.count("%modulo") == 1
+    assert call_names.count("%bit_and") == 2
+
+    constant_values = {
+        getattr(node.leaf.value, "value", None)
+        for block in pick_fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Ref) and isinstance(node.leaf, Constant)
+    }
+    assert 6 in constant_values
+    assert 3 in constant_values
+
+
+def test_dynamic_module_namespace_mutations_disable_constant_folding(tmp_path):
+    (tmp_path / "sys.py").write_text("modules = {}\n", encoding="utf-8")
+    main_path = tmp_path / "main.py"
+    mutating_sources = [
+        "X = 1\ndef mutate():\n globals()['X'] = 2\ndef read():\n return X\n",
+        "import sys\nX = 1\ndef mutate():\n setattr(sys.modules[__name__], 'X', 2)\ndef read():\n return X\n",
+        "import sys\nX = 1\ndef mutate():\n sys.modules[__name__].X = 2\ndef read():\n return X\n",
+        "X = 1\ndef mutate():\n exec('X = 2')\ndef read():\n return X\n",
+    ]
+    for source in mutating_sources:
+        main_path.write_text(source, encoding="utf-8")
+        compilation = ModuleCompiler(str(main_path), roots=(tmp_path,)).compile(
+            source, str(main_path)
+        )
+        main_consts = {
+            leaf.name: vtype
+            for leaf, vtype in collect_global_constants(compilation.lambdas).items()
+            if leaf.namespace == "__main__"
+        }
+        assert main_consts == {}
+
+    readonly_globals_source = (
+        "X = 1\n"
+        "def inspect_ns():\n"
+        " g = globals()\n"
+        " return g.get('X'), 'X' in g\n"
+        "def read():\n"
+        " return X\n"
+    )
+    readonly_comp = compile_source(readonly_globals_source)
+    by_name = {
+        leaf.name: vtype
+        for leaf, vtype in collect_global_constants(readonly_comp.lambdas).items()
+    }
+    assert by_name["X"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+
+
+def test_cross_module_imported_constants_propagate_without_underscore_spelling(
+    tmp_path,
+):
+    (tmp_path / "typing.py").write_text("Final = object()\n", encoding="utf-8")
+    (tmp_path / "consts.py").write_text(
+        "from typing import Final\n"
+        "PUBLIC_MASK = 0xFF\n"
+        "lower_step = 4\n"
+        "FINAL_STEP: Final = 16\n"
+        "FROZEN_KEYS = frozenset(('a', 'b'))\n"
+        "REASSIGNED = 1\n"
+        "REASSIGNED = 2\n"
+        "def helper() -> int:\n"
+        " return 7\n",
+        encoding="utf-8",
+    )
+    main_source = (
+        "from consts import PUBLIC_MASK, lower_step, FINAL_STEP, FROZEN_KEYS, REASSIGNED, helper\n"
+        "def compute(x: int, k: str):\n"
+        " fn_val = helper\n"
+        " return (x & 0x7FFFFFFF) & PUBLIC_MASK, lower_step, FINAL_STEP, k in FROZEN_KEYS, REASSIGNED, helper(), fn_val\n"
+    )
+    main_path = tmp_path / "main.py"
+    main_path.write_text(main_source, encoding="utf-8")
+
+    compiler = ModuleCompiler(str(main_path), roots=(tmp_path,))
+    compilation = compiler.compile(main_source, str(main_path))
+    compute_fn = compilation.lambdas[1]
+    assert _refs_to_global(compute_fn, "FINAL_STEP") == []
+    assert compilation.facts is not None
+    assert compilation.facts[compute_fn].return_type == TupleType(
+        7,
+        (
+            IntegerType(0, 0x7FFFFFFF),
+            IntegerType(FIXNUM_MIN, FIXNUM_MAX),
+            IntegerType(16, 16),
+            BOOLEAN,
+            UNKNOWN,
+            IntegerType(7, 7),
+            UNKNOWN,
+        ),
+    )

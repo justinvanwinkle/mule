@@ -116,6 +116,28 @@ class RewriteCase:
             )
         return "\n\n".join(selected)
 
+    def inlined_function_ir(self, pattern, *, unit="main"):
+        """Follow original call edges until a definition survives optimization."""
+        original = dict(_llvm_functions(self.unit_ir(unit, optimized=False)))
+        optimized = dict(_llvm_functions(self.unit_ir(unit)))
+        selected = {name for name in original if re.search(pattern, name)}
+        assert selected, f"No original definition matched {pattern!r} in {unit!r}"
+        calls = re.compile(r'\b(?:call|invoke)\b[^\n]*?@(?:"([^"\n]+)"|([^\s(]+))\(')
+        while True:
+            retained = selected & optimized.keys()
+            if retained:
+                return "\n".join(optimized[name] for name in sorted(retained))
+            callers = {
+                name
+                for name, body in original.items()
+                if any(
+                    (quoted or plain) in selected
+                    for quoted, plain in calls.findall(body)
+                )
+            }
+            assert callers - selected, f"No surviving caller of {pattern!r} in {unit!r}"
+            selected.update(callers)
+
     @cached_property
     def assembly(self):
         """Disassemble the linked executable, including linked runtime helpers."""

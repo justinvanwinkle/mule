@@ -390,6 +390,8 @@ class Converter:
         if identity is None:
             if self.prefix == "mule_sequences_" and node.name == "bytearray":
                 identity = "mule_sequences_bytearray"
+            elif self.namespace == "$mule.dict" and node.name in ("set", "frozenset"):
+                identity = f"mule_dict_{node.name}"
             else:
                 identity = f"{self.prefix}mule_cls_{self.class_definitions}"
             self.class_definitions += 1
@@ -545,6 +547,8 @@ class Converter:
                 )
             finally:
                 late, self.component = self.component, saved
+                self.component.mutates_module_namespace |= late.mutates_module_namespace
+                late.mutates_module_namespace = self.component.mutates_module_namespace
                 self.converting_late = False
             self.late.append((late, self.functions[created:]))
         else:
@@ -2584,6 +2588,7 @@ class _Statements(ast.Visitor):
         imports = function.converter.imports
         module_name = imports.import_name(function.converter, node)
         if wildcard:
+            function.component.mutates_module_namespace = True
             current, module = function.import_module(start, module_name, node)
             function.known(current, next_, None, fndb.IMPORT_STAR, (module,), node)
             return
@@ -5378,6 +5383,42 @@ class _RuntimeAnnotation(ast.Visitor):
         return binding is None or binding.supports_runtime_annotation()
 
 
+class _IsTypingName(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Name(self, node):
+        return node.identifier == "typing"
+
+
+_IS_TYPING_NAME = _IsTypingName()
+
+
+class _IsFinalReference(ast.Visitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Name(self, node):
+        return node.identifier == "Final"
+
+    def visit_Attribute(self, node):
+        return node.attribute == "Final" and node.value.accept(_IS_TYPING_NAME)
+
+
+_IS_FINAL_REFERENCE = _IsFinalReference()
+
+
+class _IsFinalAnnotation(ast.Visitor):
+    def visit_Node(self, node):
+        return node.accept(_IS_FINAL_REFERENCE)
+
+    def visit_Subscript(self, node):
+        return node.value.accept(_IS_FINAL_REFERENCE)
+
+
+_IS_FINAL_ANNOTATION = _IsFinalAnnotation()
+
+
 class _AnnotationReference(ast.Visitor):
     def __init__(self, converter, scope=None):
         self.converter = converter
@@ -5403,6 +5444,11 @@ class _AnnotationReference(ast.Visitor):
 
     def visit_Attribute(self, node):
         return node.value.accept(self).member(node.attribute, self.converter, node)
+
+    def visit_Subscript(self, node):
+        if node.value.accept(_IS_FINAL_REFERENCE):
+            return node.index.accept(self)
+        return _OPAQUE_BINDING
 
 
 class _DeclaredAnnotationReference(_AnnotationReference):
@@ -5437,6 +5483,8 @@ class _DeclaredAnnotationReference(_AnnotationReference):
         return _SubscriptItemsBinding(tuple(el.accept(self) for el in node.elements))
 
     def visit_Subscript(self, node):
+        if node.value.accept(_IS_FINAL_REFERENCE):
+            return node.index.accept(self)
         return node.value.accept(self).subscript_binding(node.index.accept(self))
 
     def visit_Binary(self, node):
@@ -5849,6 +5897,7 @@ class _CallTarget(ast.Visitor):
             and function.comprehension_variable(node.identifier) is None
             and function.enclosing_local(node.identifier) is None
         ):
+            function.component.mutates_module_namespace = True
             ctran, callee = function.value(self.start, node)
             ctran, source_arg = function.value(ctran, self.call.arguments[0].value)
             after_globals, namespace = Ctran(), Lvar()

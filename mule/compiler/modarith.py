@@ -23,21 +23,18 @@ from . import fndb
 from .ctype import INTEGER, IntegerType
 from .ir1opt import (
     _FOLD_LIMIT_BITS,
-    _flush_operand,
     constant_literal,
     lvar_type,
     replace_combination_with_lvar,
+    splice_fun_args,
 )
 from .ir1util import (
     retarget_known_combination,
-    unlink_node,
 )
 from .knownfun import deftransform
 from .node import (
-    CallKind,
     Combination,
     Lvar,
-    NodeVisitor,
 )
 from .srctran import (
     _exact_int_literal,
@@ -47,40 +44,16 @@ from .srctran import (
 _MAX_COMBINED_SHIFT = 1024
 
 
-class _KnownBinaryProducer(NodeVisitor):
-    def __init__(self, names: frozenset[str]):
-        self.names = names
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node: Combination):
-        if (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.name in self.names
-            and len(node.args) == 2
-            and len(node.fun.uses) == 1
-        ):
-            return node
-        return None
-
-
 _COMMUTATIVE_INT_NAMES = frozenset({"%add", "%bit_and", "%bit_or", "%bit_xor"})
 
 
 def _extract_inner_var_and_const(
-    inner_node: Combination, block
+    inner_node: Combination,
 ) -> tuple[Lvar, Lvar, int] | None:
     arg0, arg1 = inner_node.args
     if lvar_type(arg0).fits(INTEGER):
         c1 = _exact_int_literal(arg1)
-        if (
-            c1 is not None
-            and len(arg1.uses) == 1
-            and arg1.uses[0].prev is not None
-            and arg1.uses[0].block is block
-        ):
+        if c1 is not None and len(arg1.uses) == 1 and arg1.uses[0].prev is not None:
             return arg0, arg1, c1
     if (
         inner_node.fun_info is not None
@@ -88,12 +61,7 @@ def _extract_inner_var_and_const(
         and lvar_type(arg1).fits(INTEGER)
     ):
         c1 = _exact_int_literal(arg0)
-        if (
-            c1 is not None
-            and len(arg0.uses) == 1
-            and arg0.uses[0].prev is not None
-            and arg0.uses[0].block is block
-        ):
+        if c1 is not None and len(arg0.uses) == 1 and arg0.uses[0].prev is not None:
             return arg1, arg0, c1
     return None
 
@@ -101,57 +69,41 @@ def _extract_inner_var_and_const(
 def _match_assoc_int_binary(
     node: Combination, inner_names: frozenset[str]
 ) -> tuple[Combination, Lvar, Lvar, int, Lvar, int] | None:
-    if len(node.args) != 2 or len(node.fun.uses) != 1:
+    if len(node.args) != 2:
         return None
     left_lvar, right_lvar = node.args
-    if len(left_lvar.uses) != 1 or len(right_lvar.uses) != 1:
-        return None
-    fun_ref = node.fun.uses[0]
-    if fun_ref.prev is None or fun_ref.next is not node.prev:
-        return None
     c2 = _exact_int_literal(right_lvar)
     if c2 is not None:
-        inner_node = left_lvar.uses[0].accept(_KnownBinaryProducer(inner_names))
-        right_ref = right_lvar.uses[0]
-        if (
-            inner_node is not None
-            and inner_node.prev is not None
-            and right_ref.prev is not None
-            and inner_node.block is node.block
-            and inner_node.next is right_ref.prev
-            and right_ref.next is fun_ref.prev
-        ):
-            extracted = _extract_inner_var_and_const(inner_node, node.block)
+        inner_node = splice_fun_args(left_lvar, inner_names, 2, splice=False)
+        if inner_node is not None:
+            extracted = _extract_inner_var_and_const(inner_node)
             if extracted is not None:
                 x_lvar, c1_lvar, c1 = extracted
                 return inner_node, x_lvar, c1_lvar, c1, right_lvar, c2
     if node.fun_info is not None and node.fun_info.name in _COMMUTATIVE_INT_NAMES:
         c2 = _exact_int_literal(left_lvar)
-        inner_node = right_lvar.uses[0].accept(_KnownBinaryProducer(inner_names))
-        left_ref = left_lvar.uses[0]
-        if (
-            c2 is not None
-            and inner_node is not None
-            and inner_node.prev is not None
-            and left_ref.prev is not None
-            and left_ref.block is node.block
-            and inner_node.block is node.block
-            and inner_node.next is fun_ref.prev
-        ):
-            arg0, arg1 = inner_node.args
-            c1 = _exact_int_literal(arg1)
-            inner_fun_ref = inner_node.fun.uses[0]
-            if (
-                lvar_type(arg0).fits(INTEGER)
-                and c1 is not None
-                and len(arg1.uses) == 1
-                and arg1.uses[0].prev is not None
-                and inner_fun_ref.prev is not None
-                and arg1.uses[0].next is inner_fun_ref.prev
-                and inner_fun_ref.next is inner_node.prev
-            ):
-                return inner_node, arg0, left_lvar, c1, arg1, c2
+        inner_node = splice_fun_args(right_lvar, inner_names, 2, splice=False)
+        if c2 is not None and inner_node is not None:
+            extracted = _extract_inner_var_and_const(inner_node)
+            if extracted is not None:
+                x_lvar, c1_lvar, c1 = extracted
+                return inner_node, x_lvar, left_lvar, c1, c1_lvar, c2
     return None
+
+
+def _splice_matched_inner(
+    node: Combination,
+    inner_node: Combination,
+    flush_const_lvar: Lvar,
+    keep_const_lvar: Lvar,
+) -> None:
+    spliced_lvar = (
+        node.args[0]
+        if node.args[1] in (flush_const_lvar, keep_const_lvar)
+        else node.args[1]
+    )
+    inner_name = inner_node.fun_info.name if inner_node.fun_info is not None else ""
+    splice_fun_args(spliced_lvar, (inner_name,), 2)
 
 
 def _replace_assoc_binary(
@@ -165,10 +117,7 @@ def _replace_assoc_binary(
 ) -> bool:
     if not _rewrite_int_constant_lvar(keep_const_lvar, combined):
         return False
-    inner_node.args = []
-    _flush_operand(inner_node.fun)
-    _flush_operand(flush_const_lvar)
-    unlink_node(inner_node)
+    _splice_matched_inner(node, inner_node, flush_const_lvar, keep_const_lvar)
     retarget_known_combination(node, target_info, [x_lvar, keep_const_lvar])
     return True
 
@@ -180,15 +129,7 @@ def _collapse_assoc_to_lvar(
     flush_const_lvar: Lvar,
     keep_const_lvar: Lvar,
 ) -> bool:
-    inner_lvar = inner_node.lvar
-    inner_node.args = []
-    x_lvar.dest = node
-    keep_const_lvar.dest = node
-    node.args = [x_lvar, keep_const_lvar]
-    _flush_operand(inner_lvar)
-    _flush_operand(inner_node.fun)
-    _flush_operand(flush_const_lvar)
-    unlink_node(inner_node)
+    _splice_matched_inner(node, inner_node, flush_const_lvar, keep_const_lvar)
     replace_combination_with_lvar(node, x_lvar)
     return True
 

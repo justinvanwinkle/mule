@@ -862,15 +862,18 @@ def insert_cast_before(next_node: Node, lvar: Lvar, cast_factory) -> Lvar:
 def insert_cast_after(producer: ValuedNode, cast_factory) -> Lvar:
     """Check a single producer immediately, before later operand side effects."""
     result = linked(producer.lvar, producer, "asserted result")
-    aver(result.uses == [producer], "a result assertion requires one producer")
+    aver(producer in result.uses, "a result assertion requires a linked producer")
+    index = result.uses.index(producer)
     value = Lvar()
-    result.uses.remove(producer)
+    result.uses.pop(index)
     producer.lvar = None
     add_lvar_use(producer, value)
     cast = cast_factory(value)
     value.dest = cast
     insert_node_after(producer, cast)
-    use_lvar(cast, result)
+    cast.lvar = result
+    result.uses.insert(index, cast)
+    reoptimize_lvar(result)
     return result
 
 
@@ -1248,6 +1251,7 @@ def clone_lambda_component(lambda_: Lambda):
     old_blocks = tuple(old_component.blocks())
     new_component = Component(old_component.name)
     new_component.kind = old_component.kind
+    new_component.mutates_module_namespace = old_component.mutates_module_namespace
     new_component.lambdas = list(old_component.lambdas)
     new_component.reoptimize = False
     new_component.reanalyze = False

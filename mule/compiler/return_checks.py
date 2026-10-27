@@ -4,10 +4,18 @@ from collections import defaultdict
 
 from . import fndb
 from .annotation_types import DeclaredReturnContract, InferredReturnContract
-from .ctype import BOTTOM, UNKNOWN, InstanceType, ValueType, ValueTypeVisitor
+from .ctype import BOTTOM, UNKNOWN, InstanceType, TupleType, ValueType, ValueTypeVisitor
 from .ir1util import insert_cast_after
 from .locall import global_bindings, made_function
-from .node import CallKind, Cast, Combination, Lambda, LeafVisitor, NodeVisitor
+from .node import (
+    CallKind,
+    Cast,
+    Combination,
+    FunctionalKind,
+    Lambda,
+    LeafVisitor,
+    NodeVisitor,
+)
 
 
 def assert_inferred_results(compilation) -> bool:
@@ -149,19 +157,52 @@ def _target_inferred_return_type(
     return target.derive_return_type(arguments, keywords)
 
 
+class _ContractPrediction(ValueTypeVisitor):
+    """Forget literal identities without discarding checked numeric intervals."""
+
+    def visit_ValueType(self, fact):
+        return fact.widen_constant()
+
+    def visit_IntegerType(self, fact):
+        return fact.widen_constant() if fact.exact_integer() is not None else fact
+
+    def visit_BooleanType(self, fact):
+        return fact.widen_constant()
+
+    def visit_TupleType(self, fact):
+        return TupleType(
+            fact.arity,
+            None
+            if fact.elements is None
+            else tuple(element.accept(self) for element in fact.elements),
+            fact.may_be_unbound,
+        )
+
+    def visit_UnionType(self, fact):
+        result = BOTTOM
+        for member in fact.members:
+            result = result.join(member.accept(self))
+        return result
+
+
+_CONTRACT_PREDICTION = _ContractPrediction()
+
+
 def _target_return_contract(
     target: Lambda,
     target_facts,
     arguments: tuple[ValueType, ...],
     keywords: tuple[str | None, ...],
+    *,
+    widen_constant: bool = True,
 ):
     annotation = target.signature.implementation_return_annotation
     declared = None if annotation is None else annotation.definition_contract()
     inferred = _target_inferred_return_type(target, target_facts, arguments, keywords)
     if inferred is BOTTOM or inferred.may_be_unbound:
         inferred = UNKNOWN
-    else:
-        inferred = inferred.widen_constant()
+    elif widen_constant or declared is not None:
+        inferred = inferred.accept(_CONTRACT_PREDICTION)
     if declared is not None:
         return DeclaredReturnContract(target.name, declared, inferred)
     if inferred is UNKNOWN:
@@ -242,8 +283,12 @@ class _AssertResult(NodeVisitor):
         if resolved is None:
             return None
         receiver_lvar, method_name = resolved
-        receiver_type = self.receiver_lvar_type(receiver_lvar).widen_constant()
-        arg_types = tuple(self.lvar_type(arg).widen_constant() for arg in call.args[1:])
+        receiver_type = self.receiver_lvar_type(receiver_lvar).accept(
+            _CONTRACT_PREDICTION
+        )
+        arg_types = tuple(
+            self.lvar_type(arg).accept(_CONTRACT_PREDICTION) for arg in call.args[1:]
+        )
         arguments = (receiver_type, *arg_types)
         keywords = call.info.keywords
         target = self.facts.targets.get(call)
@@ -262,7 +307,10 @@ class _AssertResult(NodeVisitor):
             ):
                 return None
             return _target_return_contract(
-                target_lam, self.all_facts.get(target_lam), arguments, keywords
+                target_lam,
+                self.all_facts.get(target_lam),
+                arguments,
+                keywords,
             )
         method_key = (self.function.namespace, method_name)
         if method_key in self.shadowed:
@@ -308,7 +356,9 @@ class _AssertResult(NodeVisitor):
             ):
                 joined_inferred = UNKNOWN
             elif joined_inferred is not UNKNOWN:
-                joined_inferred = joined_inferred.join(cand_inferred.widen_constant())
+                joined_inferred = joined_inferred.join(
+                    cand_inferred.accept(_CONTRACT_PREDICTION)
+                )
         if shared_declared is not None:
             return DeclaredReturnContract(
                 method_name,
@@ -323,9 +373,9 @@ class _AssertResult(NodeVisitor):
         if not call.lexenv.policy.infers_return_contracts:
             return
         result = call.lvar
-        if result is None or result.dest is None or len(result.uses) != 1:
+        if result is None or result.dest is None:
             return
-        if result.dest.accept(_AssertionDestination(call)):
+        if len(result.uses) != 1 or result.dest.accept(_AssertionDestination(call)):
             return
         if (
             call.kind is CallKind.KNOWN
@@ -348,23 +398,23 @@ class _AssertResult(NodeVisitor):
             location = call.info.location
             if target.code is None or location is None:
                 return
-            if (
-                target.code.filename != location[0]
-                or target.code.firstlineno > location[1]
+            if target.code.filename != location[0] or (
+                self.function.kind is FunctionalKind.TOPLEVEL
+                and target.code.firstlineno > location[1]
             ):
                 return
-            annotation = target.signature.implementation_return_annotation
-            declared = None if annotation is None else annotation.definition_contract()
-            if declared is not None:
-                contract = DeclaredReturnContract(target.name, declared)
-            else:
-                arguments = tuple(
-                    self.lvar_type(arg).widen_constant() for arg in call.args
-                )
-                inferred = target.derive_return_type(arguments, call.info.keywords)
-                if inferred is UNKNOWN or inferred is BOTTOM or inferred.may_be_unbound:
-                    return
-                contract = InferredReturnContract(target.name, inferred)
+            arguments = tuple(
+                self.lvar_type(arg).accept(_CONTRACT_PREDICTION) for arg in call.args
+            )
+            contract = _target_return_contract(
+                target,
+                self.all_facts.get(target),
+                arguments,
+                call.info.keywords,
+                widen_constant=False,
+            )
+            if contract is None:
+                return
         else:
             return
         checked = contract.fact

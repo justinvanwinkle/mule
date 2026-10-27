@@ -3265,21 +3265,82 @@ unsafe extern "C" fn instance_field(_: Value, args: Value) -> Value {
         let Some([instance, attribute]) = operands(args) else {
             return std::ptr::null_mut();
         };
+        mule_instance_field(instance, attribute)
+    }
+}
+
+/// Borrowed operands, owned result; physical reference slots ignore descriptors.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_instance_field(instance: Value, attribute: Value) -> Value {
+    unsafe {
         let Some(attribute) = text_argument(attribute) else {
             return std::ptr::null_mut();
         };
+        instance_field_by_name(instance, &attribute)
+    }
+}
+
+unsafe fn instance_field_by_name(instance: Value, attribute: &str) -> Value {
+    unsafe {
         if let Some((layout, true, _)) = layout(instance) {
             if let Data::Instance { fields, .. } = &(*instance).data {
-                if let Some(index) = layout.field_lookup.get(&attribute) {
+                if let Some(index) = layout.field_lookup.get(attribute) {
                     let value = fields[*index];
                     if !value.is_null() {
                         return object::retain(value);
                     }
                 }
-                return missing(Some(layout), true, &attribute);
+                return missing(Some(layout), true, attribute);
             }
         }
         fail("TypeError", "an instance with reference fields is required")
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_instance_field_name(instance: Value, name: *const u8, length: usize) -> Value {
+    unsafe {
+        let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, length)) else {
+            return fail("ValueError", "physical field name is not UTF-8");
+        };
+        instance_field_by_name(instance, name)
+    }
+}
+
+/// Class identity without the attribute cache's instance-dictionary restriction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_instance_layout_id(instance: Value) -> u64 {
+    unsafe {
+        if let Some((layout, true, _)) = layout(instance) {
+            return layout as *const ClassLayout as u64;
+        }
+        0
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_reference_layout_id(instance: Value) -> u64 {
+    unsafe {
+        if instance.is_null() || object::is_fixnum(instance) {
+            return 0;
+        }
+        if !matches!(&(*instance).data, Data::Instance { .. }) {
+            return 0;
+        }
+        mule_instance_layout_id(instance)
+    }
+}
+
+/// Report the null slot already observed by compiled code without reading it again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_instance_field_missing(instance: Value, attribute: *const u8, length: usize) {
+    unsafe {
+        let attribute = String::from_utf8_lossy(std::slice::from_raw_parts(attribute, length));
+        if let Some((layout, true, _)) = layout(instance) {
+            missing(Some(layout), true, &attribute);
+        } else {
+            fail("TypeError", "an instance with reference fields is required");
+        }
     }
 }
 
@@ -4009,21 +4070,45 @@ unsafe extern "C" fn set_instance_field(_: Value, args: Value) -> Value {
         let Some([instance, attribute, value]) = operands(args) else {
             return std::ptr::null_mut();
         };
+        mule_set_instance_field(instance, attribute, value)
+    }
+}
+
+/// Borrowed operands; retain the replacement before releasing the old slot owner.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_set_instance_field(instance: Value, attribute: Value, value: Value) -> Value {
+    unsafe {
         let Some(attribute) = text_argument(attribute) else {
             return std::ptr::null_mut();
         };
+        set_instance_field_by_name(instance, &attribute, value)
+    }
+}
+
+unsafe fn set_instance_field_by_name(instance: Value, attribute: &str, value: Value) -> Value {
+    unsafe {
         if let Some((layout, true, _)) = layout(instance) {
             if let (Some(index), Data::Instance { fields, .. }) =
-                (layout.field_lookup.get(&attribute), &mut (*instance).data)
+                (layout.field_lookup.get(attribute), &mut (*instance).data)
             {
                 let old = fields[*index];
                 fields[*index] = object::retain(value);
                 object::release(old);
                 return object::none_value();
             }
-            return missing(Some(layout), true, &attribute);
+            return missing(Some(layout), true, attribute);
         }
         fail("TypeError", "an instance with reference fields is required")
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_set_instance_field_name(instance: Value, name: *const u8, length: usize, value: Value) -> Value {
+    unsafe {
+        let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, length)) else {
+            return fail("ValueError", "physical field name is not UTF-8");
+        };
+        set_instance_field_by_name(instance, name, value)
     }
 }
 

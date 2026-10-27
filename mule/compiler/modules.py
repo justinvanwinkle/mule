@@ -474,18 +474,27 @@ class ModuleCompiler:
                         self.storage_methods.setdefault(
                             (class_name, method_name), ret_type
                         )
-            base_target = BOOTSTRAP_CLASS_TARGETS.get(class_name)
+            is_protocol = compilation.entry.is_protocol
+            base_target = (
+                BOOTSTRAP_CLASS_TARGETS.get(class_name) if is_protocol else None
+            )
             if base_target is not None:
                 base_type = base_target.base_type
                 cls_type = base_target.cls_type
                 records_type_origin = base_target.records_type_origin
             else:
-                cls_type = BUILTIN_CLASS_TYPES.get(class_name, ANY_CLASS_TYPE)
-                base_type = STORAGE_CLASS_TYPES.get(
-                    class_name,
-                    UNKNOWN
-                    if namespace.startswith("$mule")
-                    else InstanceType(class_id),
+                cls_type = (
+                    BUILTIN_CLASS_TYPES.get(class_name, ANY_CLASS_TYPE)
+                    if is_protocol
+                    else ANY_CLASS_TYPE
+                )
+                constructed_type = (
+                    UNKNOWN if namespace.startswith("$mule") else InstanceType(class_id)
+                )
+                base_type = (
+                    STORAGE_CLASS_TYPES.get(class_name, constructed_type)
+                    if is_protocol
+                    else constructed_type
                 )
                 records_type_origin = False
             cls_target = ClassConstructorTarget(

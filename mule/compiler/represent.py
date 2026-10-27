@@ -85,16 +85,23 @@ IMMORTAL_TYPES = (FIXNUM, BOOLEAN_T, NONE_T, IMMORTAL_T)
 # Storage-class selection for one IR2 component.
 
 
+def assign_variable_primitive_types(component: IR2Component) -> None:
+    if component.context.plan is not None:
+        return
+    writes = component.writes
+    for tn in component.tns:
+        if tn.leaf is not None or (
+            tn.name is not None and tn.name.startswith("$scalar.")
+        ):
+            tn.primitive_type = _variable_type(tn, component, writes)
+
+
 def select_representations(component: IR2Component) -> None:
     raw = component.context.plan is not None
     reads = component.reads
     writes = component.writes
     if not raw:
-        for tn in component.tns:
-            if tn.leaf is not None or (
-                tn.name is not None and tn.name.startswith("$scalar.")
-            ):
-                tn.primitive_type = _variable_type(tn, component, writes)
+        assign_variable_primitive_types(component)
     selected = {}
     if not raw:
         selected.update(_select_float_representations(component))
@@ -342,10 +349,16 @@ def _refine_copy_representations(component, selected, demanded=()):
                 continue
             best = current
             best_cost = _copy_representation_cost(component, tn, current, selected)
+            if best_cost == 0:
+                continue
             for sc in tn.primitive_type.scs:
+                if sc is current:
+                    continue
                 cost = _copy_representation_cost(component, tn, sc, selected)
                 if cost < best_cost:
                     best, best_cost = sc, cost
+                    if best_cost == 0:
+                        break
             if best is not current:
                 selected[tn] = best
                 changed = True
@@ -923,13 +936,12 @@ class _AssertionContract(_Contract):
     def visit_PythonIntegerContract(self, contract):
         return self.representation.python_integer()
 
-    def visit_PythonFloatContract(self, contract):
-        return self.representation.python_real()
-
     def visit_FloatContract(self, contract):
         if contract.bits != 64:
             raise NotNative
         return self.representation.python_float()
+
+    visit_PythonFloatContract = visit_FloatContract
 
 
 class _Literal(ast.Visitor):
@@ -1616,6 +1628,7 @@ __all__ = [
     "NotNative",
     "Nothing",
     "Representation",
+    "assign_variable_primitive_types",
     "class_bindings",
     "select_native_plans",
     "select_representations",

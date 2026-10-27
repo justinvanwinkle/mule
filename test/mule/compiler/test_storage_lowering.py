@@ -29,6 +29,8 @@ _OPAQUE_STORAGE = frozenset(
         "mule_storage_write",
         "mule_storage_length",
         "mule_storage_view",
+        "mule_instance_field",
+        "mule_instance_field_name",
     }
 )
 
@@ -103,33 +105,42 @@ def test_word_counting_probe_loops_do_not_query_storage_for_each_native_access(
         graph.run(builtins)
         builtins_llvm = builtins.path("unit.ll")
 
-    # Keep a runtime-input kernel reachable without retaining program startup.
-    # The dictionary probe bodies come from the actual compiled builtins unit.
+    # Inspect the natural annotated program and its separately compiled builtins.
+    # Do not manufacture a caller for a particular internal entry convention.
     source = tmp_path / "word_count.ll"
-    source.write_text(
-        emit_llvm(WORD_COUNT)
-        + """
-define ptr @word_count_ir_probe(ptr %globals, ptr %tokens) {
-entry:
-  %counts = call ptr @"mule_fn_count_words.body"(ptr %globals, ptr %tokens)
-  ret ptr %counts
-}
-"""
-    )
+    source.write_text(emit_llvm(WORD_COUNT))
     # Check entry selection before LLVM can inline away function boundaries.
     # A direct-looking lookup alone must not hide general binding on updates.
     initial_functions = {
         **_llvm_functions(builtins_llvm.read_text()),
         **_llvm_functions(source.read_text()),
     }
-    initial_reachable = _reachable_functions("word_count_ir_probe", initial_functions)
-    for operation in ("mule_fn__table_lookup", "mule_fn__table_insert"):
-        assert any(
-            f"{operation}.body" in name or f"{operation}.borrow." in name
-            for name in initial_reachable
-        ), (
-            f"word counting must select the known {operation} entry, not only dynamic binding"
-        )
+    boot = re.search(
+        rf"@mule_run_protocols\(ptr @({_SYMBOL})", initial_functions["main"]
+    )
+    assert boot is not None, "The native main must register its program entry"
+    # The runtime invokes this callback. It is not a direct LLVM call edge.
+    main_reachable = _reachable_functions(boot.group(1).strip('"'), initial_functions)
+    kernels = {
+        name
+        for name in main_reachable
+        if re.search(r"mule_fn_count_words\.(?:body|borrow|numeric|spec)(?:\.|$)", name)
+    }
+    assert kernels, "The natural caller must select a compiled count_words entry"
+    initial_reachable = set().union(
+        *(_reachable_functions(kernel, initial_functions) for kernel in kernels)
+    )
+    selected_protocols = set()
+    for operation in ("dict_get", "dict_setitem"):
+        wrapper = f"mule.protocol.{operation}"
+        assert wrapper in initial_reachable, f"word counting must select {wrapper}"
+        selected = {
+            name
+            for name in _reachable_functions(wrapper, initial_functions)
+            if name.endswith(".protocol") and f"mule_fn_{operation}." in name
+        }
+        assert selected, f"{wrapper} must call its typed algorithm body"
+        selected_protocols.update(selected)
     main_optimized = tmp_path / "word_count.main.optimized.ll"
     builtins_optimized = tmp_path / "word_count.builtins.optimized.ll"
     optimized = tmp_path / "word_count.optimized.ll"
@@ -170,7 +181,9 @@ entry:
 
     llvm = optimized.read_text()
     functions = _llvm_functions(llvm)
-    reachable = _reachable_functions("word_count_ir_probe", functions)
+    reachable = set().union(
+        *(_reachable_functions(entry, functions) for entry in selected_protocols)
+    )
 
     analysis = subprocess.run(
         [
@@ -212,7 +225,13 @@ def _probe_storage_accesses(functions, reachable, loop_analysis):
             and current in reachable
             and any(
                 operation in current
-                for operation in ("mule_fn__table_lookup", "mule_fn__table_insert")
+                for operation in (
+                    "mule_fn__table_lookup",
+                    "mule_fn__table_insert",
+                    "mule_fn_dict_get.",
+                    "mule_fn_dict_getitem.",
+                    "mule_fn_dict_setitem.",
+                )
             )
         ):
             # Check the actual probe loops, not cold exception, formatting,
@@ -341,8 +360,8 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         builtins_llvm = builtins.path("unit.ll")
 
     llvm_fns = _llvm_functions(builtins_llvm.read_text())
-    # General entries accept unknown receivers. Their attributes must keep
-    # dynamic fallback instead of assuming that a field spelling proves _Table.
+    # General entries accept unknown receivers and use the physical primitive
+    # fallback instead of assuming that a field spelling proves _Table.
     # Typed entries still perform physical slot and vector access directly.
     for operation in ("_table_lookup", "_table_insert", "_table_resize"):
         prefix = f"mule_sequences_mule_import__dict:mule_fn_{operation}."
@@ -354,7 +373,8 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         }
         assert typed, f"No typed storage entry for {operation}"
         for name, body in typed.items():
-            assert "attr.fixed" in body, name
+            assert "physical." in body, name
+            assert "@mule.attr.hit(" not in body, name
             assert "getelementptr i8, ptr " in body and ", i64 32" in body, name
             assert "storage.read." in body, name
             assert "@mule.fast.storage.read.borrow(" not in body, name
