@@ -40,6 +40,7 @@ from .ir1util import (
     aver,
     flush_combination,
     flushable_lambda_var_ref_p,
+    is_flushable_ref,
     is_pure_bound_ref,
     reoptimize_lvar,
     replace_combination_with_lvar,
@@ -446,7 +447,11 @@ class _OptimizeNode(NodeVisitor):
             info = node.fun.uses[0].accept(_PREDICTABLE_GLOBAL_FUN_INFO)
             if info is None:
                 return False
-            return self._run_transforms(node, info)
+            if not self._run_transforms(node, info):
+                return False
+            if node.prev is not None and node.kind is CallKind.KNOWN:
+                self.visit_Combination(node)
+            return True
         info = linked(node.fun_info, node, "function info")
         if node.lvar is None and info.flushable:
             flush_combination(node)
@@ -461,7 +466,9 @@ class _OptimizeNode(NodeVisitor):
             return True
         if info.optimizer is not None and info.optimizer(node):
             return True
-        return self._run_transforms(node, info)
+        if self._run_transforms(node, info):
+            return True
+        return info.flushable and _fold_call_derived_to_constant(node)
 
     @staticmethod
     def _run_transforms(node: Combination, info) -> bool:
@@ -752,6 +759,60 @@ _IMMUTABLE_LITERAL = _ImmutableLiteral()
 
 def _immutable_literal(literal):
     return literal is not None and literal.accept(_IMMUTABLE_LITERAL)
+
+
+class _FoldableConstantOrGlobalRef(NodeVisitor, LeafVisitor):
+    """Whether a single-use lvar producer is a pure ``Constant`` or flushable ``GlobalVar`` ``Ref``."""
+
+    def __init__(self):
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        if node.final or node.allow_unbound or not is_flushable_ref(node):
+            return False
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_Constant(self, leaf: Constant) -> bool:
+        return True
+
+    def visit_GlobalVar(self, leaf: GlobalVar) -> bool:
+        return True
+
+
+_FOLDABLE_CONSTANT_OR_GLOBAL_REF = _FoldableConstantOrGlobalRef()
+
+
+def _fold_call_derived_to_constant(node: Combination) -> bool:
+    """Fold a flushable protocol query call whose derived type is a singleton
+    constant (``fold-call-derived-to-constant``, ``ir1opt.lisp:2450``)."""
+    from .protocols import PRIMITIVES
+
+    if (
+        node.lvar is None
+        or node.fun_info is None
+        or node.fun_info.name not in PRIMITIVES
+        or not all(
+            len(arg.uses) == 1
+            and not lvar_type(arg).may_be_unbound
+            and arg.uses[0].accept(_FOLDABLE_CONSTANT_OR_GLOBAL_REF)
+            for arg in node.args
+        )
+    ):
+        return False
+    derived = node.accept(_DERIVE_NODE_TYPE)
+    literal = derived.accept(_SINGLETON_LITERAL)
+    if literal is None:
+        return False
+    literal.span = node.source.span if node.source is not None else None
+    replace_combination_with_constant(node, literal)
+    return True
 
 
 def _constant_fold_tuple(node: Combination) -> bool:

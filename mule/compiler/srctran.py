@@ -299,6 +299,19 @@ class _RewriteIntConstant(NodeVisitor, LeafVisitor):
         ref.derived_type = IntegerType(self.value, self.value)
         return True
 
+    def visit_GlobalVar(self, leaf: GlobalVar):
+        ref = self._ref
+        if ref is None or not is_flushable_ref(ref):
+            return False
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        span = ref.source.span if ref.source is not None else None
+        new_leaf = Constant(ast.IntegerLiteral(self.value, span=span))
+        ref.leaf = new_leaf
+        new_leaf.refs.append(ref)
+        ref.derived_type = IntegerType(self.value, self.value)
+        return True
+
 
 def _rewrite_int_constant_lvar(lvar: Lvar, value: int) -> bool:
     if len(lvar.uses) != 1:

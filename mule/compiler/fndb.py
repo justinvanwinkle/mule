@@ -462,7 +462,7 @@ def derive_min2_types(left: ValueType, right: ValueType) -> ValueType:
         if not left_can_be_bool and not right_can_be_bool:
             return IntegerType(lo, hi)
         return PythonIntegerType(lo, hi)
-    return left.join(right)
+    return left.join(right).widen_constant()
 
 
 def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
@@ -488,7 +488,7 @@ def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
         if not left_can_be_bool and not right_can_be_bool:
             return IntegerType(lo, hi)
         return PythonIntegerType(lo, hi)
-    return left.join(right)
+    return left.join(right).widen_constant()
 
 
 MIN2 = defknown(

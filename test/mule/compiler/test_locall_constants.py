@@ -16,7 +16,7 @@ from mule.compiler.ctype import (
 from mule.compiler.locall import collect_global_constants
 from mule.compiler.main import compile_source, compile_toplevel
 from mule.compiler.modules import ModuleCompiler
-from mule.compiler.node import GlobalVar, Ref
+from mule.compiler.node import Combination, Constant, GlobalVar, Ref
 
 
 def _refs_to_global(lambda_, name: str) -> list[Ref]:
@@ -186,13 +186,76 @@ def test_final_annotations_and_frozen_container_constants(tmp_path):
         for leaf, vtype in collect_global_constants(compilation.lambdas).items()
         if leaf.namespace == "__main__"
     }
-    assert by_name["LIMIT"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
-    assert by_name["TYPED_LIMIT"] == IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+    assert by_name["LIMIT"] == IntegerType(100, 100)
+    assert by_name["TYPED_LIMIT"] == IntegerType(200, 200)
     assert by_name["QUALIFIED_FINAL"] is TEXT_TYPE
     assert by_name["EMPTY_SENTINEL"] is NONE_TYPE
     assert by_name["FROZEN_WORDS"] is FROZENSET_TYPE
     assert by_name["TUPLE_WORDS"] == TupleType()
     assert by_name["RAW_BYTES"] is BYTES_TYPE
+
+    read_fn = compilation.lambdas[1]
+    for final_name in ("LIMIT", "TYPED_LIMIT", "QUALIFIED_FINAL", "EMPTY_SENTINEL"):
+        assert _refs_to_global(read_fn, final_name) == []
+    constant_values = {
+        getattr(node.leaf.value, "value", None)
+        for block in read_fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Ref) and isinstance(node.leaf, Constant)
+    }
+    assert {100, 200, "ok", None}.issubset(constant_values)
+    assert compilation.facts is not None
+    assert compilation.facts[read_fn].return_type == TupleType(
+        7,
+        (
+            IntegerType(100, 100),
+            IntegerType(200, 200),
+            TEXT_TYPE,
+            NONE_TYPE,
+            BOOLEAN,
+            TupleType(),
+            BYTES_TYPE,
+        ),
+    )
+
+
+def test_flushable_known_call_with_singleton_derived_type_folds_and_flushes_global_ref():
+    source = (
+        "_RECORDS = ('a', 'b', 'c', 'd', 'e', 'f')\n"
+        "_VOCAB = ('alpha', 'bravo', 'charlie', 'delta')\n"
+        "def pick(state: int) -> tuple[str, str]:\n"
+        " next_state = state & 0x7FFFFFFF\n"
+        " rec = _RECORDS[(next_state >> 8) % len(_RECORDS)]\n"
+        " word = _VOCAB[(next_state >> 8) % len(_VOCAB)]\n"
+        " return rec, word\n"
+    )
+    compilation = compile_source(source)
+    pick_fn = compilation.lambdas[1]
+
+    records_refs = _refs_to_global(pick_fn, "_RECORDS")
+    vocab_refs = _refs_to_global(pick_fn, "_VOCAB")
+    assert len(records_refs) == 1
+    assert len(vocab_refs) == 1
+
+    call_names = [
+        node.fun_info.name
+        for block in pick_fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Combination) and node.fun_info is not None
+    ]
+    assert "_storage_length" not in call_names
+    assert "len" not in call_names
+    assert call_names.count("%modulo") == 1
+    assert call_names.count("%bit_and") == 2
+
+    constant_values = {
+        getattr(node.leaf.value, "value", None)
+        for block in pick_fn.component.blocks()
+        for node in block.nodes()
+        if isinstance(node, Ref) and isinstance(node.leaf, Constant)
+    }
+    assert 6 in constant_values
+    assert 3 in constant_values
 
 
 def test_dynamic_module_namespace_mutations_disable_constant_folding(tmp_path):
