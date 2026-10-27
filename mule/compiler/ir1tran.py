@@ -6353,7 +6353,7 @@ class _BoundNames(ast.Visitor):
 
 
 class _SlotNames(ast.Visitor):
-    """The instance fields a ``__slots__ = ...`` statement declares with
+    """The instance fields a literal slot declaration supplies with
     string literals; other statements and computed values declare none."""
 
     def visit_Node(self, node):
@@ -6362,7 +6362,10 @@ class _SlotNames(ast.Visitor):
     def visit_Assignment(self, node):
         if not (
             len(node.targets) == 1
-            and node.targets[0].accept(_ReceiverName("__slots__"))
+            and (
+                node.targets[0].accept(_ReceiverName("__slots__"))
+                or node.targets[0].accept(_ReceiverName("__mule_slots__"))
+            )
         ):
             return ()
         return node.value.accept(_SlotDeclaration())

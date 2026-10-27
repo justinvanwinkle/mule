@@ -15,6 +15,7 @@ from mule import ast
 from . import fndb
 from .ctype import (
     BOOLEAN_TRUE,
+    INTEGER,
     PYTHON_INTEGER,
     UNKNOWN,
     ByteArrayType,
@@ -221,6 +222,37 @@ class _BuildSequenceProducer(NodeVisitor):
 
 
 _BUILD_SEQUENCE_PRODUCER = _BuildSequenceProducer()
+
+
+@deftransform("%multiply")
+def _transform_singleton_repeat(node: Combination) -> bool:
+    """Replace fresh singleton repetition by allocation and compiled vector fill."""
+    if node.lvar is None or len(node.args) != 2:
+        return False
+    for sequence_index in (0, 1):
+        sequence = node.args[sequence_index]
+        count = node.args[1 - sequence_index]
+        if not lvar_type(count).fits_integer(INTEGER) or len(sequence.uses) != 1:
+            continue
+        build = sequence.uses[0].accept(_BUILD_SEQUENCE_PRODUCER)
+        if (
+            build is None
+            or build.fun_info is not fndb.BUILD_LIST
+            or len(build.args) != 1
+            or build.block is not node.block
+        ):
+            continue
+        item = build.args[0]
+        # Keep operand producers in place: count evaluation can run user code.
+        # Transfer the element's lvar to the fill call instead of flushing it
+        # with the now-unobservable singleton list.
+        build.args = []
+        sequence.dest = None
+        _flush_operand(build.fun)
+        unlink_node(build)
+        retarget_known_combination(node, fndb.PROTOCOLS["_list_fill"], [item, count])
+        return True
+    return False
 
 
 class _EmptyContainerProducer(NodeVisitor):

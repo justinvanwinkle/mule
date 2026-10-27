@@ -3398,6 +3398,41 @@ pub unsafe extern "C" fn mule_list_append(list: Value, value: Value) -> i32 {
     unsafe { if list_append(list, value) { 0 } else { -1 } }
 }
 
+/// Reserve physical list storage without changing its initialized range.
+/// Both arguments are borrowed. Failure leaves existing elements owned by the list.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_storage_reserve(list: Value, count: Value) -> Value {
+    unsafe {
+        let count = if is_fixnum(count) {
+            Some(fixnum(count))
+        } else if !count.is_null() {
+            match &(*count).data {
+                Data::BigInt(value, ..) => value.to_i64(),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some(count) = count else {
+            error("SystemError", "invalid list storage reservation count");
+            return std::ptr::null_mut();
+        };
+        if count < 0 || list.is_null() || is_fixnum(list) {
+            error("SystemError", "invalid list storage reservation");
+            return std::ptr::null_mut();
+        }
+        let Data::List(values, ..) = &mut (*list).data else {
+            error("SystemError", "list storage reservation requires a list");
+            return std::ptr::null_mut();
+        };
+        if values.try_reserve_exact(count as usize).is_err() {
+            error("MemoryError", "sequence allocation failed");
+            return std::ptr::null_mut();
+        }
+        none_value()
+    }
+}
+
 /// Copy and retain an evaluated buffer. Language evaluation and container
 /// algorithms are compiled Mule code; this only constructs owned storage.
 unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<ValueBuffer> {

@@ -711,6 +711,10 @@ class ValueType:
         at ``index``."""
         return False
 
+    def fixed_slot_index(self, name: str) -> int | None:
+        """A physical field position, requiring a runtime layout guard."""
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class UnknownType(ValueType):
@@ -4042,6 +4046,12 @@ class UnionType(ValueType):
         classes = {m.instance_class() for m in self.members if m is not NONE_TYPE}
         return classes.pop() if not self.may_be_unbound and len(classes) == 1 else None
 
+    def fixed_slot_index(self, name: str) -> int | None:
+        if self.may_be_unbound:
+            return None
+        positions = {member.fixed_slot_index(name) for member in self.members}
+        return positions.pop() if len(positions) == 1 else None
+
     def dispatch_domain(self):
         if self.may_be_unbound:
             return None
@@ -4224,6 +4234,7 @@ class InstanceType(ValueType):
 
     identity: str = ""
     may_be_unbound: bool = False
+    fixed_slots: tuple[str, ...] = ()
 
     def accept(self, visitor):
         return visitor.visit_InstanceType(self)
@@ -4234,6 +4245,11 @@ class InstanceType(ValueType):
 
     def instance_class(self) -> str | None:
         return None if self.may_be_unbound else self.identity
+
+    def fixed_slot_index(self, name: str) -> int | None:
+        if self.may_be_unbound or name not in self.fixed_slots:
+            return None
+        return self.fixed_slots.index(name)
 
     def runtime_class_type(self):
         return UNKNOWN if self.may_be_unbound else ClassType((self,))
@@ -5001,6 +5017,7 @@ class _SerializeValueType(ValueTypeVisitor):
             "kind": "instance",
             "class": fact.identity,
             "unbound": fact.may_be_unbound,
+            "fixed_slots": list(fact.fixed_slots),
         }
 
 
@@ -5105,5 +5122,9 @@ def value_type_from_dict(data: dict | None) -> ValueType:
     if kind == "unique_obj":
         return UniqueObjectType(data.get("id"), may_be_unbound=unbound)
     if kind == "instance":
-        return InstanceType(data["class"], may_be_unbound=unbound)
+        return InstanceType(
+            data["class"],
+            may_be_unbound=unbound,
+            fixed_slots=tuple(data.get("fixed_slots", ())),
+        )
     return UNKNOWN

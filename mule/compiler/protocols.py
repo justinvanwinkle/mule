@@ -77,6 +77,7 @@ _TEXT_ACCESS = {
     name: "mule" + name
     for name in (
         "_storage_length",
+        "_storage_reserve",
         "_storage_read",
         "_storage_write",
         "_storage_append",
@@ -183,6 +184,7 @@ _NON_INTEGER_FIRST_PRIMITIVES = frozenset(
 )
 
 _BORROWED_PRIMITIVE_ARGS = {
+    "_storage_reserve": frozenset({0, 1}),
     "_tuple_storage": frozenset({0}),
     "_text_storage": frozenset({0}),
     "_storage_compatible": frozenset({0, 1}),

@@ -1904,71 +1904,68 @@ for _operator, _opcode in COMPARE_OPCODES.items():
     _define_compare(_operator, _opcode)
 
 
-_TABLE_SLOTS = {
-    "_indices": 0,
-    "_hashes": 1,
-    "_keys": 2,
-    "_values": 3,
-    "_used": 4,
-}
-
-
 @define_vop("getattr", translate=fndb.GETATTR, args=(OBJECT,), results=(OBJECT,))
 def getattr_(gen, vop):
     receiver = gen.take(vop.args[0])
     result = vop.results[0]
     name = vop.codegen_info.name
-    value = _read_attribute(gen, receiver, name, result.tn)
+    receiver_type = vop.args[0].tn.type or UNKNOWN
+    value = _read_attribute(
+        gen,
+        receiver,
+        name,
+        result.tn,
+        slot_index=receiver_type.fixed_slot_index(name),
+    )
     gen.publish(result, value)
     gen.release(receiver)
-    if not (
-        gen.lambda_.is_protocol
-        and name in _TABLE_SLOTS
-        and result.tn.borrowed_from is not None
-    ):
-        gen.check_pointer(value)
+    gen.check_pointer(value)
     gen.refine(result.tn, value)
 
 
-def _read_attribute(gen, receiver, name, result_tn=None):
-    """An owned field value, with guarded physical access and dynamic lookup."""
-    slot_index = _TABLE_SLOTS.get(name) if gen.lambda_.is_protocol else None
-    if slot_index is not None:
-        fields_addr = gen.operation(
-            f"getelementptr i8, ptr {receiver}, i64 {INSTANCE_FIELDS_OFFSET}"
-        )
-        fields = gen.operation(f"load ptr, ptr {fields_addr}")
-        slot = (
-            fields
-            if slot_index == 0
-            else gen.operation(f"getelementptr ptr, ptr {fields}, i64 {slot_index}")
-        )
-        field = gen.operation(f"load ptr, ptr {slot}")
-        if result_tn is not None and result_tn.borrowed_from is not None:
-            return field
-        unset = gen.operation(f"icmp eq ptr {field}, null")
-        loaded = gen.fresh("attr.loaded")[1:]
-        slow_label = gen.fresh("attr.slow")[1:]
-        join = gen.fresh("attr.join")[1:]
-        gen.line(f"br i1 {unset}, label %{slow_label}, label %{loaded}")
-        gen.lines.append(f"{loaded}:")
-        result_type = (result_tn.type if result_tn is not None else None) or UNKNOWN
-        if not result_type.is_fixnum and not result_type.is_immortal:
-            retain = "heap.retain" if result_type.is_heap_object else "fast.retain"
-            gen.line(f"call ptr @mule.{retain}(ptr {field})")
-        gen.line(f"br label %{join}")
-        gen.lines.append(f"{slow_label}:")
-        slow = gen.operation(
-            f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, ptr null)"
-        )
-        gen.line(f"br label %{join}")
-        gen.lines.append(f"{join}:")
-        return gen.operation(f"phi ptr [{field}, %{loaded}], [{slow}, %{slow_label}]")
+@define_vop("getattr-borrow", args=(OBJECT,), results=(OBJECT, OBJECT))
+def getattr_borrow(gen, vop):
+    receiver = gen.take(vop.args[0])
+    name = vop.codegen_info.name
+    slot_index = (vop.args[0].tn.type or UNKNOWN).fixed_slot_index(name)
     cache = gen.module.attribute_cache()
-    labels = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
-    slot = gen.operation(
-        f"call ptr @mule.attr.field(ptr {receiver}, i64 {labels.encoded})"
+    site = _AttributeSite(gen, receiver, cache, ATTR_FIELD, slot_index=slot_index)
+    slot = _attribute_slot(gen, receiver, site.encoded, slot_index)
+    value = gen.operation(f"load ptr, ptr {slot}")
+    unset = gen.operation(f"icmp eq ptr {value}, null")
+    hit = gen.fresh("attr.borrowed")[1:]
+    gen.line(f"br i1 {unset}, label %{site.slow}, label %{hit}")
+    gen.lines.append(f"{hit}:")
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.slow}:")
+    slow = gen.operation(
+        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, ptr {cache})"
     )
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.join}:")
+    owner = gen.operation(f"phi ptr [null, %{hit}], [{slow}, %{site.slow}]")
+    borrowed = gen.operation(f"phi ptr [{value}, %{hit}], [{slow}, %{site.slow}]")
+    # Ownership is tracked by SSA identity. Publish the nullable owner first,
+    # before the borrowed alias or any error edge can observe the result.
+    gen.publish(vop.results[1], owner)
+    gen.publish(vop.results[0], borrowed)
+    gen.release(receiver)
+    gen.check_pointer(borrowed)
+    gen.refine(vop.results[0].tn, borrowed)
+
+
+@define_vop("slot-borrow-end", args=(OBJECT, OBJECT), arg_escapes=(False, False))
+def slot_borrow_end(gen, vop):
+    gen.release(gen.take(vop.args[0]))
+    # The explicit receiver operand extends the root's live range.
+    gen.load(vop.args[1])
+
+
+def _read_attribute(gen, receiver, name, result_tn=None, *, slot_index=None):
+    """An owned field value, with guarded physical access and dynamic lookup."""
+    cache = gen.module.attribute_cache()
+    labels = _AttributeSite(gen, receiver, cache, ATTR_FIELD, slot_index=slot_index)
+    slot = _attribute_slot(gen, receiver, labels.encoded, slot_index)
     field = gen.operation(f"load ptr, ptr {slot}")
     unset = gen.operation(f"icmp eq ptr {field}, null")
     loaded = gen.fresh("attr.loaded")[1:]
@@ -1992,17 +1989,33 @@ class _AttributeSite:
     the receiver's class, else branches to ``slow``. ``join`` is the label
     the caller merges both paths at."""
 
-    def __init__(self, gen, receiver: str, cache: str, kind: int):
+    def __init__(self, gen, receiver: str, cache: str, kind: int, *, slot_index=None):
         self.encoded = gen.operation(
             f"call i64 @mule.attr.hit(ptr {receiver}, ptr {cache})"
         )
-        found = gen.operation(f"and i64 {self.encoded}, {ATTR_KIND_MASK}")
-        matched = gen.operation(f"icmp eq i64 {found}, {kind}")
-        hit = gen.fresh("attr.hit")[1:]
+        if slot_index is None:
+            found = gen.operation(f"and i64 {self.encoded}, {ATTR_KIND_MASK}")
+            matched = gen.operation(f"icmp eq i64 {found}, {kind}")
+        else:
+            expected = (slot_index << ATTR_SHIFT) | kind
+            matched = gen.operation(f"icmp eq i64 {self.encoded}, {expected}")
+        hit = gen.fresh("attr.fixed" if slot_index is not None else "attr.hit")[1:]
         self.slow = gen.fresh("attr.slow")[1:]
         self.join = gen.fresh("attr.join")[1:]
         gen.line(f"br i1 {matched}, label %{hit}, label %{self.slow}")
         gen.lines.append(f"{hit}:")
+
+
+def _attribute_slot(gen, receiver, encoded, slot_index):
+    if slot_index is None:
+        return gen.operation(
+            f"call ptr @mule.attr.field(ptr {receiver}, i64 {encoded})"
+        )
+    fields_addr = gen.operation(
+        f"getelementptr i8, ptr {receiver}, i64 {INSTANCE_FIELDS_OFFSET}"
+    )
+    fields = gen.operation(f"load ptr, ptr {fields_addr}")
+    return gen.operation(f"getelementptr ptr, ptr {fields}, i64 {slot_index}")
 
 
 @define_vop(
@@ -2047,6 +2060,9 @@ def setattr_(gen, vop):
         value,
         move_value=move_value,
         value_tn=vop.args[1].tn,
+        slot_index=(vop.args[0].tn.type or UNKNOWN).fixed_slot_index(
+            vop.codegen_info.name
+        ),
     )
     gen.release(receiver)
     if not move_value:
@@ -2055,36 +2071,19 @@ def setattr_(gen, vop):
 
 
 def _write_attribute(
-    gen, receiver, name, value, *, move_value: bool = False, value_tn=None
+    gen,
+    receiver,
+    name,
+    value,
+    *,
+    move_value: bool = False,
+    value_tn=None,
+    slot_index=None,
 ):
     """Assign a borrowed or moved value, completing old-value destruction before return."""
-    slot_index = _TABLE_SLOTS.get(name) if gen.lambda_.is_protocol else None
-    if slot_index is not None:
-        fields_addr = gen.operation(
-            f"getelementptr i8, ptr {receiver}, i64 {INSTANCE_FIELDS_OFFSET}"
-        )
-        fields = gen.operation(f"load ptr, ptr {fields_addr}")
-        slot = (
-            fields
-            if slot_index == 0
-            else gen.operation(f"getelementptr ptr, ptr {fields}, i64 {slot_index}")
-        )
-        val_type = (value_tn.type if value_tn is not None else None) or UNKNOWN
-        if name == "_used" and val_type.is_fixnum:
-            gen.line(f"store ptr {value}, ptr {slot}")
-            return "0"
-        old = gen.operation(f"load ptr, ptr {slot}")
-        if not move_value and not val_type.is_fixnum and not val_type.is_immortal:
-            retain = "heap.retain" if val_type.is_heap_object else "fast.retain"
-            gen.line(f"call ptr @mule.{retain}(ptr {value})")
-        gen.line(f"store ptr {value}, ptr {slot}")
-        gen.line(f"call void @mule.fast.release(ptr {old})")
-        return "0"
     cache = gen.module.attribute_cache()
-    site = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
-    slot = gen.operation(
-        f"call ptr @mule.attr.field(ptr {receiver}, i64 {site.encoded})"
-    )
+    site = _AttributeSite(gen, receiver, cache, ATTR_FIELD, slot_index=slot_index)
+    slot = _attribute_slot(gen, receiver, site.encoded, slot_index)
     old = gen.operation(f"load ptr, ptr {slot}")
     if not move_value:
         gen.line(f"call ptr @mule.fast.retain(ptr {value})")
@@ -5035,6 +5034,8 @@ class BorrowedLiteralEmitter(LiteralEmitter):
 
 
 INSERT_SAFEPOINT = insert_safepoint
+GETATTR_BORROW = getattr_borrow
+SLOT_BORROW_END = slot_borrow_end
 CONSTANT = constant
 LOAD_LOCAL = load_local
 LOAD_GLOBAL = load_global

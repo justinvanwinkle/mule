@@ -488,6 +488,7 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     _mark_boolean_comparisons(component)
     _mark_borrowed_local_reads(component)
     _specialize_list_getitems(component)
+    _borrow_fixed_slot_reads(component)
     _clear_lvar_info(lambda_)
     return component
 
@@ -1762,13 +1763,7 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
         ).is_fixnum
     if name == "primitive-_storage_read" and len(step.args) == 2:
         return (step.args[1].tn.type or UNKNOWN).is_fixnum
-    if name == "primitive-_storage_length" and len(step.args) == 1:
-        return True
-    return (
-        name == "getattr"
-        and step.codegen_info is not None
-        and step.codegen_info.name in vops._TABLE_SLOTS
-    )
+    return name == "primitive-_storage_length" and len(step.args) == 1
 
 
 def _local_may_run_user_code(tn, component: IR2Component) -> bool:
@@ -2227,38 +2222,28 @@ def _specialize_list_getitems(component: IR2Component) -> None:
         for index, vop in enumerate(block.vops):
             name = vop.info.name
             if (
-                name == "getattr"
-                and component.lambda_.is_protocol
-                and len(vop.args) == 1
-                and vop.results
-                and vop.codegen_info is not None
-                and vop.codegen_info.name in vops._TABLE_SLOTS
+                vop.codegen_info not in (None, "list_owned", "tuple_owned")
+                or len(vop.args) != 2
+                or not vop.results
             ):
-                borrow_info = vop.codegen_info
-            else:
-                if (
-                    vop.codegen_info not in (None, "list_owned", "tuple_owned")
-                    or len(vop.args) != 2
-                    or not vop.results
-                ):
-                    continue
-                seq_type = vop.args[0].tn.type or UNKNOWN
-                idx_type = vop.args[1].tn.type or UNKNOWN
-                if not idx_type.is_fixnum:
-                    continue
-                if name == "protocol-getitem":
-                    if seq_type.is_exact_list:
-                        vop.codegen_info = "list_owned"
-                        borrow_info = "list_borrow"
-                    elif seq_type.is_exact_tuple:
-                        vop.codegen_info = "tuple_owned"
-                        borrow_info = "tuple_borrow"
-                    else:
-                        continue
-                elif name == "primitive-_storage_read":
-                    borrow_info = "storage_borrow"
+                continue
+            seq_type = vop.args[0].tn.type or UNKNOWN
+            idx_type = vop.args[1].tn.type or UNKNOWN
+            if not idx_type.is_fixnum:
+                continue
+            if name == "protocol-getitem":
+                if seq_type.is_exact_list:
+                    vop.codegen_info = "list_owned"
+                    borrow_info = "list_borrow"
+                elif seq_type.is_exact_tuple:
+                    vop.codegen_info = "tuple_owned"
+                    borrow_info = "tuple_borrow"
                 else:
                     continue
+            elif name == "primitive-_storage_read":
+                borrow_info = "storage_borrow"
+            else:
+                continue
             res_tn = vop.results[0].tn
             if res_tn.leaf is not None or (
                 res_tn.name is not None and res_tn.name.startswith("$")
@@ -2365,6 +2350,90 @@ _SUSPENSION_VOPS = frozenset(
         "protocol-async_generator_yield",
     }
 )
+
+
+def _safe_fixed_slot_region_step(component, step, value, root) -> bool:
+    if step.info.name == "move":
+        return _safe_container_local_region_step(
+            component, step, value, root, None, value.type or UNKNOWN
+        )
+    return _safe_list_borrow_step(step, root)
+
+
+def _borrow_fixed_slot_reads(component: IR2Component) -> None:
+    """Borrow temporary slot values across a proven callback-free region.
+
+    A nullable second result owns descriptor fallback values. The explicit end
+    operation keeps both that owner and the receiver alive through the consumer.
+    Local copies retain their existing ownership unless earlier alias analysis
+    already proved they can disappear without changing destruction order.
+    """
+    if component.context.plan is not None:
+        return
+    for block in component.blocks:
+        positions = {step: index for index, step in enumerate(block.vops)}
+        endings = []
+        for index, step in enumerate(block.vops):
+            if step.info.name != "getattr" or not step.results:
+                continue
+            value = step.results[0].tn
+            receiver = step.args[0].tn
+            attribute = linked(step.codegen_info, step, "attribute access")
+            if (
+                (receiver.type or UNKNOWN).fixed_slot_index(attribute.name) is None
+                or value.leaf is not None
+                or value.borrowed_from is not None
+            ):
+                continue
+            uses = component.reads.get(value, ())
+            origins = component.writes.get(receiver, ())
+            if len(uses) != 1 or len(origins) != 1:
+                continue
+            consumer, ref = uses[0]
+            end = positions.get(consumer)
+            load, _ = origins[0]
+            if end is None or end <= index or load.info is not vops.LOAD_LOCAL:
+                continue
+            access: LocalAccess = linked(load.codegen_info, load, "local access")
+            if not access.bound or access.move:
+                continue
+            root = load.args[0].tn
+            if not _plain_local(root):
+                continue
+            # Mutation consumers can destroy an old value and execute finalizers.
+            if consumer.info.name not in ("compare-is", "compare-is_not") and (
+                (value.type or UNKNOWN).may_run_user_code
+                or not _can_borrow_list_getitem(consumer, ref)
+            ):
+                continue
+            if any(
+                not _safe_fixed_slot_region_step(component, other, value, root)
+                for other in block.vops[index + 1 : end]
+            ):
+                continue
+            owner = component.tn(T, name="slot.fallback.owner")
+            owner.type = UNKNOWN
+            step.info = vops.GETATTR_BORROW
+            step.results.append(TNRef(owner, True))
+            value.borrowed_from = root
+            ending = VOP(
+                vops.SLOT_BORROW_END,
+                consumer.node,
+                [TNRef(owner, False), TNRef(root, False)],
+                [],
+            )
+            endings.append((end + 1, ending))
+        for index, ending in reversed(endings):
+            block.vops.insert(index, ending)
+    # Later ownership, packing and representation passes consume these indices.
+    component.reads.clear()
+    component.writes.clear()
+    for block in component.blocks:
+        for step in block.vops:
+            for ref in step.args:
+                component.reads[ref.tn].append((step, ref))
+            for ref in step.results:
+                component.writes[ref.tn].append((step, ref))
 
 
 def _mark_last_local_reads(component: IR2Component) -> None:

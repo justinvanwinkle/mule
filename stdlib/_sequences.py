@@ -1251,7 +1251,12 @@ def callable(obj, /):
     if is_class(obj):
         return True
     kind = _type_name(obj)
-    if kind in ("function", "builtin_function_or_method", "wrapper_descriptor", "method"):
+    if kind in (
+        "function",
+        "builtin_function_or_method",
+        "wrapper_descriptor",
+        "method",
+    ):
         return True
     missing = _binding_missing()
     return class_lookup_default(type_of(obj), "__call__", missing) is not missing
@@ -1734,6 +1739,26 @@ def _require_list(value, operation):
         raise TypeError(
             f'can only {operation} list (not "{_type_name(value)}") to list'
         )
+
+
+def _list_fill(item, count):
+    """Construct singleton repetition from an exact integer count."""
+    count = _integer_storage(count)
+    if count >= (1 << 63) or count < -(1 << 63):
+        raise OverflowError("cannot fit 'int' into an index-sized integer")
+    result = []
+    if count <= 0:
+        return result
+    # Object pointers occupy eight bytes. The allocation's byte size must fit
+    # a signed machine word before the storage allocator receives it.
+    if count >= (1 << 60):
+        raise MemoryError("sequence allocation failed")
+    _storage_reserve(result, count)
+    index = 0
+    while index < count:
+        _storage_append(result, item)
+        index += 1
+    return result
 
 
 def _repeat(sequence, count):
@@ -3050,11 +3075,15 @@ def _bytes_percent_format(values, args):
         elif conv == "c":
             if is_instance(arg, bytes):
                 if _storage_length(arg) != 1:
-                    raise TypeError("%c requires an integer in range(256) or a single byte")
+                    raise TypeError(
+                        "%c requires an integer in range(256) or a single byte"
+                    )
                 byte_val = _storage_read(arg, 0)
             elif is_instance(arg, bytearray):
                 if _storage_length(arg.values) != 1:
-                    raise TypeError("%c requires an integer in range(256) or a single byte")
+                    raise TypeError(
+                        "%c requires an integer in range(256) or a single byte"
+                    )
                 byte_val = _storage_read(arg.values, 0)
             else:
                 byte_val = _byte_value(arg, "%c arg not in range(256)")
@@ -3088,7 +3117,12 @@ def _bytes_percent_format(values, args):
             for ch in rendered:
                 _storage_append(result, ord(ch))
     if consumed != count and mapping is None:
-        if _tuple_storage(original) or is_instance(original, bytes) or is_instance(original, bytearray) or _OptionalMapping(original) is None:
+        if (
+            _tuple_storage(original)
+            or is_instance(original, bytes)
+            or is_instance(original, bytearray)
+            or _OptionalMapping(original) is None
+        ):
             raise TypeError("not all arguments converted during bytes formatting")
     return result
 
@@ -3202,6 +3236,7 @@ class BytesStorage:
     def expandtabs(self, tabsize=8):
         _require_bytes(self, "expandtabs")
         return bytes_from_values(_bytes_expandtabs(self, tabsize))
+
     def ljust(self, width, fillchar=b" ", /):
         return _bytes_padding_result(
             self, _byte_padding(self, width, fillchar, 0, "ljust")
@@ -4321,9 +4356,7 @@ class bytearray:
         if owner is bytes:
             count = _storage_length(values)
             if count != 0 and buffer_exports(self):
-                raise BufferError(
-                    "Existing exports of data: object cannot be re-sized"
-                )
+                raise BufferError("Existing exports of data: object cannot be re-sized")
             index = 0
             while index < count:
                 _storage_append(target, _storage_read(values, index))
@@ -4333,9 +4366,7 @@ class bytearray:
             source = values.values
             count = _storage_length(source)
             if count != 0 and buffer_exports(self):
-                raise BufferError(
-                    "Existing exports of data: object cannot be re-sized"
-                )
+                raise BufferError("Existing exports of data: object cannot be re-sized")
             index = 0
             while index < count:
                 _storage_append(target, _storage_read(source, index))

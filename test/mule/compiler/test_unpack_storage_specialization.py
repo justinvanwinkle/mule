@@ -91,7 +91,7 @@ def main(mod):
 """
     )
     assert "call ptr @mule_list_getitem" in llvm
-    assert "call ptr @mule_storage_length" in llvm
+    assert 'call ptr @"mule.protocol._list_fill"' in llvm
     assert "call ptr @mule_storage_append_move" in llvm
     assert "call ptr @mule_fast_iterate_move" in llvm
     assert "call ptr @mule.fast.unpack.slots.2" in llvm

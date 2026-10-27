@@ -135,6 +135,56 @@ can observe them before assignment without an explicit local read. Arithmetic
 temporaries in those bodies may still use signed storage. Coercions preserve
 local read metadata, overwrite order, and exception cleanup.
 
+## General fixed-slot access (Section 6J)
+
+SBCL `src/code/defstruct.lisp`, `slot-access-transform`, obtains the physical
+slot index and declared type from the structure description, then emits
+`%instance-ref` or `%instance-set`. Mule's corresponding `ClassFacts` and
+`InstanceType` layout facts come from class construction, not the spelling of
+an attribute or protocol function. They retain field order and a known
+single-inheritance prefix, separately from inferred field value types.
+Class metadata does not prove a constructor's result: a custom `__new__` can
+return a different class. Constructor result inference retains its separate
+proof, while guarded receiver entries can still use the declaring class layout.
+Compiled classes with fixed layouts also retain that metadata when their
+constructor has a bootstrap type target.
+Own-field value predictions still require the existing constructor proof.
+Custom allocators can initialize fields through paths that ordinary constructor
+propagation does not cover. Their layout remains usable, but incomplete stores
+must not establish a value type. Proven inherited field predictions remain
+available independently.
+
+Python permits descriptor replacement and class mutation after compilation.
+An ordinary instance type therefore does not authorize an unconditional load
+from a predicted field index. The existing attribute cache validates its
+class epoch and field encoding before constant-index access. Cache misses and
+unset fields retain ordinary lookup and exception behavior. Layout metadata
+describes physical order independently of inferred field value types. Unknown
+and multiple-base layouts retain dynamic access.
+
+Method exports condition their result prediction on the owning receiver class.
+A specialized entry contributes only when every other parameter still accepts
+the complete general-entry domain. The ordinary callable summary remains based
+on its general entry. This retains useful field-derived method predictions
+without assuming that an unknown receiver has the declaring class or exporting
+a result valid only for narrowed ordinary arguments.
+
+Unlike SBCL's tracing collector, Mule must preserve owned references when a
+field is overwritten or read. A borrowed read additionally needs a rooted owner
+and a region that cannot replace its slot or invoke arbitrary Python code.
+Neither an attribute's spelling nor an inferred element type establishes that
+lifetime proof. The current borrow pass handles a temporary with one same-block
+consumer, excluding native plans. Intervening local overwrites also require
+destruction-safe prior values. Broader alias and loop lifetimes retain ownership.
+
+A guarded borrowed read produces a nullable owned descriptor as well as its
+borrowed result. On the direct hit, that owner is null. On fallback, it owns the
+ordinary lookup result, which need not belong to the receiver. Separate LLVM
+values preserve their distinct ownership identities. An explicit end VOP uses
+both the owner and receiver root after the consumer, so packing, expiration and
+error cleanup observe their actual live ranges. This avoids field retains on
+hits without leaking or prematurely releasing descriptor results on misses.
+
 ## Closure and value-cell slot lowering
 
 SBCL's `src/compiler/envanal.lisp`, `compute-closure` and

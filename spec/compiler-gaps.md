@@ -11,8 +11,9 @@ constant-lvar/dead-operand helpers, and monotonic `derive_node_type`
 (Section 3), loop optimizations / loop-invariant code motion / induction-variable
 range and relational constraint inference (Section 4), and identity-aware float
 storage and coercions, flow-proven fixnum locals, numeric internal calling
-conventions, LLVM-visible private leaf boxes (parts of Section 5); **proposed**
-for Sections 1C–2, the rest of Section 5, and Section 6 (replacing
+conventions, LLVM-visible private leaf boxes (parts of Section 5), and general
+fixed-slot access and singleton-list fill (Section 6J); **proposed**
+for Sections 1C–2, the rest of Section 5, and the remaining Section 6 items (replacing
 benchmark-specific special cases with general SBCL mechanisms).
 
 This document records the remaining architectural and transform gaps between
@@ -180,9 +181,9 @@ departures from SBCL's compiler and runtime architecture:
   1. `_Table` defines `__mule_slots__ = ("_indices", "_hashes", "_keys", "_values", "_used")`
      at fixed `Instance.fields` slots `0..4`, and `create_class_with`
      (`mule/runtime/classes.rs`) preserves the solid base's slot prefix `0..4`
-     across single and multiple inheritance. Protocol functions access `_Table`
-     fields directly at `INSTANCE_FIELDS_OFFSET` (`32`) without dynamic attribute
-     cache probes.
+     across single and multiple inheritance. Section 6J replaces the `_Table`-
+     specific compiler shortcuts with general layout facts and guarded fixed-index
+     accesses at `INSTANCE_FIELDS_OFFSET` (`32`).
   2. `_table_hash_fallback` (`stdlib/_dict.py`) clips out-of-range fallback hashes
      into `[-2^62, 2^62 - 1]` (matching SBCL's `clip-hash`) while preserving
      `hash(key)`'s exact Python return value.
@@ -836,7 +837,7 @@ not complete closure/container escape analysis. See the
 
 ---
 
-## 6. Replacing benchmark-specific special cases with general SBCL compiler mechanisms (proposed)
+## 6. Replacing benchmark-specific special cases with general SBCL compiler mechanisms (partially implemented)
 
 An audit of `mule/compiler/` and `stdlib/` against `perf/suite/*.py` identified
 twelve compiler and stdlib paths that rely on syntactic or structural heuristics
@@ -1071,26 +1072,48 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
 
 ### 6J. General fixed-slot layout access (`slot-access-transform`) and sequence fill (`vector-fill/t`)
 
-- **Current special case**:
-  - `vops.py:1907-1966`, `ir2tran.py:2229-2302`, `locall.py:1047-1330`, and
-    `constraint.py:2630-2636` hardcode `_TABLE_SLOTS` / `_TABLE_FIELD_NAMES` for
-    `stdlib/_dict.py:_Table`.
-  - `stdlib/_dict.py:_empty_indices` (lines 330-340) hardcodes list literals for
-    `size == 8` and `size == 16` to avoid generic `[-1] * size`.
+Status: implemented, with conservative layout and borrowing boundaries below.
+
+- **Replaced special cases**: `_TABLE_SLOTS` and `_TABLE_FIELD_NAMES` no longer
+  select physical accesses, field types, or borrowing by attribute spelling.
+  `_empty_indices` now uses `return [-1] * size`, without size-specific literals.
 - **SBCL reference**: `slot-access-transform` in `src/code/defstruct.lisp`
   (`%instance-ref` / `%instance-set`) and `fill-transform` /
   `make-array :initial-element` -> `vector-fill/t` in
   `src/compiler/seqtran.lisp`.
-- **Required implementation**:
-  1. Generalize fixed-slot layout metadata on `ClassFacts` and `InstanceType`
-     for any class with `__slots__` / `__mule_slots__` or compiler-proven fixed
-     instance attributes, lower `GETATTR` / `SETATTR` to indexed slot access at
-     `INSTANCE_FIELDS_OFFSET`, treat non-mutated fixed-slot reads as borrow-safe
-     in `ir2tran.py`, and remove `_TABLE_SLOTS` and `_TABLE_FIELD_NAMES`.
-  2. Add an IR1 `@deftransform` for `[elem] * n` and `n * [elem]` in
-     `seqtran.py` lowering single-element list repetition to a pre-sized
-     allocation + fill loop, and simplify `stdlib/_dict.py:_empty_indices` to
-     `return [-1] * size`.
+- **Implemented layout access**:
+  - `ClassFacts` and `InstanceType` carry ordered physical field metadata from
+    `MAKE_CLASS`, including literal `__slots__` / `__mule_slots__` declarations
+    and constructor-proven fields. Known single inheritance preserves the base
+    prefix. Unknown or multiple-base layouts retain ordinary dynamic access.
+  - Attribute VOPs use constant-index loads and stores at
+    `INSTANCE_FIELDS_OFFSET` only after the existing cache validates the plain
+    instance layout, mutation epoch, and complete FIELD/index encoding. This
+    preserves descriptor replacement, custom attribute hooks, and unset-slot
+    errors. A predicted index never authorizes an unguarded storage access.
+  - IR2 borrows an eligible temporary slot read through one same-block consumer
+    when intervening operations cannot replace the slot or invoke user code.
+    An explicit nullable owner holds an owned fallback lookup result, while
+    actual TN operands keep that owner and the receiver root alive. Cache hits
+    omit the field retain. Cache misses preserve owned descriptor results and
+    normal/error cleanup. Native plans and unsupported local/loop lifetimes
+    retain owned reads. Local overwrites must also prove destruction safe.
+- **Implemented singleton fill**:
+  - `seqtran.py` transforms `[elem] * n` and `n * [elem]` when the producer is a
+    fresh singleton list and the count is a proven exact integer. Operand
+    producers retain their original evaluation order. Unknown count types,
+    including custom multiplication or index protocols, keep generic dispatch.
+  - The compiled `_list_fill` algorithm validates index-sized count bounds
+    before negative-count normalization, reserves storage once, and fills it
+    with references to the original element. Rust supplies only physical
+    capacity reservation and existing append/lifetime primitives. Allocation
+    errors propagate, and every initialized element remains owned by the list.
+  - The transform derives the element type from the item, so replacing a
+    singleton allocation does not discard storage element facts.
+
+The [layout lowering contract](native-lowering.md#general-fixed-slot-access-section-6j)
+and [fill contract](sequences-and-iteration.md#singleton-list-fill-section-6j)
+describe the Python mutation and ownership adaptations to SBCL.
 
 ### 6K. Compositional relational constraints (`equality-constraints.lisp`) and recursive container `CType`s (`ctype.lisp`)
 

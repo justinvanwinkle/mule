@@ -341,63 +341,29 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         builtins_llvm = builtins.path("unit.ll")
 
     llvm_fns = _llvm_functions(builtins_llvm.read_text())
-    for fn_name in (
-        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
-        "mule_sequences_mule_import__dict:mule_fn__table_insert.body",
-        "mule_sequences_mule_import__dict:mule_fn__table_resize.body",
-        "mule_sequences_mule_fn_dict_get.body",
-        "mule_sequences_mule_fn_dict_getitem.body",
-    ):
-        body = llvm_fns[fn_name]
-        assert "@mule.attr.hit" not in body, (
-            f"{fn_name} still uses dynamic attribute cache instead of fixed _Table slots"
-        )
-        assert "getelementptr i8, ptr " in body and ", i64 32" in body, (
-            f"{fn_name} missing direct Instance.fields access at offset 32"
-        )
-
-    for probe_fn in (
-        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
-        "mule_sequences_mule_import__dict:mule_fn__table_insert.body",
-        "mule_sequences_mule_fn_dict_get.body",
-        "mule_sequences_mule_fn_dict_getitem.body",
-        "mule_sequences_mule_fn_dict_setitem.body",
-    ):
-        body = llvm_fns[probe_fn]
-        assert "storage.read." in body
-        assert "@mule.fast.storage.read.borrow(" not in body
-        assert "@mule.fast.storage.read(" not in body
-        assert "@mule.fast.storage.write(" not in body
-        assert "@mule.fast.storage.length(" not in body
-        assert "@mule.attr.layout(" not in body, (
-            f"{probe_fn} emitted layout guard instead of direct _Table slot offset"
-        )
-        assert "icmp eq i64 " in body, (
-            f"{probe_fn} missing unboxed fixnum hash comparison"
-        )
-
-    for borrowed_probe_fn in (
-        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
-        "mule_sequences_mule_fn_dict_get.body",
-        "mule_sequences_mule_fn_dict_getitem.body",
-        "mule_sequences_mule_fn_dict_setitem.body",
-    ):
-        body = llvm_fns[borrowed_probe_fn]
-        assert "@mule.heap.retain(" not in body, (
-            f"{borrowed_probe_fn} retained internal _Table slot lists on probe path"
-        )
-        assert "@mule.cell:$mule.protocols:_TABLE_" not in body, (
-            f"{borrowed_probe_fn} emitted runtime global lookup for protocol constants"
-        )
-
-    for no_global_probe_fn in (
-        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
-        "mule_sequences_mule_fn_dict_get.body",
-    ):
-        body = llvm_fns[no_global_probe_fn]
-        assert "@mule.global.live(" not in body, (
-            f"{no_global_probe_fn} emitted runtime global lookup on lookup path"
-        )
+    # General entries accept unknown receivers. Their attributes must keep
+    # dynamic fallback instead of assuming that a field spelling proves _Table.
+    # Typed entries still perform physical slot and vector access directly.
+    for operation in ("_table_lookup", "_table_insert", "_table_resize"):
+        prefix = f"mule_sequences_mule_import__dict:mule_fn_{operation}."
+        typed = {
+            name: body
+            for name, body in llvm_fns.items()
+            if name.startswith(prefix)
+            and (".borrow.observed." in name or ".spec." in name)
+        }
+        assert typed, f"No typed storage entry for {operation}"
+        for name, body in typed.items():
+            assert "attr.fixed" in body, name
+            assert "getelementptr i8, ptr " in body and ", i64 32" in body, name
+            assert "storage.read." in body, name
+            assert "@mule.fast.storage.read.borrow(" not in body, name
+            assert "@mule.fast.storage.read(" not in body, name
+            assert "@mule.fast.storage.write(" not in body, name
+            assert "@mule.fast.storage.length(" not in body, name
+            if operation == "_table_lookup":
+                assert "icmp eq i64 " in body, name
+                assert "@mule.global.live(" not in body, name
 
 
 def test_table_hash_clipping_and_multiple_inheritance_slots_match_python(tmp_path):

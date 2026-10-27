@@ -453,7 +453,7 @@ class ModuleCompiler:
             methods = method_defs.get(class_id, {})
             for method_name, target in methods.items():
                 if target in facts:
-                    ret_type = facts[target].return_type
+                    ret_type = facts[target].method_return_type(InstanceType(class_id))
                     if ret_type == EMPTY_LIST_TYPE:
                         ret_type = LIST_TYPE
                     elif ret_type == EMPTY_DICT_TYPE:

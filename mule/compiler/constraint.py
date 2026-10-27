@@ -109,6 +109,27 @@ class _AsTupleType(ValueTypeVisitor):
 _AS_TUPLE_TYPE = _AsTupleType()
 
 
+class _InstanceFieldType(ValueTypeVisitor):
+    def __init__(self, class_facts, name):
+        self.class_facts = class_facts
+        self.name = name
+
+    def visit_ValueType(self, fact):
+        return UNKNOWN
+
+    def visit_InstanceType(self, fact):
+        facts = self.class_facts.get(fact.instance_class())
+        return facts.fields.get(self.name, UNKNOWN) if facts is not None else UNKNOWN
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound:
+            return UNKNOWN
+        result = BOTTOM
+        for member in fact.members:
+            result = result.join(member.accept(self))
+        return result
+
+
 @dataclass(frozen=True, slots=True)
 class Fact:
     type: ValueType = UNKNOWN
@@ -2121,7 +2142,12 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             if not has_keywords:
                 receiver_class = receiver_type.instance_class()
                 seeded_receiver = (
-                    InstanceType(receiver_class)
+                    InstanceType(
+                        receiver_class,
+                        fixed_slots=visitor.walk.class_facts[
+                            receiver_class
+                        ].fixed_slots,
+                    )
                     if receiver_class is not None
                     else receiver_type
                 )
@@ -2627,9 +2653,6 @@ _GLOBAL_CALLEE_NAME = _GlobalCalleeName()
 _IMPORTED_CALLEE_NAME = _ImportedCalleeName()
 
 
-_TABLE_FIELD_NAMES = frozenset({"_indices", "_hashes", "_keys", "_values", "_used"})
-
-
 class _Walk:
     """One propagation over a lambda under given parameter facts."""
 
@@ -2799,16 +2822,7 @@ class _Walk:
     def instance_field_type(self, receiver_type: ValueType, name: str) -> ValueType:
         """The predicted field type on instances of the receiver's class,
         restricted to shapes whose consumers guard their runtime operations."""
-        facts = self.class_facts.get(receiver_type.instance_class())
-        if facts is not None:
-            return facts.fields.get(name, UNKNOWN)
-        if self.lambda_.is_protocol and name in _TABLE_FIELD_NAMES:
-            for cf in self.class_facts.values():
-                if cf.public_name == "_Table":
-                    return cf.fields.get(name, UNKNOWN)
-            if self.storage_methods is not None:
-                return self.storage_methods.get(("_Table", name), UNKNOWN)
-        return UNKNOWN
+        return receiver_type.accept(_InstanceFieldType(self.class_facts, name))
 
     def builtin_target(
         self, fun_lvar

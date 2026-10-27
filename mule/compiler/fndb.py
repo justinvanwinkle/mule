@@ -528,7 +528,19 @@ MATH_SQRT_IMPORT = defknown(
     numeric=True,
 )
 
+
+def _derive_list_fill(node) -> ValueType | None:
+    if _DERIVATION_MODE.active:
+        return None
+    return EMPTY_LIST_TYPE.with_element(_arg_type(node.args[0]))
+
+
+def _propagate_list_fill(visitor, node) -> ValueType:
+    return EMPTY_LIST_TYPE.with_element(visitor.type_of(node.args[0]))
+
+
 _PROTOCOL_DERIVE_TYPES = {
+    "_list_fill": _derive_list_fill,
     "getitem": lambda node: (
         None
         if _DERIVATION_MODE.active
@@ -559,11 +571,13 @@ PROTOCOLS = {
         "unsafe",
         protocol=name,
         derive_type=_PROTOCOL_DERIVE_TYPES.get(name),
+        propagate=_propagate_list_fill if name == "_list_fill" else None,
         numeric=(name == "make_slice"),
         non_integer_first_arg=(name in _NON_INTEGER_FIRST_PROTOCOLS),
         index_second_arg=(name in _INDEX_SECOND_PROTOCOLS),
     )
     for name in (
+        "_list_fill",
         "iterate",
         "next_item",
         "getitem",

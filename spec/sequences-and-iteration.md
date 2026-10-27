@@ -76,6 +76,25 @@ descriptor errors and exceptions raised by invoking the bound method propagate.
 
 Status: implemented the initial sequence, iteration, and exception slice.
 
+## Singleton-list fill (Section 6J)
+
+SBCL `src/compiler/seqtran.lisp`, `fill-transform`, selects `vector-fill/t`
+for general object vectors after deriving their storage and bounds. Mule's
+corresponding singleton-list repetition transform preserves Python operand
+evaluation order and shared element identity. It removes the intermediate
+singleton allocation only when the repetition count cannot invoke overloaded
+multiplication. Unknown count types retain ordinary protocol dispatch.
+
+The `_list_fill` algorithm executes in compiled Mule Python. A low-level storage
+reservation primitive allocates capacity without implementing Python repetition
+policy. Count-range validation precedes negative-count normalization, and
+allocation failure remains an exception. Each initialized slot owns its element
+reference, including partial-fill cleanup on failure. The fill loop uses native
+integer comparisons and increments with existing physical append primitives.
+These choices adapt SBCL's tracing-collected vector fill to Mule's owned mutable
+list storage. Both operand orders specialize. Unknown counts retain ordinary
+multiplication, including custom index and reflected multiplication behavior.
+
 ## SBCL sources and adaptations
 
 SBCL `src/code/macros.lisp`, `dolist` and `dotimes`, expands iteration into

@@ -134,6 +134,8 @@ _CONTAINMENT_COMPARE = frozenset(
 )
 _SPECIALIZABLE_CONTAINER_OPS = frozenset(
     {
+        GETATTR,
+        SETATTR,
         GETITEM,
         GETSLICE,
         SETITEM,
@@ -489,6 +491,32 @@ class LambdaFacts:
     parameters: tuple[ValueType, ...] = ()
     element_contracts: dict[object, object] = field(default_factory=dict)
 
+    def method_return_type(self, receiver: ValueType) -> ValueType:
+        """Predict a method result without narrowing its ordinary arguments.
+
+        A method summary applies to its owning receiver class, unlike an
+        ordinary callable summary. Other parameters must still admit every
+        value accepted by the general entry.
+        """
+        result = self.return_type
+        if not self.parameters:
+            return result
+        arguments = (receiver, *self.parameters[1:])
+        for variant in self.variants:
+            if (
+                len(arguments) == len(variant.parameters)
+                and all(
+                    actual.fits(expected)
+                    for actual, expected in zip(
+                        arguments, variant.parameters, strict=True
+                    )
+                )
+                and variant.return_type is not BOTTOM
+                and (result is UNKNOWN or variant.return_type.fits(result))
+            ):
+                result = variant.return_type
+        return result
+
 
 def global_bindings(
     lambdas, *, unique_definitions=False
@@ -840,6 +868,7 @@ class _ModuleClassCollector(NodeVisitor):
         self.definitions: dict[str, int] = defaultdict(int)
         # Names a class body binds to anything other than a plain function.
         self.other_bindings: dict[str, set[str]] = defaultdict(set)
+        self.fields: dict[str, tuple[str, ...]] = {}
 
     def visit_Combination(self, node: Combination):
         if node.kind is not CallKind.KNOWN or node.fun_info is None:
@@ -865,6 +894,7 @@ class _ModuleClassCollector(NodeVisitor):
             self.methods[info.identity].pop(info.name, None)
         elif node.fun_info is MAKE_CLASS:
             info = linked(node.info, node, "class definition")
+            self.fields[info.identity] = info.fields
             self.public_names[info.identity] = info.public_name
             self.definitions[info.public_name] += 1
             if info.has_keywords:
@@ -899,6 +929,8 @@ class ClassFacts:
     shadowed: frozenset[str] = frozenset()
     public_name: str = ""
     is_protocol: bool = False
+    fixed_slots: tuple[str, ...] = ()
+    constructor_proven: bool = True
 
 
 class _SanitizeInstanceFieldType(ValueTypeVisitor):
@@ -1153,9 +1185,6 @@ class _DependsOnInstanceField(NodeVisitor, LeafVisitor):
         return any(use.accept(self) for arg in node.args for use in arg.uses)
 
 
-_TABLE_FIELD_NAMES = frozenset({"_indices", "_hashes", "_keys", "_values", "_used"})
-
-
 class _CollectSetattrSites(NodeVisitor):
     def __init__(
         self,
@@ -1190,6 +1219,27 @@ class _CollectSetattrSites(NodeVisitor):
             self.list_mutations.append(node)
 
 
+class _InstanceClasses(ValueTypeVisitor):
+    """The complete class alternatives of an instance receiver fact."""
+
+    def visit_ValueType(self, fact):
+        return ()
+
+    def visit_InstanceType(self, fact):
+        return (fact.identity,) if not fact.may_be_unbound else ()
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound:
+            return ()
+        alternatives = [member.accept(self) for member in fact.members]
+        if not all(alternatives):
+            return ()
+        return tuple(dict.fromkeys(cid for group in alternatives for cid in group))
+
+
+_INSTANCE_CLASSES = _InstanceClasses()
+
+
 def _update_class_field_types(
     class_facts: dict[str, ClassFacts],
     setattr_sites: list[tuple[Lambda, Combination]],
@@ -1200,10 +1250,6 @@ def _update_class_field_types(
 ) -> bool:
     if not class_facts or not setattr_sites:
         return False
-    table_cls_id = next(
-        (cid for cid, cf in class_facts.items() if cf.public_name == "_Table"),
-        None,
-    )
     direct_stores: dict[str, dict[str, ValueType]] = defaultdict(dict)
     ambiguous_fields: set[str] = set()
     for lam, node in setattr_sites:
@@ -1212,7 +1258,7 @@ def _update_class_field_types(
         val_use = node.args[1].use()
         found_context = False
         saw_typed_receiver = False
-        best_store: tuple[str, ValueType] | None = None
+        best_stores: dict[str, ValueType] = {}
         for ctx_name in ("observed", "fixnum", "general"):
             body = bodies.get((lam, ctx_name))
             if body is None:
@@ -1230,20 +1276,12 @@ def _update_class_field_types(
             if recv_fact.type is BOTTOM or val_fact.type is BOTTOM:
                 continue
             found_context = True
-            recv_cls = recv_fact.type.instance_class()
-            if (
-                recv_cls is None
-                and lam.is_protocol
-                and table_cls_id is not None
-                and field_name in _TABLE_FIELD_NAMES
-            ):
-                recv_cls = table_cls_id
-            if recv_cls is not None and recv_cls in class_facts:
-                saw_typed_receiver = True
-                if best_store is None or best_store[1] is UNKNOWN:
-                    best_store = (recv_cls, val_fact.type)
-        if best_store is not None:
-            recv_cls, stored_type = best_store
+            for recv_cls in recv_fact.type.accept(_INSTANCE_CLASSES):
+                if recv_cls in class_facts:
+                    saw_typed_receiver = True
+                    if recv_cls not in best_stores or best_stores[recv_cls] is UNKNOWN:
+                        best_stores[recv_cls] = val_fact.type
+        for recv_cls, stored_type in best_stores.items():
             cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
             if stored_type is UNKNOWN and cur_type is not BOTTOM:
                 stored_type = cur_type
@@ -1290,8 +1328,9 @@ def _update_class_field_types(
                 or val_fact.type is BOTTOM
             ):
                 continue
-            inst_cls = inst_fact.type.instance_class()
-            if inst_cls is not None and inst_cls in class_facts:
+            for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
+                if inst_cls not in class_facts:
+                    continue
                 cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
                 if cur_field.fits_dict():
                     direct_stores[inst_cls][field_name] = cur_field.with_entry(
@@ -1313,15 +1352,9 @@ def _update_class_field_types(
             val_fact = body.facts.get(val_use, NO_FACT)
             if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
                 continue
-            inst_cls = inst_fact.type.instance_class()
-            if (
-                inst_cls is None
-                and lam.is_protocol
-                and table_cls_id is not None
-                and field_name in _TABLE_FIELD_NAMES
-            ):
-                inst_cls = table_cls_id
-            if inst_cls is not None and inst_cls in class_facts:
+            for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
+                if inst_cls not in class_facts:
+                    continue
                 cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
                 if cur_field.fits_list():
                     direct_stores[inst_cls][field_name] = cur_field.with_element(
@@ -1341,13 +1374,16 @@ def _update_class_field_types(
             name
             for anc_id in chain
             for name in direct_stores.get(anc_id, ())
-            if name not in ambiguous_fields
+            if class_facts[anc_id].constructor_proven
+            and name not in ambiguous_fields
             and name not in facts.methods
             and name not in facts.shadowed
         }
         for name in candidate_names:
             joined = BOTTOM
             for anc_id in chain:
+                if not class_facts[anc_id].constructor_proven:
+                    continue
                 anc_type = direct_stores.get(anc_id, {}).get(name, BOTTOM)
                 if anc_type is not BOTTOM:
                     joined = joined.join(anc_type)
@@ -1383,6 +1419,32 @@ def _collect_class_tables(lambdas):
                 node.accept(collector)
     is_protocol = any(lam.is_protocol for lam in lambdas)
     for ns, collector in collectors.items():
+        layouts = {}
+        for class_id, cls_name in collector.public_names.items():
+            _, chain, _ = _resolved_class_info(collector, class_id, cls_name)
+            # Unknown and multiple bases do not establish a physical prefix.
+            known_chain = all(
+                not collector.bases.get(collector.public_names[cid], ())
+                or all(
+                    base == "object" or base in collector.public_names.values()
+                    for base in collector.bases[collector.public_names[cid]]
+                )
+                for cid in chain
+            ) and all(
+                len(collector.bases.get(collector.public_names[cid], ())) <= 1
+                for cid in chain
+            )
+            layouts[class_id] = (
+                tuple(
+                    dict.fromkeys(
+                        name
+                        for cid in reversed(chain)
+                        for name in collector.fields.get(cid, ())
+                    )
+                )
+                if known_chain
+                else ()
+            )
         all_class_ids = list(
             dict.fromkeys([*collector.public_names, *collector.methods])
         )
@@ -1397,7 +1459,7 @@ def _collect_class_tables(lambdas):
             else:
                 base_type = STORAGE_CLASS_TYPES.get(
                     cls_name,
-                    InstanceType(class_id)
+                    InstanceType(class_id, fixed_slots=layouts.get(class_id, ()))
                     if _constructs_own_instances(collector, class_id, cls_name)
                     else UNKNOWN,
                 )
@@ -1415,9 +1477,9 @@ def _collect_class_tables(lambdas):
                 init_target=methods.get("__init__"),
                 records_type_origin=records_type_origin,
             )
-            if base_target is None and _constructs_own_instances(
-                collector, class_id, cls_name
-            ):
+            # A custom constructor can return another class without changing
+            # this class's layout or the facts guarded method entries can use.
+            if base_target is None or layouts.get(class_id):
                 methods_map, chain, shadowed = _resolved_class_info(
                     collector, class_id, cls_name
                 )
@@ -1429,6 +1491,10 @@ def _collect_class_tables(lambdas):
                     shadowed,
                     public_name=cls_name,
                     is_protocol=is_protocol,
+                    fixed_slots=layouts.get(class_id, ()),
+                    constructor_proven=_constructs_own_instances(
+                        collector, class_id, cls_name
+                    ),
                 )
     return by_ns, typed
 
@@ -2172,7 +2238,10 @@ def analyze(
             )
             if is_typed_method:
                 spec_params = (
-                    InstanceType(lambda_.method_class),
+                    InstanceType(
+                        lambda_.method_class,
+                        fixed_slots=class_facts[lambda_.method_class].fixed_slots,
+                    ),
                     *(
                         _ParameterUse(var, storage_methods).analyze(
                             contract,
