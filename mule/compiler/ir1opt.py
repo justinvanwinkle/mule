@@ -40,7 +40,6 @@ from .ir1util import (
     aver,
     flush_combination,
     flushable_lambda_var_ref_p,
-    is_flushable_ref,
     is_pure_bound_ref,
     reoptimize_lvar,
     replace_combination_with_lvar,
@@ -702,7 +701,9 @@ class _SingletonLiteral(ValueTypeVisitor):
 
     def visit_IntegerType(self, fact: IntegerType):
         exact = fact.exact_integer()
-        return ast.IntegerLiteral(exact) if exact is not None else None
+        if exact is None or exact.bit_length() > _FOLD_LIMIT_BITS:
+            return None
+        return ast.IntegerLiteral(exact)
 
     def visit_BooleanType(self, fact: BooleanType):
         exact = fact.exact_boolean()
@@ -761,50 +762,19 @@ def _immutable_literal(literal):
     return literal is not None and literal.accept(_IMMUTABLE_LITERAL)
 
 
-class _FoldableConstantOrGlobalRef(NodeVisitor, LeafVisitor):
-    """Whether a single-use lvar producer is a pure ``Constant`` or flushable ``GlobalVar`` ``Ref``."""
-
-    def __init__(self):
-        self._ref: Ref | None = None
-
-    def visit_Node(self, node) -> bool:
-        return False
-
-    def visit_Ref(self, node: Ref) -> bool:
-        if node.final or node.allow_unbound or not is_flushable_ref(node):
-            return False
-        self._ref = node
-        return node.leaf.accept(self)
-
-    def visit_Leaf(self, leaf) -> bool:
-        return False
-
-    def visit_Constant(self, leaf: Constant) -> bool:
-        return True
-
-    def visit_GlobalVar(self, leaf: GlobalVar) -> bool:
-        return True
-
-
-_FOLDABLE_CONSTANT_OR_GLOBAL_REF = _FoldableConstantOrGlobalRef()
+def _constant_operand_literal(lvar: Lvar):
+    literal = constant_literal(lvar)
+    if literal is not None:
+        return literal
+    if is_pure_bound_ref(lvar):
+        return constant_lvar_value(lvar)
+    return None
 
 
 def _fold_call_derived_to_constant(node: Combination) -> bool:
-    """Fold a flushable protocol query call whose derived type is a singleton
-    constant (``fold-call-derived-to-constant``, ``ir1opt.lisp:2450``)."""
-    from .protocols import PRIMITIVES
-
-    if (
-        node.lvar is None
-        or node.fun_info is None
-        or node.fun_info.name not in PRIMITIVES
-        or not all(
-            len(arg.uses) == 1
-            and not lvar_type(arg).may_be_unbound
-            and arg.uses[0].accept(_FOLDABLE_CONSTANT_OR_GLOBAL_REF)
-            for arg in node.args
-        )
-    ):
+    """Fold a flushable known call whose derived type is a singleton constant
+    (``fold-call-derived-to-constant``, ``ir1opt.lisp:2450``)."""
+    if node.lvar is None or not all(is_pure_bound_ref(arg) for arg in node.args):
         return False
     derived = node.accept(_DERIVE_NODE_TYPE)
     literal = derived.accept(_SINGLETON_LITERAL)
@@ -832,7 +802,7 @@ def _constant_fold(node: Combination) -> bool:
     """Replace a known operation on integer/boolean literals with its value."""
     if node.lvar is None:
         return False
-    literals = [constant_literal(arg) for arg in node.args]
+    literals = [_constant_operand_literal(arg) for arg in node.args]
     if any(literal is None for literal in literals):
         return False
     domains = [literal.accept(_FOLD_DOMAIN_OF) for literal in literals]
@@ -888,7 +858,7 @@ def _constant_fold(node: Combination) -> bool:
 def _constant_fold_unary(node: Combination) -> bool:
     if node.lvar is None:
         return False
-    literal = constant_literal(node.args[0])
+    literal = _constant_operand_literal(node.args[0])
     if literal is None:
         return False
     operator = _UNARY_NAMES[linked(node.fun_info, node, "function info").name]

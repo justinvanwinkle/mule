@@ -301,7 +301,9 @@ def test_unpacking_non_lambda_var_or_nested_targets_elided():
 
 
 def test_len_on_known_text_rewrites_to_text_length():
-    compilation = compile_source("def f():\n s = 'hello'\n return len(s)\n")
+    compilation = compile_source(
+        "def f(c):\n s = 'hello' if c else 'world!'\n return len(s)\n"
+    )
     fn = compilation.lambdas[1]
     assert len(list(known_calls(fn, "_text_length"))) == 1
     check_ir1_consistency(compilation.components)
@@ -310,8 +312,8 @@ def test_len_on_known_text_rewrites_to_text_length():
 def test_len_on_known_list_tuple_bytes_rewrites_to_storage_length():
     for src in (
         "def f():\n xs = [1, 2, 3]\n return len(xs)\n",
-        "def f():\n t = (1, 2)\n return len(t)\n",
-        "def f():\n b = b'abc'\n return len(b)\n",
+        "def f(c):\n t = (1, 2) if c else (1, 2, 3)\n return len(t)\n",
+        "def f(c):\n b = b'abc' if c else b'abcd'\n return len(b)\n",
     ):
         compilation = compile_source(src)
         fn = compilation.lambdas[1]

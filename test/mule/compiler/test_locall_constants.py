@@ -298,9 +298,12 @@ def test_dynamic_module_namespace_mutations_disable_constant_folding(tmp_path):
 def test_cross_module_imported_constants_propagate_without_underscore_spelling(
     tmp_path,
 ):
+    (tmp_path / "typing.py").write_text("Final = object()\n", encoding="utf-8")
     (tmp_path / "consts.py").write_text(
+        "from typing import Final\n"
         "PUBLIC_MASK = 0xFF\n"
         "lower_step = 4\n"
+        "FINAL_STEP: Final = 16\n"
         "FROZEN_KEYS = frozenset(('a', 'b'))\n"
         "REASSIGNED = 1\n"
         "REASSIGNED = 2\n"
@@ -309,10 +312,10 @@ def test_cross_module_imported_constants_propagate_without_underscore_spelling(
         encoding="utf-8",
     )
     main_source = (
-        "from consts import PUBLIC_MASK, lower_step, FROZEN_KEYS, REASSIGNED, helper\n"
+        "from consts import PUBLIC_MASK, lower_step, FINAL_STEP, FROZEN_KEYS, REASSIGNED, helper\n"
         "def compute(x: int, k: str):\n"
         " fn_val = helper\n"
-        " return (x & 0x7FFFFFFF) & PUBLIC_MASK, lower_step, k in FROZEN_KEYS, REASSIGNED, helper(), fn_val\n"
+        " return (x & 0x7FFFFFFF) & PUBLIC_MASK, lower_step, FINAL_STEP, k in FROZEN_KEYS, REASSIGNED, helper(), fn_val\n"
     )
     main_path = tmp_path / "main.py"
     main_path.write_text(main_source, encoding="utf-8")
@@ -320,12 +323,14 @@ def test_cross_module_imported_constants_propagate_without_underscore_spelling(
     compiler = ModuleCompiler(str(main_path), roots=(tmp_path,))
     compilation = compiler.compile(main_source, str(main_path))
     compute_fn = compilation.lambdas[1]
+    assert _refs_to_global(compute_fn, "FINAL_STEP") == []
     assert compilation.facts is not None
     assert compilation.facts[compute_fn].return_type == TupleType(
-        6,
+        7,
         (
             IntegerType(0, 0x7FFFFFFF),
             IntegerType(FIXNUM_MIN, FIXNUM_MAX),
+            IntegerType(16, 16),
             BOOLEAN,
             UNKNOWN,
             IntegerType(7, 7),

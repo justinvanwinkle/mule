@@ -378,8 +378,15 @@ def test_singleton_variable_comparisons_and_side_effects_are_preserved():
     fn.vars[1].type = IntegerType(2, 2)
     assert fn.component is not None
     ir1_optimize_until_done(fn.component)
-    assert len(list(known_calls(fn, "%compare_less"))) == 1
-    assert len(list(known_calls(fn, "%compare_equal"))) == 1
+    assert list(known_calls(fn, "%compare_less")) == []
+    assert list(known_calls(fn, "%compare_equal")) == []
+    assert fn.vars[0].refs == []
+    assert fn.vars[1].refs == []
+    ret = fn.return_
+    assert isinstance(ret, Return)
+    folded = constant_literal(ret.result)
+    assert isinstance(folded, ast.Tuple)
+    assert [elem.value for elem in folded.elements] == [True, False]
     check_ir1_consistency(compilation.components)
 
 

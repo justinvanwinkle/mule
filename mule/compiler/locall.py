@@ -3910,7 +3910,9 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
         else:
             return
         if not (
-            info.transforms or (info.optimizer is not None and info is not GETITEM)
+            info.transforms
+            or info.flushable
+            or (info.optimizer is not None and info is not GETITEM)
         ):
             return
         checked_args = (
@@ -3985,6 +3987,7 @@ class _NodeHasContextTransform(NodeVisitor):
             return False
         if not (
             info.transforms
+            or info.flushable
             or (info.optimizer is not None and info is not GETITEM)
             or (
                 loop.is_hoistable_op(info)

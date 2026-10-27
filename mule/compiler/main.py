@@ -242,11 +242,11 @@ class _GlobalConstantScan(NodeVisitor, LeafVisitor):
         self.counts[leaf.name] = self.counts.get(leaf.name, 0) + 1
         store = self._store
         if self.toplevel and store is not None and store.value is not None:
-            if self.allowed_names is not None and leaf.name not in self.allowed_names:
-                return
             if self.allowed_stores is not None and store not in self.allowed_stores:
                 return
-            constant = store.value.use().accept(_CONSTANT_LEAF)
+            constant = None
+            if self.allowed_names is None or leaf.name in self.allowed_names:
+                constant = store.value.use().accept(_CONSTANT_LEAF)
             if (
                 constant is None
                 and self.imported_types is not None
@@ -310,9 +310,9 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
             for name, expr in compilation.entry.annotation_expressions.items()
             if expr.accept(locall._IS_FINAL_ANNOTATION)
         }
-        if not allowed_names or locall.has_module_namespace_mutations(
-            compilation.lambdas
-        ):
+        if (
+            not allowed_names and not compilation.imported_function_types
+        ) or locall.has_module_namespace_mutations(compilation.lambdas):
             return False
         allowed_stores = locall._unconditional_toplevel_stores(compilation.entry)
     counts: dict[str, int] = {}
