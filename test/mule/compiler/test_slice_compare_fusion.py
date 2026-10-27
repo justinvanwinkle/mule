@@ -78,6 +78,75 @@ keep_word('"other"', 1, 5)
     assert "@mule.fast.getslice(" in body
 
 
+def test_multi_use_non_escaping_local_slice_forwards_via_scalar_replacement(tmp_path):
+    source = """
+def classify_word(text: str, i: int, end: int) -> int:
+    word = text[i + 1 : end]
+    i = end + 1
+    if word == "tag" or word == "skip":
+        return i
+    if word != "none":
+        return 1
+    return 0
+
+print(classify_word('"tag"', 0, 4))
+print(classify_word('"skip"', 0, 5))
+print(classify_word('"none"', 0, 5))
+print(classify_word('"other"', 0, 6))
+"""
+    llvm = emit_llvm(source)
+    body = _function_llvm_body(
+        llvm, 'define internal ptr @"mule_fn_classify_word.spec.0"'
+    )
+    assert body.count("@mule_text_slice_eq(") == 3
+    assert "@mule.fast.getslice(" not in body
+    assert "@mule.heap.retain(" not in body
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "5\n6\n0\n1\n"
+
+
+def test_ir1_combination_matching_across_local_aliases_and_intervening_steps(tmp_path):
+    source = """
+def parse_field(text: str, start: int, stop: int) -> int:
+    raw = text[start:stop]
+    next_pos = stop + 1
+    return int(raw) + next_pos
+
+def fold_assoc_and_commutative(x: int) -> tuple[int, int]:
+    a = 10 + x
+    step = x - 1
+    b = 20 + a
+    m = 0xFF & x
+    c = 0x0F & m
+    return b + step, c
+
+def project_and_invert(a: int, b: int, flag: bool) -> tuple[int, bool, bool]:
+    pair = (a, b)
+    inv = not flag
+    check = a in (1, 2, 3)
+    return pair[1], not inv, not check
+
+print(parse_field("xx42yy", 2, 4))
+print(fold_assoc_and_commutative(29))
+print(project_and_invert(2, 99, True))
+"""
+    llvm = emit_llvm(source)
+    parse_body = _function_llvm_body(
+        llvm, 'define internal ptr @"mule_fn_parse_field.spec.0"'
+    )
+    assert "@mule_parse_int_slice(" in parse_body
+    assert "@mule.fast.getslice(" not in parse_body
+    project_body = _function_llvm_body(
+        llvm, 'define internal ptr @"mule_fn_project_and_invert.spec.0"'
+    )
+    assert "@mule_sequence_tuple_owned(i64 2," not in project_body
+    assert "@mule_fast_getitem(" not in project_body
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "47\n(87, 13)\n(99, True, False)\n"
+
+
 def test_two_sided_slice_equality_fuses_to_mule_text_slice2_eq(tmp_path):
     source = """
 def cmp_slices(x: str, y: str) -> tuple[bool, bool]:

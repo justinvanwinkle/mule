@@ -23,11 +23,13 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .ir1opt import (
+    almost_immediately_used_p,
     constant_literal,
     constant_lvar_value,
     lvar_type,
     replace_combination_with_constant,
     retarget_known_combination,
+    splice_fun_args,
 )
 from .ir1util import is_pure_bound_ref, reoptimize_lvar
 from .knownfun import FunInfo, deftransform
@@ -35,6 +37,7 @@ from .node import (
     CallKind,
     Combination,
     Constant,
+    LambdaVar,
     LeafVisitor,
     Lvar,
     Node,
@@ -350,78 +353,113 @@ def _fold_containment_to_bool(node: Combination, result: bool) -> None:
     replace_combination_with_constant(node, folded)
 
 
+class _RewriteRefToConstant(NodeVisitor, LeafVisitor):
+    def __init__(self, literal: ast.Node):
+        self.literal = literal
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Ref(self, node: Ref):
+        if node.final:
+            return False
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Constant(self, leaf: Constant):
+        ref = self._ref
+        if ref is None:
+            return False
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        new_leaf = Constant(self.literal)
+        ref.leaf = new_leaf
+        new_leaf.refs.append(ref)
+        ref.derived_type = None
+        return True
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        ref = self._ref
+        if ref is None or any(s.value is None for s in leaf.sets):
+            return False
+        if ref in leaf.refs:
+            leaf.refs.remove(ref)
+        new_leaf = Constant(self.literal)
+        ref.leaf = new_leaf
+        new_leaf.refs.append(ref)
+        ref.derived_type = None
+        return True
+
+
+_BUILD_CONTAINER_NAMES = frozenset({"%build_tuple", "%build_list"})
+
+
 def _transform_small_containment(
     node: Combination, *, empty_result: bool, single_info: FunInfo
 ) -> bool:
-    if node.lvar is None or len(node.args) != 2 or len(node.fun.uses) != 1:
+    if node.lvar is None or len(node.args) != 2:
         return False
     left_lvar, right_lvar = node.args
     if len(right_lvar.uses) != 1:
         return False
-    fun_ref = node.fun.uses[0]
-    if fun_ref.prev is None or fun_ref.next is not node.prev:
-        return False
-
     right_use = right_lvar.uses[0]
 
-    # Case B: right_lvar is produced by a Ref to a bounded Constant(ast.Tuple).
-    const_match = right_use.accept(_ConstantTupleRef())
-    if const_match is not None:
-        const_ref, elements = const_match
-        if (
-            const_ref is None
-            or const_ref.prev is None
-            or const_ref.block is not node.block
-            or const_ref.next is not fun_ref.prev
-        ):
-            return False
-        if len(elements) == 0:
-            if not is_pure_bound_ref(left_lvar):
+    # Case B: right_lvar delivers a bounded constant tuple directly or via a local.
+    if is_pure_bound_ref(right_lvar) and almost_immediately_used_p(
+        right_lvar, right_use
+    ):
+        tuple_literal = constant_lvar_value(right_lvar)
+        elements = (
+            tuple_literal.accept(_CONSTANT_TUPLE_ELEMENTS)
+            if tuple_literal is not None
+            else None
+        )
+        if elements is not None and len(elements) <= _MAX_CONSTANT_CONTAINER_ELEMENTS:
+            elements = tuple(elements)
+            if len(elements) == 0:
+                if not is_pure_bound_ref(left_lvar):
+                    return False
+                _fold_containment_to_bool(node, empty_result)
+                return True
+            found = _decide_constant_containment(left_lvar, elements)
+            if found is not None:
+                _fold_containment_to_bool(node, not found if empty_result else found)
+                return True
+            if len(elements) != 1:
                 return False
-            _fold_containment_to_bool(node, empty_result)
+            elem_literal = elements[0]
+            elem_type = constant_type(elem_literal)
+            if not (
+                _has_reflexive_equality(elem_type)
+                or _has_reflexive_equality(lvar_type(left_lvar))
+            ):
+                return False
+            if not right_use.accept(_RewriteRefToConstant(elem_literal)):
+                return False
+            right_lvar.derived_type = None
+            retarget_known_combination(node, single_info, [left_lvar, right_lvar])
+            reoptimize_lvar(right_lvar)
             return True
-        found = _decide_constant_containment(left_lvar, elements)
-        if found is not None:
-            _fold_containment_to_bool(node, not found if empty_result else found)
-            return True
-        if len(elements) != 1:
-            return False
-        elem_literal = elements[0]
-        elem_type = constant_type(elem_literal)
-        if not (
-            _has_reflexive_equality(elem_type)
-            or _has_reflexive_equality(lvar_type(left_lvar))
-        ):
-            return False
-        if const_ref in const_ref.leaf.refs:
-            const_ref.leaf.refs.remove(const_ref)
-        new_leaf = Constant(elem_literal)
-        const_ref.leaf = new_leaf
-        new_leaf.refs.append(const_ref)
-        const_ref.derived_type = None
-        right_lvar.derived_type = None
-        retarget_known_combination(node, single_info, [left_lvar, right_lvar])
-        reoptimize_lvar(right_lvar)
-        return True
 
     # Case A: right_lvar is produced by a bounded %build_tuple or %build_list.
-    build_node = right_use.accept(_CONTAINER_PRODUCER)
-    if (
-        build_node is None
-        or build_node.prev is None
-        or build_node.block is not node.block
-        or build_node.next is not fun_ref.prev
-    ):
+    build_node = splice_fun_args(right_lvar, _BUILD_CONTAINER_NAMES, splice=False)
+    if build_node is None or len(build_node.args) > _MAX_CONSTANT_CONTAINER_ELEMENTS:
         return False
     if len(build_node.args) == 0:
         if not is_pure_bound_ref(left_lvar):
             return False
+        splice_fun_args(right_lvar, _BUILD_CONTAINER_NAMES)
         _fold_containment_to_bool(node, empty_result)
         return True
     elements = _extract_build_constant_elements(build_node)
     if elements is not None:
         found = _decide_constant_containment(left_lvar, elements)
         if found is not None:
+            splice_fun_args(right_lvar, _BUILD_CONTAINER_NAMES)
             _fold_containment_to_bool(node, not found if empty_result else found)
             return True
     if len(build_node.args) != 1:
@@ -432,7 +470,7 @@ def _transform_small_containment(
         or _has_reflexive_equality(lvar_type(left_lvar))
     ):
         return False
-    build_node.args = []
+    splice_fun_args(right_lvar, _BUILD_CONTAINER_NAMES)
     retarget_known_combination(node, single_info, [left_lvar, elem_lvar])
     return True
 

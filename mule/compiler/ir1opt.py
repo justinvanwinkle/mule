@@ -25,7 +25,12 @@ from . import fndb
 from .constraint import constant_type
 from .ctype import (
     BOTTOM,
+    BYTES_TYPE,
     FUNCTION_TYPE,
+    NONE_TYPE,
+    PYTHON_INTEGER,
+    REAL,
+    TEXT_TYPE,
     UNKNOWN,
     BooleanType,
     IntegerType,
@@ -38,8 +43,11 @@ from .ir1util import (
     _FLUSH_DEAD_REFERENCE,
     _flush_operand,
     aver,
+    delete_ref,
+    delete_set,
     flush_combination,
     flushable_lambda_var_ref_p,
+    is_flushable_ref,
     is_pure_bound_ref,
     reoptimize_lvar,
     replace_combination_with_lvar,
@@ -65,6 +73,7 @@ from .node import (
     Node,
     NodeVisitor,
     Ref,
+    Set,
     ValuedNode,
     linked,
 )
@@ -233,7 +242,199 @@ def ir1_optimize(component: Component) -> bool:
     return changed
 
 
-class _MakeSliceProducer(NodeVisitor):
+class _OkLvarLambdaVar(NodeVisitor, LeafVisitor):
+    """Match a proven-bound single-assignment local ``LambdaVar`` reference
+    (``ok-lvar-lambda-var``, ``src/compiler/ir1util.lisp``)."""
+
+    def __init__(self, fast: bool):
+        self.fast = fast
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        if node.final or node.allow_unbound:
+            return None
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        ref = self._ref
+        if (
+            ref is None
+            or not flushable_lambda_var_ref_p(leaf, ref)
+            or leaf.home is None
+            or leaf.home.coroutine_body
+            or leaf in leaf.home.vars
+            or len(leaf.sets) != 1
+            or leaf.sets[0].value is None
+            or (not self.fast and len(leaf.refs) != 1)
+        ):
+            return None
+        return leaf
+
+
+def ok_lvar_lambda_var(lvar: Lvar, *, fast: bool = False) -> LambdaVar | None:
+    """Return the local ``LambdaVar`` referenced by ``lvar`` when it has a
+    single binding assignment and (unless ``fast``) a single reference."""
+    if len(lvar.uses) != 1 or lvar_type(lvar).may_be_unbound:
+        return None
+    return lvar.uses[0].accept(_OkLvarLambdaVar(fast))
+
+
+class _InterveningSetVarAllowed(LeafVisitor):
+    def __init__(self, forbidden_vars: frozenset[LambdaVar] = frozenset()):
+        self.forbidden_vars = forbidden_vars
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
+        if (
+            leaf in self.forbidden_vars
+            or leaf.indirect
+            or any(r.home_lambda is not leaf.home for r in leaf.refs)
+        ):
+            return False
+        return leaf.home is not None and not leaf.home.coroutine_body
+
+
+_INTERVENING_SET_VAR_ALLOWED = _InterveningSetVarAllowed()
+
+
+def _is_effectless_known_call(step: Combination) -> bool:
+    if step.kind is not CallKind.KNOWN or step.fun_info is None:
+        return False
+    info = step.fun_info
+    if info.flushable and not info.unsafe:
+        return True
+    name = info.name
+    if name == "%make_slice":
+        return True
+    if name == "%getslice" and len(step.args) == 4:
+        seq_t = lvar_type(step.args[0])
+        start_t = lvar_type(step.args[1])
+        stop_t = lvar_type(step.args[2])
+        step_t = lvar_type(step.args[3])
+        return (
+            seq_t.fits_text(TEXT_TYPE)
+            and not seq_t.may_be_unbound
+            and (start_t.fits(PYTHON_INTEGER) or start_t.fits_none(NONE_TYPE))
+            and not start_t.may_be_unbound
+            and (stop_t.fits(PYTHON_INTEGER) or stop_t.fits_none(NONE_TYPE))
+            and not stop_t.may_be_unbound
+            and (step_t.fits_none(NONE_TYPE) or step_t.exact_integer() == 1)
+            and not step_t.may_be_unbound
+        )
+    if name in ("%add", "%subtract", "%multiply"):
+        return len(step.args) == 2 and all(
+            lvar_type(arg).fits(REAL) for arg in step.args
+        )
+    if name in ("%bit_and", "%bit_or", "%bit_xor"):
+        return len(step.args) == 2 and all(
+            lvar_type(arg).fits(PYTHON_INTEGER) for arg in step.args
+        )
+    if name in ("%unary_positive", "%unary_negative"):
+        return len(step.args) == 1 and lvar_type(step.args[0]).fits(REAL)
+    if name == "%unary_invert":
+        return len(step.args) == 1 and lvar_type(step.args[0]).fits(PYTHON_INTEGER)
+    if name in ("%compare_is", "%compare_is_not"):
+        return True
+    if name in ("%compare_equal", "%compare_not_equal"):
+        return len(step.args) == 2 and all(
+            lvar_type(arg).fits(REAL)
+            or lvar_type(arg).fits(TEXT_TYPE)
+            or lvar_type(arg).fits(BYTES_TYPE)
+            or lvar_type(arg).fits(NONE_TYPE)
+            for arg in step.args
+        )
+    if name in (
+        "%compare_less",
+        "%compare_less_equal",
+        "%compare_greater",
+        "%compare_greater_equal",
+    ):
+        if len(step.args) != 2:
+            return False
+        t0, t1 = lvar_type(step.args[0]), lvar_type(step.args[1])
+        return (
+            (t0.fits(REAL) and t1.fits(REAL))
+            or (t0.fits(TEXT_TYPE) and t1.fits(TEXT_TYPE))
+            or (t0.fits(BYTES_TYPE) and t1.fits(BYTES_TYPE))
+        )
+    return False
+
+
+class _InterveningStepAllowed(NodeVisitor):
+    def __init__(self, flushable: bool, effectless_calls: bool):
+        self.flushable = flushable
+        self.effectless_calls = effectless_calls
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        return is_flushable_ref(node)
+
+    def visit_Cast(self, node: Cast) -> bool:
+        return node.value is not None and (
+            not node.type_check
+            or not node.safety
+            or lvar_type(node.value).fits(node.contract.checked_type)
+        )
+
+    def visit_Combination(self, node: Combination) -> bool:
+        return self.effectless_calls and _is_effectless_known_call(node)
+
+    def visit_Set(self, node: Set) -> bool:
+        if self.flushable:
+            return False
+        return node.var.accept(_INTERVENING_SET_VAR_ALLOWED)
+
+
+def almost_immediately_used_p(
+    lvar: Lvar,
+    node: Node | None = None,
+    *,
+    flushable: bool = False,
+    effectless_calls: bool = True,
+) -> bool:
+    """Whether ``node`` (defaulting to ``lvar``'s single use) reaches
+    ``lvar.dest`` in the same block with only non-interfering intervening nodes
+    (``almost-immediately-used-p``, ``src/compiler/ir1util.lisp``)."""
+    if node is None:
+        if len(lvar.uses) != 1:
+            return False
+        node = lvar.uses[0]
+    dest = lvar.dest
+    if (
+        dest is None
+        or node.prev is None
+        or dest.prev is None
+        or node.block is not dest.block
+    ):
+        return False
+    allowed = _InterveningStepAllowed(flushable, effectless_calls)
+    ctran = node.next
+    while ctran is not dest.prev:
+        if ctran is None or ctran.next is None:
+            return False
+        step = ctran.next
+        if not step.accept(allowed):
+            return False
+        ctran = step.next
+    return True
+
+
+class _MatchKnownCombination(NodeVisitor):
+    def __init__(self, names: frozenset[str], arg_count: int | None):
+        self.names = names
+        self.arg_count = arg_count
+
     def visit_Node(self, node):
         return None
 
@@ -241,40 +442,148 @@ class _MakeSliceProducer(NodeVisitor):
         if (
             node.kind is CallKind.KNOWN
             and node.fun_info is not None
-            and node.fun_info.name == "%make_slice"
-            and len(node.args) == 3
+            and node.fun_info.name in self.names
+            and (self.arg_count is None or len(node.args) == self.arg_count)
         ):
             return node
         return None
 
 
-_MAKE_SLICE_PRODUCER = _MakeSliceProducer()
+def lvar_matches(
+    lvar: Lvar,
+    fun_names: tuple[str, ...] | frozenset[str],
+    *,
+    arg_count: int | None = None,
+    local_alias: bool = True,
+) -> Combination | None:
+    """Match a known ``Combination`` producing ``lvar`` directly or through a
+    single-assignment local ``LambdaVar`` (``lvar-matches``,
+    ``src/compiler/combination-match.lisp``)."""
+    if len(lvar.uses) != 1:
+        return None
+    names = frozenset(fun_names)
+    matcher = _MatchKnownCombination(names, arg_count)
+    direct = lvar.uses[0].accept(matcher)
+    if direct is not None:
+        return direct
+    if not local_alias:
+        return None
+    var = ok_lvar_lambda_var(lvar, fast=True)
+    if var is None:
+        return None
+    val_lvar = var.sets[0].value
+    if val_lvar is None or len(val_lvar.uses) != 1:
+        return None
+    return val_lvar.uses[0].accept(matcher)
+
+
+def splice_fun_args(
+    lvar: Lvar,
+    fun_names: tuple[str, ...] | frozenset[str],
+    arg_count: int | None = None,
+    *,
+    splice: bool = True,
+    flushable: bool = False,
+    effectless_calls: bool = True,
+    allow_local: bool = True,
+) -> Combination | None:
+    """Match and optionally splice a known ``Combination`` producing ``lvar``
+    (directly or through a single-use local ``LambdaVar``) into ``lvar.dest``
+    (``splice-fun-args``, ``src/compiler/ir1util.lisp``)."""
+    if len(lvar.uses) != 1 or lvar.dest is None:
+        return None
+    names = frozenset(fun_names)
+    matcher = _MatchKnownCombination(names, arg_count)
+    use = lvar.uses[0]
+    producer = use.accept(matcher)
+    var: LambdaVar | None = None
+    if producer is not None:
+        if not almost_immediately_used_p(
+            lvar,
+            producer,
+            flushable=flushable,
+            effectless_calls=effectless_calls,
+        ):
+            return None
+    elif allow_local:
+        var = ok_lvar_lambda_var(lvar, fast=False)
+        if var is None:
+            return None
+        set_node = var.sets[0]
+        val_lvar = set_node.value
+        if val_lvar is None or len(val_lvar.uses) != 1:
+            return None
+        producer = val_lvar.uses[0].accept(matcher)
+        if producer is None:
+            return None
+        if not almost_immediately_used_p(
+            val_lvar,
+            producer,
+            flushable=flushable,
+            effectless_calls=effectless_calls,
+        ) or not almost_immediately_used_p(
+            lvar,
+            set_node,
+            flushable=flushable,
+            effectless_calls=effectless_calls,
+        ):
+            return None
+    else:
+        return None
+    if not splice:
+        return producer
+    dest = lvar.dest
+    idx = dest.args.index(lvar)
+    spliced_args = list(producer.args)
+    for arg in spliced_args:
+        arg.dest = dest
+    dest.args[idx : idx + 1] = spliced_args
+    producer.args = []
+    if var is not None:
+        set_node = var.sets[0]
+        val_lvar = linked(set_node.value, set_node, "set value")
+        producer.lvar = None
+        val_lvar.uses.clear()
+        val_lvar.dest = None
+        set_node.value = None
+        delete_set(set_node)
+        unlink_node(set_node)
+        use.lvar = None
+        lvar.uses.clear()
+        lvar.dest = None
+        delete_ref(use)
+        unlink_node(use)
+        if (
+            not var.refs
+            and not var.sets
+            and var.home is not None
+            and var in var.home.locals
+        ):
+            var.home.locals.remove(var)
+    else:
+        producer.lvar = None
+        lvar.uses.clear()
+        lvar.dest = None
+    _flush_operand(producer.fun)
+    unlink_node(producer)
+    dest.reoptimize = True
+    if dest.lvar is not None:
+        reoptimize_lvar(dest.lvar)
+    if dest.prev is not None and dest.block is not None:
+        dest.block.reoptimize = True
+        dest.block.flush_p = True
+        if dest.block.component is not None:
+            dest.block.component.reoptimize = True
+    return producer
 
 
 @defoptimizer("%getitem")
 def _optimize_getslice(node: Combination) -> bool:
-    if len(node.args) != 2 or len(node.fun.uses) != 1:
+    if len(node.args) != 2:
         return False
-    fun_ref = node.fun.uses[0]
-    slice_lvar = node.args[1]
-    if len(slice_lvar.uses) != 1:
+    if splice_fun_args(node.args[1], ("%make_slice",), 3) is None:
         return False
-    slice_node = slice_lvar.uses[0].accept(_MAKE_SLICE_PRODUCER)
-    if (
-        slice_node is None
-        or slice_node.prev is None
-        or fun_ref.prev is None
-        or fun_ref.next is not node.prev
-        or slice_node.next is not fun_ref.prev
-    ):
-        return False
-    start_lvar, stop_lvar, step_lvar = slice_node.args
-    slice_node.args = []
-    retarget_known_combination(
-        node, fndb.GETSLICE, [node.args[0], start_lvar, stop_lvar, step_lvar]
-    )
-    _flush_operand(slice_node.fun)
-    unlink_node(slice_node)
+    retarget_known_combination(node, fndb.GETSLICE, list(node.args))
     return True
 
 
@@ -423,6 +732,48 @@ class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
 _PREDICTABLE_GLOBAL_FUN_INFO = _PredictableGlobalFunInfo()
 
 
+def _is_explicit_constant_lvar(lvar: Lvar) -> bool:
+    if not is_pure_bound_ref(lvar):
+        return False
+    if constant_literal(lvar) is not None:
+        return True
+    var = ok_lvar_lambda_var(lvar, fast=True)
+    if var is None:
+        return False
+    store = var.sets[0]
+    return (
+        store.value is not None
+        and is_pure_bound_ref(store.value)
+        and constant_literal(store.value) is not None
+    )
+
+
+def _canonicalize_commutative_constant(node: Combination, info) -> bool:
+    """Canonicalize ``const op x -> x op const`` on commutative operations when
+    ``const`` is a pure bound constant and ``x`` is not (``associate-arguments``,
+    ``src/compiler/srctran.lisp``)."""
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    if not _is_explicit_constant_lvar(left) or _is_explicit_constant_lvar(right):
+        return False
+    name = info.name
+    t0, t1 = lvar_type(left), lvar_type(right)
+    if name in ("%add", "%multiply", "%bit_and", "%bit_or", "%bit_xor"):
+        if not (t0.fits(PYTHON_INTEGER) and t1.fits(PYTHON_INTEGER)):
+            return False
+    elif name in ("%compare_equal", "%compare_not_equal"):
+        if not all(
+            t.fits(REAL) or t.fits(TEXT_TYPE) or t.fits(BYTES_TYPE) or t.fits(NONE_TYPE)
+            for t in (t0, t1)
+        ):
+            return False
+    else:
+        return False
+    node.args = [right, left]
+    return True
+
+
 class _OptimizeNode(NodeVisitor):
     """Applies one node's rewrite; returns whether the graph changed."""
 
@@ -463,11 +814,14 @@ class _OptimizeNode(NodeVisitor):
             info.name in _BINARY_NAMES or info.name in _COMPARE_NAMES
         ) and _constant_fold(node):
             return True
+        canonicalized = _canonicalize_commutative_constant(node, info)
         if info.optimizer is not None and info.optimizer(node):
             return True
         if self._run_transforms(node, info):
             return True
-        return info.flushable and _fold_call_derived_to_constant(node)
+        if info.flushable and _fold_call_derived_to_constant(node):
+            return True
+        return canonicalized
 
     @staticmethod
     def _run_transforms(node: Combination, info) -> bool:
@@ -1092,15 +1446,19 @@ def _optimize_if(node: If) -> bool:
 
 __all__ = [
     "MAX_OPTIMIZE_ITERATIONS",
+    "almost_immediately_used_p",
     "bound_constant_literal",
     "constant_literal",
     "constant_lvar_value",
     "flush_combination",
     "ir1_optimize",
     "ir1_optimize_until_done",
+    "lvar_matches",
     "lvar_type",
     "node_derived_type",
+    "ok_lvar_lambda_var",
     "replace_combination_with_constant",
     "replace_combination_with_lvar",
     "retarget_known_combination",
+    "splice_fun_args",
 ]
