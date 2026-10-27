@@ -38,7 +38,7 @@ from mule import ast
 from mule.diagnostics import phase
 
 from . import argument_layout, vops
-from .callconv import CallConvention
+from .callconv import CallConvention, tuple_return_convention
 from .ctype import (
     BOTTOM,
     FIXNUM_MAX,
@@ -52,7 +52,7 @@ from .ctype import (
 )
 from .escape import analyze_escapes, find_local_environments
 from .ir1util import block_exception_target, made_function
-from .ir2tran import _specialize_list_getitems, ir2_convert
+from .ir2tran import _specialize_list_getitems, ir2_convert, select_tuple_delivery
 from .locall import specialized_ir1_context
 from .ltn import EntryContext, FixnumGuard, ltn_analyze, primitive_type_of
 from .node import (
@@ -60,7 +60,6 @@ from .node import (
     CodeInfo,
     FunctionalKind,
     Lambda,
-    LeafVisitor,
     NodeVisitor,
     Signature,
     linked,
@@ -598,124 +597,6 @@ class _UnpackedSymbols:
         raise KeyError((lambda_.name, context_id))
 
 
-class _IsScalarConstant(ast.Visitor):
-    """True when a constant tuple element materializes without a fallible call."""
-
-    def visit_Node(self, node):
-        return False
-
-    def visit_NoneLiteral(self, node):
-        return True
-
-    def visit_BooleanLiteral(self, node):
-        return True
-
-    def visit_IntegerLiteral(self, node):
-        return True
-
-    def visit_FloatLiteral(self, node):
-        return True
-
-    def visit_TextLiteral(self, node):
-        return True
-
-    def visit_BytesLiteral(self, node):
-        return True
-
-
-_IS_SCALAR_CONSTANT = _IsScalarConstant()
-
-
-class _ConstantTupleArity(ast.Visitor):
-    """Fixed tuple arity of a literal AST node, or None."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Tuple(self, node):
-        if all(element.accept(_IS_SCALAR_CONSTANT) for element in node.elements):
-            return len(node.elements)
-        return None
-
-
-_CONSTANT_TUPLE_ARITY = _ConstantTupleArity()
-
-
-class _LeafTupleArity(LeafVisitor):
-    """Fixed tuple arity of a leaf, or None."""
-
-    def visit_Leaf(self, leaf):
-        return None
-
-    def visit_Constant(self, leaf):
-        return leaf.value.accept(_CONSTANT_TUPLE_ARITY)
-
-
-_LEAF_TUPLE_ARITY = _LeafTupleArity()
-
-
-class _ReturnTupleArity(NodeVisitor):
-    """Fixed tuple arity of a node directly producing a tuple, or None."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node):
-        if (
-            node.kind is CallKind.KNOWN
-            and linked(node.fun_info, node, "known function").name == "%build_tuple"
-        ):
-            return len(node.args)
-        return None
-
-    def visit_Ref(self, node):
-        return node.leaf.accept(_LEAF_TUPLE_ARITY)
-
-
-_RETURN_TUPLE_ARITY = _ReturnTupleArity()
-
-
-def _flows_directly_to_return(use, return_) -> bool:
-    """True when ``use`` is the last operation before ``return_`` with no
-    intervening cleanup or node."""
-    if use.lvar is not return_.result:
-        return False
-    if use.next is not None:
-        return use.next.next is return_
-    return (
-        use.block is not None
-        and use.block.last is use
-        and use.block.succ == [return_.block]
-        and return_.block.start is not None
-        and return_.block.start.next is return_
-    )
-
-
-def _return_tuple_info(lambda_: Lambda) -> tuple[int, frozenset] | None:
-    """When every return path of ``lambda_`` constructs a fixed-size tuple of
-    arity ``1 <= K <= 8`` and flows directly to ``return_``, return ``(K, uses)``."""
-    if lambda_.kind is FunctionalKind.TOPLEVEL:
-        return None
-    return_ = lambda_.return_
-    if return_ is None or not return_.result.uses:
-        return None
-    uses = tuple(return_.result.uses)
-    arity = None
-    for use in uses:
-        if not _flows_directly_to_return(use, return_):
-            return None
-        use_arity = use.accept(_RETURN_TUPLE_ARITY)
-        if use_arity is None or not (1 <= use_arity <= 8):
-            return None
-        if arity is None:
-            arity = use_arity
-        elif arity != use_arity:
-            return None
-    if arity is None:
-        return None
-    return arity, frozenset(uses)
-
-
 def generate(program: Program) -> str:
     """Return a complete LLVM module with a native executable entry point."""
     with phase("LLVM generation %s", program.unit or "__main__"):
@@ -943,12 +824,12 @@ class ModuleGenerator:
         self.return_tuple_uses: dict[Lambda, frozenset] = {}
         for lambda_ in lambdas:
             if lambda_ not in self.native_plans:
-                info = _return_tuple_info(lambda_)
+                info = tuple_return_convention(lambda_)
                 if info is not None:
                     (
                         self.return_tuple_arities[lambda_],
                         self.return_tuple_uses[lambda_],
-                    ) = info
+                    ) = info.arity, info.direct
         self.local_environments = find_local_environments(lambdas)
         self.escape_facts = analyze_escapes(
             lambdas, local_environments=self.local_environments, expand=False
@@ -3611,6 +3492,9 @@ class ModuleGenerator:
             component = compile_component(
                 lambda_, context, select_calls=self.select_numeric_calls
             )
+            select_tuple_delivery(
+                component, self.return_tuple_arities, self.method_targets
+            )
             mark_private_boxes(
                 component,
                 fresh_result=lambda vop: self.fresh_box_result(component, vop),
@@ -4400,9 +4284,9 @@ class FunctionGenerator:
         self.convention = self.context.convention
         self.unpacked = unpacked
         if unpacked:
-            info = _return_tuple_info(self.lambda_)
+            info = component.tuple_return
             self.return_uses = (
-                info[1]
+                info.direct
                 if info is not None
                 else module.return_tuple_uses.get(self.lambda_, frozenset())
             )
@@ -4428,7 +4312,9 @@ class FunctionGenerator:
             self.body = module.specialized[self.lambda_, self.context.id]
         else:
             self.body = module.bodies[self.lambda_]
-        if self.unpacked:
+        if self.unpacked and self.return_uses == frozenset(
+            self.lambda_.return_.result.uses
+        ):
             for block in component.blocks:
                 for vop in block.vops:
                     if (
@@ -4437,7 +4323,18 @@ class FunctionGenerator:
                         and vop.results
                     ):
                         vop.results[0].tn.type = NONE_TYPE
-        self._find_unpacked_calls(component)
+        delivery = component.tuple_delivery
+        self.unpacked_calls = delivery.calls
+        self.unpacked_call_assertions = delivery.call_assertions
+        self.direct_call_assertions = delivery.direct_assertions
+        self.unpacked_unpacks = delivery.unpacks
+        self.unpacked_slot_unpacks = delivery.slot_unpacks
+        self.unpacked_sequence_available = delivery.sequence_available
+        self.unpacked_moves = delivery.moves
+        self.unpacked_refs = delivery.refs
+        self.unpacked_discard_loads = delivery.discard_loads
+        self.unpacked_temp_tns = delivery.temp_tns
+        self.max_unpack_out = delivery.max_arity
         self.local_slots: dict[str, str] = {}
         self.local_tns_by_name: dict[str, TN] = {}
         self.value_tns = []
@@ -4560,332 +4457,6 @@ class FunctionGenerator:
                 for index, var in enumerate(self.plan.dependencies)
             }
 
-    def _find_unpacked_calls(self, component) -> None:
-        self.unpacked_calls: dict[object, int] = {}
-        self.unpacked_call_assertions: dict[object, object] = {}
-        self.direct_call_assertions: dict[object, object] = {}
-        self.unpacked_unpacks: set[object] = set()
-        self.unpacked_slot_unpacks: dict[object, int] = {}
-        self.unpacked_sequence_available: dict[object, int] = {}
-        self.unpacked_moves: set[object] = set()
-        self.unpacked_refs: dict[object, int] = {}
-        self.unpacked_immortal_refs: set[object] = set()
-        self.unpacked_dead_refs: set[object] = set()
-        self.unpacked_discard_loads: set[object] = set()
-        self.unpacked_temp_tns: set[object] = set()
-        self.max_unpack_out = 0
-        if self.raw:
-            return
-        arities = self.module.return_tuple_arities
-        reads = component.reads
-        writes = component.writes
-        for block in component.blocks:
-            vops_list = block.vops
-            n_vops = len(vops_list)
-            idx = 0
-            while idx < n_vops:
-                if idx + 2 >= n_vops:
-                    break
-                count_vop = vops_list[idx]
-                unpack_vop = vops_list[idx + 1]
-                move_vop = vops_list[idx + 2]
-                if (
-                    count_vop.info is not vops.CONSTANT
-                    or unpack_vop.info.name != "structural-unpack"
-                    or move_vop.info is not vops.MOVE
-                ):
-                    idx += 1
-                    continue
-                arity = unpack_vop.codegen_info.arity
-                if arity is None or not (1 <= arity <= 8):
-                    idx += 1
-                    continue
-                call_vop = None
-                assertion_vop = None
-                is_partition_call = False
-                call_index = idx - 1
-                if (
-                    idx >= 2
-                    and vops_list[idx - 1].info is vops.TYPE_CHECK
-                    and vops_list[idx - 2].info is vops.FULL_CALL
-                ):
-                    assertion_vop = vops_list[idx - 1]
-                    call_index = idx - 2
-                if call_index >= 0 and vops_list[call_index].info is vops.FULL_CALL:
-                    candidate = vops_list[call_index]
-                    site = candidate.codegen_info
-                    target = site.target
-                    call_arity = arities.get(target) if target is not None else None
-                    delivered = candidate.results[0].tn
-                    if assertion_vop is not None:
-                        if (
-                            assertion_vop.args[0].tn is not delivered
-                            or len(reads.get(delivered, ())) != 1
-                            or not vops.checks_unpacked_return(
-                                assertion_vop.codegen_info.contract, arity
-                            )
-                        ):
-                            idx += 1
-                            continue
-                        delivered = assertion_vop.results[0].tn
-                    if (
-                        call_arity == arity
-                        and target.call_order(site.keywords, len(candidate.args) - 1)
-                        is not None
-                        and unpack_vop.args[0].tn is delivered
-                    ):
-                        call_vop = candidate
-                elif (
-                    call_index >= 0
-                    and vops_list[call_index].info is vops.LOCAL_EXTENT_CALL
-                    and assertion_vop is None
-                ):
-                    candidate = vops_list[call_index]
-                    target = candidate.codegen_info.target
-                    if (
-                        arities.get(target) == arity
-                        and target.signature.return_annotation is None
-                        and unpack_vop.args[0].tn is candidate.results[0].tn
-                    ):
-                        call_vop = candidate
-                elif (
-                    idx >= 1
-                    and vops_list[idx - 1].info.name == "call-resolved"
-                    and vops_list[idx - 1].codegen_info.exact_text_partition
-                    and arity == 3
-                    and unpack_vop.args[0].tn is vops_list[idx - 1].results[0].tn
-                ):
-                    call_vop = vops_list[idx - 1]
-                    is_partition_call = True
-                val_tn = unpack_vop.args[0].tn
-                count_tn = count_vop.results[0].tn
-                unpack_res_tn = unpack_vop.results[0].tn
-                temp_tn = move_vop.results[0].tn
-                if (
-                    unpack_vop.args[1].tn is not count_tn
-                    or move_vop.args[0].tn is not unpack_res_tn
-                    or len(writes.get(val_tn, ())) != 1
-                    or len(reads.get(val_tn, ())) != 1
-                    or len(writes.get(count_tn, ())) != 1
-                    or len(reads.get(count_tn, ())) != 1
-                    or len(writes.get(unpack_res_tn, ())) != 1
-                    or len(reads.get(unpack_res_tn, ())) != 1
-                    or temp_tn.leaf is None
-                    or not temp_tn.leaf.expression_temporary
-                    or temp_tn in self.unpacked_temp_tns
-                    or len(writes.get(temp_tn, ())) != 1
-                    or len(reads.get(temp_tn, ())) != arity + 1
-                ):
-                    idx += 1
-                    continue
-                cursor = idx + 3
-                ref_vops = []
-                matched = True
-                for slot_idx in range(arity):
-                    if cursor + 2 >= n_vops:
-                        matched = False
-                        break
-                    pos_vop = vops_list[cursor]
-                    ref_vop = vops_list[cursor + 1]
-                    if (
-                        pos_vop.info is not vops.CONSTANT
-                        or ref_vop.info.name != "unpack-ref"
-                        or ref_vop.codegen_info.index != slot_idx
-                        or not ref_vop.codegen_info.borrow_parent
-                        or ref_vop.args[0].tn is not temp_tn
-                        or ref_vop.args[1].tn is not pos_vop.results[0].tn
-                        or len(writes.get(pos_vop.results[0].tn, ())) != 1
-                        or len(reads.get(pos_vop.results[0].tn, ())) != 1
-                    ):
-                        matched = False
-                        break
-                    ref_res_tn = ref_vop.results[0].tn
-                    if (
-                        len(writes.get(ref_res_tn, ())) != 1
-                        or len(reads.get(ref_res_tn, ())) != 1
-                    ):
-                        matched = False
-                        break
-                    cursor += 2
-                    next_vop = vops_list[cursor]
-                    has_type_check = False
-                    if next_vop.info is vops.TYPE_CHECK:
-                        has_type_check = True
-                        check = next_vop.codegen_info
-                        actual = next_vop.args[0].tn.type or UNKNOWN
-                        if next_vop.args[0].tn is not ref_res_tn or (
-                            check.safety
-                            and not actual.fits(check.contract.checked_type)
-                        ):
-                            matched = False
-                            break
-                        ref_res_tn = next_vop.results[0].tn
-                        if (
-                            len(writes.get(ref_res_tn, ())) != 1
-                            or len(reads.get(ref_res_tn, ())) != 1
-                            or cursor + 1 >= n_vops
-                        ):
-                            matched = False
-                            break
-                        cursor += 1
-                    store_vop = vops_list[cursor]
-                    if (
-                        store_vop.info is not vops.MOVE
-                        or store_vop.args[0].tn is not ref_res_tn
-                        or store_vop.results[0].tn is temp_tn
-                    ):
-                        matched = False
-                        break
-                    ref_vops.append((slot_idx, ref_vop, store_vop, has_type_check))
-                    cursor += 1
-                if not matched or cursor + 1 >= n_vops:
-                    idx += 1
-                    continue
-                discard_load_vop = vops_list[cursor]
-                discard_vop = vops_list[cursor + 1]
-                if (
-                    discard_load_vop.info is not vops.LOAD_LOCAL
-                    or discard_load_vop.args[0].tn is not temp_tn
-                    or not discard_load_vop.codegen_info.move
-                    or discard_vop.info is not vops.DISCARD
-                ):
-                    idx += 1
-                    continue
-                discard_tn = discard_load_vop.results[0].tn
-                if (
-                    discard_vop.args[0].tn is not discard_tn
-                    or len(writes.get(discard_tn, ())) != 1
-                    or len(reads.get(discard_tn, ())) != 1
-                ):
-                    idx += 1
-                    continue
-                sep_is_immortal = (
-                    call_vop is not None
-                    and is_partition_call
-                    and (call_vop.args[2].tn.type or UNKNOWN).is_immortal
-                )
-                if call_vop is not None:
-                    self.unpacked_calls[call_vop] = arity
-                    self.unpacked_unpacks.add(unpack_vop)
-                    val_tn.type = NONE_TYPE
-                    if assertion_vop is not None:
-                        self.unpacked_call_assertions[call_vop] = assertion_vop
-                        assertion_vop.args[0].tn.type = NONE_TYPE
-                elif (
-                    idx == 2
-                    and vops_list[0].info is vops.CONSTANT
-                    and vops_list[1].info.name == "protocol-next_item"
-                    and vops_list[1].args[0].tn is vops_list[0].results[0].tn
-                    and val_tn is vops_list[1].results[0].tn
-                    and len(block.block.pred) == 1
-                    and (pred_ir2 := component.ir2_blocks.get(block.block.pred[0]))
-                    is not None
-                    and len(pred_ir2.vops) >= 2
-                    and pred_ir2.vops[-2].info.name == "sequence-available"
-                    and pred_ir2.vops[-1].info is vops.BRANCH
-                    and pred_ir2.vops[-1].codegen_info.consequent == block.label
-                ):
-                    self.unpacked_slot_unpacks[unpack_vop] = arity
-                    self.unpacked_sequence_available[pred_ir2.vops[-2]] = arity
-                elif (
-                    idx >= 1
-                    and vops_list[idx - 1].info.name == "call-resolved"
-                    and val_tn is vops_list[idx - 1].results[0].tn
-                ):
-                    self.unpacked_slot_unpacks[unpack_vop] = arity
-                else:
-                    idx += 1
-                    continue
-                self.unpacked_moves.add(move_vop)
-                for slot_idx, ref_vop, store_vop, has_type_check in ref_vops:
-                    self.unpacked_refs[ref_vop] = (slot_idx, arity)
-                    if sep_is_immortal and slot_idx == 1:
-                        self.unpacked_immortal_refs.add(ref_vop)
-                    target_tn = store_vop.results[0].tn
-                    if (
-                        not has_type_check
-                        and (
-                            ref_vop.node not in self.context.element_contracts
-                            or not self.lambda_.policy.safety
-                        )
-                        and not reads.get(target_tn)
-                        and len(writes.get(target_tn, ())) == 1
-                        and target_tn.leaf is not None
-                        and not target_tn.leaf.indirect
-                        and (
-                            self.environment is None
-                            or (
-                                target_tn.leaf not in self.environment.cells
-                                and target_tn.leaf not in self.environment.copies
-                            )
-                        )
-                    ):
-                        self.unpacked_dead_refs.add(ref_vop)
-                        self.unpacked_moves.add(store_vop)
-                        self.unpacked_temp_tns.add(target_tn)
-                        target_tn.type = NONE_TYPE
-                self.unpacked_discard_loads.add(discard_load_vop)
-                self.unpacked_temp_tns.add(temp_tn)
-                self.max_unpack_out = max(self.max_unpack_out, arity)
-                unpack_res_tn.type = NONE_TYPE
-                temp_tn.type = NONE_TYPE
-                discard_tn.type = NONE_TYPE
-                idx = cursor + 2
-            for idx in range(n_vops - 1):
-                call_vop = vops_list[idx]
-                assertion_vop = vops_list[idx + 1]
-                if (
-                    call_vop in self.unpacked_calls
-                    or call_vop.info
-                    not in (
-                        vops.FULL_CALL,
-                        vops.LOCAL_EXTENT_CALL,
-                        vops.CALL_RESOLVED,
-                    )
-                    or assertion_vop.info is not vops.TYPE_CHECK
-                    or assertion_vop in self.unpacked_call_assertions.values()
-                ):
-                    continue
-                if call_vop.info is vops.CALL_RESOLVED:
-                    info = call_vop.codegen_info
-                    if info.is_exact:
-                        continue
-                    method_arity = len(call_vop.args) - 2
-                    target = info.target
-                    has_direct = (
-                        target is not None
-                        and not info.keywords
-                        and target.call_order((), method_arity + 1) is not None
-                    )
-                    if not has_direct:
-                        candidates = self.module.method_targets.get(info.name, ())
-                        has_direct = any(
-                            cand.call_order(info.keywords, method_arity, receiver=bound)
-                            is not None
-                            for cand in candidates
-                            for bound in (True, False)
-                        )
-                    if not has_direct:
-                        continue
-                else:
-                    site = call_vop.codegen_info
-                    target = site.target
-                    if (
-                        target is None
-                        or target.call_order(site.keywords, len(call_vop.args) - 1)
-                        is None
-                    ):
-                        continue
-                delivered = call_vop.results[0].tn
-                if (
-                    assertion_vop.args[0].tn is not delivered
-                    or delivered.sc not in OBJECT
-                    or len(writes.get(delivered, ())) != 1
-                    or len(reads.get(delivered, ())) != 1
-                ):
-                    continue
-                self.direct_call_assertions[call_vop] = assertion_vop
-
     def is_unpacked_return_vop(self, vop) -> bool:
         return self.unpacked and vop.node is not None and vop.node in self.return_uses
 
@@ -4932,15 +4503,12 @@ class FunctionGenerator:
     def unpacked_ref_remaining(self, vop) -> tuple[int, ...]:
         info = self.unpacked_refs.get(vop)
         if info is None:
-            return ()
+            return self.unpacked_remaining_slots
         slot_idx, arity = info
         return tuple(range(slot_idx + 1, arity))
 
     def is_unpacked_immortal_ref(self, vop) -> bool:
-        return vop in self.unpacked_immortal_refs
-
-    def is_unpacked_dead_ref(self, vop) -> bool:
-        return vop in self.unpacked_dead_refs
+        return (vop.results[0].tn.type or UNKNOWN).is_immortal
 
     def is_unpacked_discard_load(self, vop) -> bool:
         return vop in self.unpacked_discard_loads
@@ -5320,13 +4888,13 @@ class FunctionGenerator:
     def refine(self, tn, value: str) -> None:
         """Expose proven representation/range facts after the error check."""
         if self._has_unchecked_element_contract(tn):
-            contract = self.context.element_contracts[self.vop.node]
+            current = linked(self.vop, self, "current VOP")
+            contract = self.context.element_contracts[current.node]
             self.checking_element_contract = True
             self.unpacked_remaining_slots = self.unpacked_ref_remaining(self.vop)
             try:
                 contract.accept(vops._ContractAssertion(self, value))
             finally:
-                self.unpacked_remaining_slots = ()
                 self.checking_element_contract = False
             self.live.pop(tn, None)
             value = self.operation(f"getelementptr i8, ptr {value}, i64 0")
@@ -5414,6 +4982,27 @@ class FunctionGenerator:
     def return_value(self, operand) -> None:
         if self.convention is None:
             value = self.take(operand)
+            if self.unpacked and self.return_uses != frozenset(
+                self.lambda_.return_.result.uses
+            ):
+                ready = self.fresh("tuple.return.ready")[1:]
+                extract = self.fresh("tuple.return.extract")[1:]
+                forwarded = self.operation(f"icmp eq ptr {value}, @mule.none")
+                self.line(f"br i1 {forwarded}, label %{ready}, label %{extract}")
+                self.lines.append(extract + ":")
+                arity = self.component.tuple_return.arity
+                for index in range(arity):
+                    child = self.operation(
+                        f"call ptr @mule.fast.tuple.slot(ptr {value}, i64 {index})"
+                    )
+                    slot = self.operation(
+                        f"getelementptr ptr, ptr %tuple.out, i64 {index}"
+                    )
+                    self.line(f"store ptr {child}, ptr {slot}")
+                self.release(value)
+                self.line(f"br label %{ready}")
+                self.lines.append(ready + ":")
+                value = "@mule.none"
             if self.raw:
                 returned = linked(
                     self.plan.returned, self.plan, "return representation"
@@ -6226,6 +5815,9 @@ class FunctionGenerator:
             )
             for vop in block.vops:
                 self.vop = vop
+                self.unpacked_remaining_slots = (
+                    self.component.tuple_delivery.remaining.get(vop, ())
+                )
                 vop.info.generator(self, vop)
                 for tn in self.expiring.get(vop, ()):
                     value = self.live.pop(tn, None)

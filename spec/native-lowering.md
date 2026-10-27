@@ -337,6 +337,40 @@ also use that algorithm, so overriding `__iter__` remains observable. The Rust
 addition only checks physical kind, subtype storage, and length; it implements
 neither iteration nor language-level unpacking errors.
 
+### Tuple delivery and dead local assignments
+
+IR1 display destructuring follows the capture temporary's references and
+`Lvar` destinations, without inspecting assignment targets. Element temporaries
+preserve RHS evaluation order, target effects, partial assignments, and error
+cleanup. This also permits global, attribute, subscript, and nested targets.
+
+`callconv.TupleReturnConvention` selects fixed tuple return locations from
+`TupleType` facts on `Return.result` producers. The existing output-slot ABI
+supports arities 1 through 8. Direct construction can avoid tuple allocation;
+returns through aliases extract owned children at the return boundary instead.
+Ordinary object entries preserve tuple identity. IR2 owns the delivery plan and
+connects captures and projections through definitions and uses, not instruction
+offsets. Single-block, nonoverlapping regions can share the caller's output
+buffer. Other regions retain the ordinary object path.
+
+Unlike SBCL's tracing collection, each Mule output slot owns a child reference.
+A projection transfers that owner. Error edges release the remaining slots,
+including when an intervening assignment target raises. Independently live tuple
+aliases retain their own ownership. `ltn-analyze-return`, `ltn-analyze-mv-bind`,
+`ir2-convert-return`, and `ir2-convert-mv-bind` in SBCL's `ltn.lisp` and
+`ir2tran.lisp` provide the stage boundaries for this adaptation.
+
+Backward liveness in `_mark_last_local_reads` marks dead local assignments at
+each instruction, independently of the variable's other writes. It includes
+exception successors and preserves captures, borrow roots, and inspectable
+suspended locals. A destruction-specific proof permits only inert exact values
+and immutable tuples of inert children. Operation purity alone is insufficient:
+classes can expose weak-reference callbacks, and mutable containers can acquire
+observable children through aliases. A dead assignment releases its previous
+binding at the original assignment point. Its input can borrow from a stable
+owner without creating a retained copy. SBCL's corresponding backward analysis
+is in `src/compiler/life.lisp`, not `lifetime.lisp`.
+
 ## Analysis and representation facts
 
 AST and IR1 nodes select visitor methods through their own `accept` methods.

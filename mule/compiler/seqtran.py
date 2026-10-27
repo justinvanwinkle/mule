@@ -269,27 +269,6 @@ class _ExpressionTempStore(NodeVisitor, LeafVisitor):
 _EXPRESSION_TEMP_STORE = _ExpressionTempStore()
 
 
-class _LambdaVarTargetStore(NodeVisitor, LeafVisitor):
-    """Return ``node`` when it is a simple ``Set`` to a ``LambdaVar``."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Set(self, node: Set):
-        if node.value is not None and node.lvar is None and node.var.accept(self):
-            return node
-        return None
-
-    def visit_Leaf(self, leaf) -> bool:
-        return False
-
-    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
-        return True
-
-
-_LAMBDA_VAR_TARGET_STORE = _LambdaVarTargetStore()
-
-
 class _TempRefCheck(NodeVisitor):
     """Match a ``Ref`` to ``temporary`` with the expected ``final`` flag."""
 
@@ -368,7 +347,6 @@ def _transform_unpack(node: Combination) -> bool:
         or count_ref.prev is None
         or fun_ref.prev is None
         or seq_producer.block is not node.block
-        or _following_node_in_block(seq_producer) is not count_ref
         or _following_node_in_block(count_ref) is not fun_ref
         or _following_node_in_block(fun_ref) is not node
     ):
@@ -396,54 +374,32 @@ def _transform_unpack(node: Combination) -> bool:
     if store_temp.value is not node.lvar:
         return False
 
-    current: Node = store_temp
-    loads: list[Ref] = []
-    ref_calls: list[Combination] = []
-    for index in range(n):
-        next_node = _following_node_in_block(current)
-        if next_node is None:
+    ref_calls: list[Combination | None] = [None] * n
+    discard_ref: Ref | None = None
+    for ref in temporary.refs:
+        if ref.prev is None:
             return False
-        load_i = next_node.accept(_TempRefCheck(temporary, final=False))
-        if load_i is None or load_i.lvar is None or len(load_i.lvar.uses) != 1:
+        if ref.accept(_TempRefCheck(temporary, final=True)) is not None:
+            if discard_ref is not None or ref.lvar is not None:
+                return False
+            discard_ref = ref
+            continue
+        loaded = ref.lvar
+        if loaded is None or loaded.uses != [ref] or loaded.dest is None:
             return False
-        pos_i = _following_node_in_block(load_i)
-        if pos_i is None:
+        call = loaded.dest
+        # The temporary's value edges identify extraction independently of the
+        # target. Receiver/index evaluation and nested assignments stay in place.
+        for index in range(n):
+            matched = call.accept(_UnpackRefCall(loaded, index))
+            if matched is not None:
+                if ref_calls[index] is not None:
+                    return False
+                ref_calls[index] = matched
+                break
+        else:
             return False
-        fun_i = _following_node_in_block(pos_i)
-        if fun_i is None:
-            return False
-        call_node = _following_node_in_block(fun_i)
-        if call_node is None:
-            return False
-        ref_call_i = call_node.accept(_UnpackRefCall(load_i.lvar, index))
-        if (
-            ref_call_i is None
-            or ref_call_i.args[1].uses != [pos_i]
-            or ref_call_i.fun.uses != [fun_i]
-        ):
-            return False
-        store_node = _following_node_in_block(ref_call_i)
-        if store_node is None:
-            return False
-        target_store_i = store_node.accept(_LAMBDA_VAR_TARGET_STORE)
-        if (
-            target_store_i is None
-            or target_store_i.value is not ref_call_i.lvar
-            or ref_call_i.lvar.dest is not target_store_i
-            or len(ref_call_i.lvar.uses) != 1
-        ):
-            return False
-        loads.append(load_i)
-        ref_calls.append(ref_call_i)
-        current = target_store_i
-
-    after_stores = _following_node_in_block(current)
-    if after_stores is None:
-        return False
-    discard_ref = after_stores.accept(_TempRefCheck(temporary, final=True))
-    if discard_ref is None or discard_ref.lvar is not None:
-        return False
-    if temporary.refs != [*loads, discard_ref]:
+    if discard_ref is None or any(call is None for call in ref_calls):
         return False
 
     if build_node is not None:
@@ -451,8 +407,12 @@ def _transform_unpack(node: Combination) -> bool:
         build_node.args = []
         for i in range(n):
             ref_call_i = ref_calls[i]
+            assert ref_call_i is not None
             elem_lvar = linked(ref_call_i.lvar, ref_call_i, "lvar")
             src_lvar = source_lvars[i]
+            # Keep the already evaluated element as an Lvar temporary. Its
+            # ordinary IR2 lifetime protects it across earlier target effects
+            # and releases it if a target raises before this element is stored.
             delete_lvar_use(ref_call_i)
             src_lvar.dest = None
             substitute_lvar_uses(elem_lvar, src_lvar)
@@ -468,6 +428,7 @@ def _transform_unpack(node: Combination) -> bool:
         assert const_elements is not None
         for i in range(n):
             ref_call_i = ref_calls[i]
+            assert ref_call_i is not None
             elem_lit = const_elements[i]
             if ref_call_i.source is not None:
                 elem_lit = replace(elem_lit, span=ref_call_i.source.span)
