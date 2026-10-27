@@ -425,7 +425,8 @@ def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class
     pair_spec = llvm.split('define internal ptr @"mule_fn_sum_pair.spec.0"(')[1].split(
         "\n}"
     )[0]
-    assert "@mule.fast.tuple.borrow(" in pair_spec
+    assert "@mule.fast.tuple.slot(" in pair_spec
+    assert "@mule_fast_unpack(" not in pair_spec
     assert "@llvm.sadd.with.overflow.i64(" in pair_spec
 
     nested_spec = llvm.split('define internal ptr @"mule_fn_sum_nested_pairs.spec.0"(')[

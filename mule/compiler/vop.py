@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING
 from .boxing import IntegerPayload, ScalarPayload
 
 if TYPE_CHECKING:
+    from .callconv import TupleDelivery, TupleReturnConvention
+    from .ctype import ValueType
     from .ltn import EntryContext
     from .node import Combination, Lambda
     from .policy import OptimizationPolicy
@@ -338,6 +340,8 @@ class IR2Lvar:
     kind: IR2LvarKind
     primitive_type: PrimitiveType
     locs: list[TN] = field(default_factory=list)
+    value_type: ValueType | None = None
+    ltn_token: object | None = None
 
 
 @dataclass(slots=True, eq=False)
@@ -357,6 +361,13 @@ class IR2Environment:
     return_tn: TN | None = None
 
 
+def _empty_tuple_delivery() -> TupleDelivery:
+    # callconv imports storage classes from this module.
+    from .callconv import TupleDelivery
+
+    return TupleDelivery()
+
+
 @dataclass(slots=True, eq=False)
 class IR2Component:
     """The IR2 of one lambda in one entry context: its blocks in emission
@@ -368,6 +379,8 @@ class IR2Component:
     blocks: list[IR2Block] = field(default_factory=list)
     tns: list[TN] = field(default_factory=list)
     ir2_blocks: dict[object, IR2Block] = field(default_factory=dict)
+    tuple_delivery: TupleDelivery = field(default_factory=_empty_tuple_delivery)
+    tuple_return: TupleReturnConvention | None = None
     reads: dict[TN, list[tuple[VOP, TNRef]]] = field(
         default_factory=lambda: defaultdict(list)
     )

@@ -206,13 +206,17 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
 _PRIMITIVE_TYPE_OF = _PrimitiveTypeOf()
 
 
-def ltn_analyze(lambda_: Lambda, context: EntryContext) -> None:
-    """Annotate every lvar of ``lambda_`` and select templates for its known
-    calls under ``context``."""
+def ltn_analyze(lambda_: Lambda, context: EntryContext) -> object:
+    """Annotate lvars and select templates under ``context``.
+
+    The returned token identifies annotations from this analysis. The caller
+    must keep the IR1 graph and context facts unchanged until IR2 conversion.
+    """
     visitor = _Annotate(context)
     for block in linked(lambda_.component, lambda_, "component").blocks():
         for node in block.nodes():
             node.accept(visitor)
+    return visitor.token
 
 
 class _PredictableLenCalleeDest(NodeVisitor):
@@ -234,23 +238,33 @@ class _PredictableLenCalleeDest(NodeVisitor):
 class _Annotate(NodeVisitor, LeafVisitor):
     def __init__(self, context: EntryContext):
         self.context = context
+        self.token = object()
         self.lvar = None
 
-    def lvar_ptype(self, lvar) -> PrimitiveType:
+    def lvar_types(self, lvar) -> tuple[PrimitiveType, ValueType | None]:
         plan = self.context.plan
         if plan is not None:
             chosen = plan.lvar_type(lvar)
             if chosen is not None:
-                return chosen
+                return chosen, None
         value_type = BOTTOM
         for producer in lvar.uses:
             value_type = value_type.join(self.context.type_of(producer))
-        return primitive_type_of(value_type)
+        return primitive_type_of(value_type), value_type
+
+    def lvar_ptype(self, lvar) -> PrimitiveType:
+        return self.lvar_types(lvar)[0]
 
     def annotate_1_value_lvar(self, lvar) -> None:
         if lvar is None or lvar.info is not None:
             return
-        lvar.info = IR2Lvar(IR2LvarKind.FIXED, self.lvar_ptype(lvar))
+        primitive_type, value_type = self.lvar_types(lvar)
+        lvar.info = IR2Lvar(
+            IR2LvarKind.FIXED,
+            primitive_type,
+            value_type=value_type,
+            ltn_token=self.token,
+        )
 
     def annotate_delayed(self, lvar) -> None:
         if lvar is not None and lvar.info is None:

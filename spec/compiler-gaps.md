@@ -11,9 +11,11 @@ constant-lvar/dead-operand helpers, and monotonic `derive_node_type`
 (Section 3), loop optimizations / loop-invariant code motion / induction-variable
 range and relational constraint inference (Section 4), and identity-aware float
 storage and coercions, flow-proven fixnum locals, numeric internal calling
-conventions, LLVM-visible private leaf boxes (parts of Section 5); **proposed**
-for Sections 1C–2, the rest of Section 5, and Section 6 (replacing
-benchmark-specific special cases with general SBCL mechanisms).
+conventions, LLVM-visible private leaf boxes (parts of Section 5),
+module-level constant folding via write-set tracking (Section 6A), and general
+tuple delivery with per-store liveness (Section 6G); **proposed** for Sections
+1C–2, the rest of Section 5, and the remaining Section 6 replacements of
+benchmark-specific special cases with general SBCL mechanisms.
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
@@ -844,7 +846,7 @@ not complete closure/container escape analysis. See the
 
 ---
 
-## 6. Replacing benchmark-specific special cases with general SBCL compiler mechanisms (proposed)
+## 6. Replacing benchmark-specific special cases with general SBCL compiler mechanisms (partially implemented)
 
 An audit of `mule/compiler/` and `stdlib/` against `perf/suite/*.py` identified
 twelve compiler and stdlib paths that rely on syntactic or structural heuristics
@@ -852,31 +854,26 @@ shaped around individual benchmarks rather than general SBCL analyses and
 transforms. Each item below states the current special case, the corresponding
 SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
 
-### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`)
+### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`) — **implemented**
 
-- **Current special case**: `_GlobalConstantStores.visit_GlobalVar`
-  (`mule/compiler/locall.py:756-792`) only folds module-level bindings whose
-  identifier satisfies `leaf.name.startswith("_") and leaf.name.isupper()`
-  (matching `_VOCAB`, `_TAGS`, `_RECORDS` in benchmark suites), while
-  `_import_constant_leaf` (`mule/compiler/locall.py:2051-2069`) requires the
-  opposite (`not orig_name.startswith("_") and orig_name.isupper()`).
-- **SBCL reference**: `find-free-var` and `ir1-convert-var` in
-  `src/compiler/ir1tran.lisp`, `:variable :kind :constant` / `:global` in
-  `src/compiler/globaldb.lisp`, and `leaf-ever-set` / `basic-var-sets` on
-  `BasicVar` in `src/compiler/node.lisp`. Constantness is determined by binding
-  write sets and declaration/module policy, never by identifier spelling or case.
-- **Required implementation**:
-  1. Remove all `startswith("_")` and `.isupper()` identifier checks from
-     `_GlobalConstantStores`, `_GlobalBindingUses`, and `_import_constant_leaf`
-     in `mule/compiler/locall.py`.
-  2. Populate `GlobalVar.sets` during IR1 conversion (`ir1tran.py`) in the same
-     way as `LambdaVar.sets`, and record whether the module component contains
-     dynamic module-namespace mutations (`globals()[...]`, `setattr(sys.modules[...], ...)`).
-  3. Treat any module-level `GlobalVar` with a single top-level assignment to an
-     immutable constant or frozen container initializer and no other writes in
-     the compilation unit (or an explicit `Final` annotation) as a constant/proven
-     binding, and export that binding fact in compiled module summaries for
-     cross-module imports.
+- **Status**: **Implemented**.
+  - Removed all `startswith("_")` and `.isupper()` identifier-spelling checks
+    from `_GlobalConstantStores` and cross-module constant import propagation in
+    `mule/compiler/locall.py`, and from `_GlobalConstantScan` in
+    `mule/compiler/main.py`.
+  - Tracked module-level `GlobalVar.sets` alongside dominance/post-dominance
+    (`_unconditional_toplevel_stores` in `mule/compiler/locall.py`) and
+    module-namespace dynamic mutation flags (`Component.mutates_module_namespace`
+    in `mule/compiler/node.py` / `ir1tran.py` and `has_module_namespace_mutations`
+    in `mule/compiler/locall.py` covering `from ... import *`, mutating uses of
+    `globals()`, `exec`/`eval`, and `setattr`/`delattr`/`.attr = ...` on
+    `sys.modules[...]`).
+  - Recognized single unconditional top-level assignments to immutable constants
+    (including through `Cast` nodes), frozen container initializers
+    (`frozenset(...)`, `tuple(...)`, `bytes(...)`), and explicit `Final` /
+    `Final[T]` / `typing.Final` annotations, and exported proven constant
+    bindings in module summaries for cross-module imports without treating
+    imported function bindings as value constants.
 
 ### 6B. Call-site argument propagation (`propagate-to-args`) vs. unannotated parameter guessing
 
@@ -1007,34 +1004,47 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
      `_is_non_identity_list_setitem` and the whole-function
      `has_identity_compare` kill switch from `represent.py`.
 
-### 6G. IR1 tuple destructuring, multi-value returns, and per-store liveness (`ltn.lisp` / `ir2tran.lisp` / `lifetime.lisp`)
+### 6G. IR1 tuple destructuring, multi-value returns, and per-store liveness (`ltn.lisp` / `ir2tran.lisp` / `life.lisp`) (implemented)
 
-- **Current special case**: `_find_unpacked_calls`
-  (`mule/compiler/codegen.py:4563-4833`) scans IR2 VOPs by fixed index offsets
-  during codegen initialization, checks `len(writes.get(target_tn, ())) == 1`
-  across the entire function to detect dead unpack targets, and special-cases
-  `http_routing.py`'s 4 writes to `_separator` with
-  `if is_partition_call and sep_is_immortal and slot_idx == 1:`. Additionally,
-  `_transform_unpack` (`seqtran.py:349-494`) only handles local `Set(LambdaVar)`
-  targets, and `_return_tuple_info` (`codegen.py:694-716`) only recognizes
-  `%build_tuple` at `return_.prev`.
 - **SBCL reference**: `ir1-convert-mv-bind` (`src/compiler/ir1tran.lisp`),
   `ltn-analyze-mv-bind` and `ltn-analyze-return` (`src/compiler/ltn.lisp`),
   `ir2-convert-mv-bind` and `ir2-convert-return` (`src/compiler/ir2tran.lisp`),
-  and backward liveness in `src/compiler/lifetime.lisp`.
-- **Required implementation**:
-  1. Generalize `_transform_unpack` in `seqtran.py` to rewrite `%unpack` /
-     `%unpack_ref` from its `Lvar` uses into temporary bindings regardless of
-     whether the assignment targets are local variables, attributes, subscripts,
-     or nested unpacks.
-  2. In `ir2tran.py:_mark_last_local_reads`, use per-instruction backward
-     liveness so any `MOVE` to a local TN that is dead-out at that instruction
-     is marked as a dead store (eliding the store and ownership retain)
-     regardless of how many times that variable is written elsewhere in the
-     function.
-  3. Move multi-value / known-tuple return convention selection into
-     `callconv.py` and `ir2tran.py` (driven by `TupleType` on `Return.result`),
-     and delete `_find_unpacked_calls` and `sep_is_immortal` from `codegen.py`.
+  and backward liveness in `src/compiler/life.lisp`.
+- **Implemented stage ownership**:
+  - `_transform_unpack` in `seqtran.py` follows the capture temporary's references
+    and their `Lvar` destinations to find `%unpack_ref` projections. Display
+    elements keep their existing value temporaries. The transform does not inspect
+    assignment targets, so globals, attributes, subscripts, nested targets, and
+    target-side effects keep their original assignment order.
+  - `callconv.py` selects a `TupleReturnConvention` from the proven `TupleType`
+    facts of every `Return.result` producer. Equal fixed arities from 1 through 8
+    qualify, including returns through local aliases and branch joins. Adjacent
+    tuple construction permits direct output without allocation; other eligible
+    returns extract owned children at the return boundary. Ordinary object entries
+    retain tuple identity and their object convention.
+  - `ir2tran.select_tuple_delivery` follows definitions and uses to connect calls,
+    unpack captures, projections, and result assertions. `IR2Component` owns this
+    selection. Code generation consumes it rather than scanning fixed instruction
+    offsets. `_find_unpacked_calls` and the partition separator special case are
+    removed. Shared output slots require nonoverlapping, single-block delivery
+    regions; unsupported or overlapping regions keep ordinary boxed unpacking.
+  - `_mark_last_local_reads` computes backward liveness at each instruction,
+    including exception successors. It marks dead local assignments independently
+    of other writes. Captures, borrowed roots, and inspectable suspended locals
+    retain their required bindings. A separate destruction-safety proof excludes
+    classes, functions, iterators, unknown values, and mutable object-reference
+    containers. Exact bytearrays remain inert because their elements are bytes. Dead
+    inert assignments release the previous binding at the original assignment
+    point. Their input may borrow from a stable owner instead of retaining a copy.
+- **Python ownership adaptation**: SBCL uses tracing collection. Mule's output
+  slots own children until projections transfer them. Failure edges release only
+  unconsumed slots, including across intervening target effects. Independently
+  live tuple aliases retain their own children. Type purity for operations does
+  not establish destruction safety: class objects can expose weak-reference
+  callbacks, and mutable containers can acquire observable children later.
+  Focused native checks use weak-reference callbacks rather than `__del__`, whose
+  dispatch remains an existing runtime gap. Exception traceback retention remains
+  outside this change's implemented ownership contract.
 
 ### 6H. First-class `RangeType` and IR1 range-loop lowering (`seqtran.lisp`)
 

@@ -342,10 +342,16 @@ def _refine_copy_representations(component, selected, demanded=()):
                 continue
             best = current
             best_cost = _copy_representation_cost(component, tn, current, selected)
+            if best_cost == 0:
+                continue
             for sc in tn.primitive_type.scs:
+                if sc is current:
+                    continue
                 cost = _copy_representation_cost(component, tn, sc, selected)
                 if cost < best_cost:
                     best, best_cost = sc, cost
+                    if best_cost == 0:
+                        break
             if best is not current:
                 selected[tn] = best
                 changed = True

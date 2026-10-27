@@ -40,9 +40,11 @@ from .ctype import (
     CLASS_BYTES_TYPE,
     CLASS_DICT_TYPE,
     CLASS_FLOAT_TYPE,
+    CLASS_FROZENSET_TYPE,
     CLASS_INT_TYPE,
     CLASS_LIST_TYPE,
     CLASS_OBJECT_TYPE,
+    CLASS_SET_TYPE,
     CLASS_STR_TYPE,
     CLASS_TUPLE_TYPE,
     CLASS_TYPE_TYPE,
@@ -52,6 +54,7 @@ from .ctype import (
     FIXNUM_MAX,
     FIXNUM_MIN,
     FLOAT,
+    FROZENSET_TYPE,
     FUNCTION_TYPE,
     IMMORTAL,
     IMMORTAL_UNBOUND,
@@ -61,6 +64,7 @@ from .ctype import (
     NONE_TYPE,
     PYTHON_INTEGER,
     REAL,
+    SET_TYPE,
     TEXT_TYPE,
     UNBOUND,
     UNKNOWN,
@@ -3495,6 +3499,10 @@ BOOTSTRAP_CLASS_TARGETS: dict[str, ClassConstructorTarget] = {
         base_type=LIST_TYPE, cls_type=CLASS_LIST_TYPE
     ),
     "dict": ClassConstructorTarget(base_type=DICT_TYPE, cls_type=CLASS_DICT_TYPE),
+    "set": ClassConstructorTarget(base_type=SET_TYPE, cls_type=CLASS_SET_TYPE),
+    "frozenset": ClassConstructorTarget(
+        base_type=FROZENSET_TYPE, cls_type=CLASS_FROZENSET_TYPE
+    ),
     "object": ClassConstructorTarget(base_type=UNKNOWN, cls_type=CLASS_OBJECT_TYPE),
     "type": ClassConstructorTarget(
         base_type=ANY_CLASS_TYPE,
