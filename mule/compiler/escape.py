@@ -88,7 +88,7 @@ class EscapeFacts:
         """Whether the newly allocated object can leave its owning activation."""
         if node not in self._allocations:
             return True
-        if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE):
+        if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE, fndb.GETSLICE):
             return node in self._allocation_escaping
         return node in self._escaping
 
@@ -449,6 +449,17 @@ class _UseClassifier(NodeVisitor):
     def operand(self) -> Lvar:
         return linked(self.lvar, self, "active escape-analysis operand")
 
+    def _is_text_slice_source(self) -> bool:
+        if (
+            self.source in self.solver.facts._allocations
+            and self.source.fun_info is fndb.GETSLICE
+        ):
+            return True
+        origins = self.source.accept(self.container_origin)
+        return bool(origins) and any(
+            origin.fun_info is fndb.GETSLICE for origin in origins
+        )
+
     def classify(self, var: LambdaVar, lvar: Lvar | None) -> None:
         if lvar is None or lvar.dest is None:
             # The value is computed and discarded.
@@ -471,6 +482,8 @@ class _UseClassifier(NodeVisitor):
             self.source in self.solver.facts._allocations
             or self.source.accept(self.container_origin) is not None
         ):
+            if self._is_text_slice_source():
+                self.solver.allocation_only_escape(self.source)
             return
         op_type = self.solver.effective_lvar_type(self.operand)
         if op_type.accept(_BUILTIN_CONTAINER_TYPE) or not op_type.may_run_user_code:
@@ -524,7 +537,9 @@ class _UseClassifier(NodeVisitor):
         ):
             if info is fndb.PROTOCOLS["unpack"]:
                 self.classify(self.source, node.lvar)
-            if not (
+            if self._is_text_slice_source():
+                self.solver.allocation_only_escape(self.source)
+            elif not (
                 self.source in self.solver.facts._allocations
                 or self.source.accept(self.container_origin) is not None
                 or _is_safe_container_reader_call(node, info)
@@ -563,6 +578,8 @@ class _UseClassifier(NodeVisitor):
                 self.source in self.solver.facts._allocations
                 or self.source.accept(self.container_origin) is not None
             ):
+                if self._is_text_slice_source():
+                    self.solver.allocation_only_escape(self.source)
                 return
             op_type = self.solver.effective_lvar_type(self.operand)
             if op_type.accept(_BUILTIN_CONTAINER_TYPE) or not op_type.may_run_user_code:
@@ -588,6 +605,19 @@ class _UseClassifier(NodeVisitor):
                 for arg in node.args
             )
         ):
+            if (
+                self._is_text_slice_source()
+                and info
+                in (
+                    fndb.COMPARE[ast.ComparisonOperator.EQUAL],
+                    fndb.COMPARE[ast.ComparisonOperator.NOT_EQUAL],
+                )
+                and all(
+                    self.solver.effective_lvar_type(arg).fits_text(TEXT_TYPE)
+                    for arg in node.args
+                )
+            ):
+                return
             self.solver.allocation_only_escape(self.source)
             return
         if (
@@ -656,9 +686,13 @@ class _UseClassifier(NodeVisitor):
         if not origins:
             return False
         for origin in origins:
-            if not (1 <= len(origin.args) <= 8) or not all(
-                self.solver.effective_lvar_type(arg).has_reflexive_equality()
-                for arg in origin.args
+            if (
+                origin.fun_info not in (fndb.BUILD_LIST, fndb.BUILD_TUPLE)
+                or not (1 <= len(origin.args) <= 8)
+                or not all(
+                    self.solver.effective_lvar_type(arg).has_reflexive_equality()
+                    for arg in origin.args
+                )
             ):
                 return False
         return True
@@ -1103,7 +1137,8 @@ class _Allocation(NodeVisitor):
         return (
             node
             if node.kind is CallKind.KNOWN
-            and node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE, fndb.MAKE_FUNCTION)
+            and node.fun_info
+            in (fndb.BUILD_LIST, fndb.BUILD_TUPLE, fndb.GETSLICE, fndb.MAKE_FUNCTION)
             else None
         )
 
@@ -1142,7 +1177,7 @@ class _ContainerOrigin(NodeVisitor, LeafVisitor):
     def visit_Combination(self, node):
         if node.kind is not CallKind.KNOWN:
             return None
-        if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE):
+        if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE, fndb.GETSLICE):
             return (node,)
         if (
             node.fun_info is fndb.PROTOCOLS["unpack"]

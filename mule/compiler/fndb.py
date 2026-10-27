@@ -517,6 +517,31 @@ MAX2 = defknown(
 )
 MIN_BUILTIN = defknown("min", "call", "unsafe")
 MAX_BUILTIN = defknown("max", "call", "unsafe")
+INT_BUILTIN = defknown("int", "call", "unsafe")
+PARSE_INT_TEXT = defknown(
+    "%parse_int_text",
+    "unsafe",
+    derive_type=lambda node: INTEGER,
+    non_integer_first_arg=True,
+)
+PARSE_INT_SLICE = defknown(
+    "%parse_int_slice",
+    "unsafe",
+    derive_type=lambda node: INTEGER,
+    non_integer_first_arg=True,
+)
+TEXT_SLICE_COMPARE = defknown(
+    "%text_slice_compare",
+    "flushable",
+    derive_type=lambda node: BOOLEAN,
+    non_integer_first_arg=True,
+)
+TEXT_SLICE2_COMPARE = defknown(
+    "%text_slice2_compare",
+    "flushable",
+    derive_type=lambda node: BOOLEAN,
+    non_integer_first_arg=True,
+)
 MATH_SQRT = defknown(
     "%math_sqrt",
     derive_type=lambda node: FLOAT,
@@ -655,6 +680,7 @@ __all__ = [
     "IMPORT",
     "IMPORT_STAR",
     "INPLACE_BINARY",
+    "INT_BUILTIN",
     "LEAVE_HANDLER",
     "LEN",
     "MAKE_CLASS",
@@ -665,6 +691,8 @@ __all__ = [
     "MAX_BUILTIN",
     "MIN2",
     "MIN_BUILTIN",
+    "PARSE_INT_SLICE",
+    "PARSE_INT_TEXT",
     "PROTOCOLS",
     "RAISE",
     "RANGE_ADVANCE",
@@ -676,6 +704,8 @@ __all__ = [
     "RESUME_EXCEPTION",
     "SEQUENCE_AVAILABLE",
     "SETATTR",
+    "TEXT_SLICE2_COMPARE",
+    "TEXT_SLICE_COMPARE",
     "UNARY",
     "UNPACK_REF",
     "UNWIND",

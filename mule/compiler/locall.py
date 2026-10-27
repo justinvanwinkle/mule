@@ -100,6 +100,7 @@ from .fndb import (
     RESOLVE_METHOD,
     RESOLVE_SUPER_METHOD,
     SETATTR,
+    TEXT_SLICE_COMPARE,
     UNARY,
     UNPACK_REF,
     flow_propagation,
@@ -309,6 +310,14 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             self.disqualified = True
             if info in _GET_ITEM_OR_SLICE:
                 self.has_getitem = True
+            elif (
+                info is TEXT_SLICE_COMPARE
+                and len(node.args) > 3
+                and node.args[3] is lvar
+            ):
+                self.text_disqualified = True
+                self.list_disqualified = True
+                self.sequence_disqualified = True
             elif info.derive_type is not None and info.derive_type(node) == IntegerType(
                 0, FIXNUM_MAX
             ):
@@ -3923,9 +3932,41 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
         ):
             node.reoptimize = True
             node.block.reoptimize = True
+            if (
+                info is GETSLICE
+                and node.lvar is not None
+                and node.lvar.dest is not None
+            ):
+                node.lvar.dest.accept(_ReoptimizeConsumer(self))
             if self.lambda_.component is not None:
                 self.lambda_.component.reoptimize = True
             self.reoptimized = True
+
+
+class _ReoptimizeConsumer(NodeVisitor, LeafVisitor):
+    def __init__(self, reoptimizer: _ReoptimizeNarrowedKnownCalls):
+        self.reoptimizer = reoptimizer
+        self.active: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        if node.prev is not None and node.block is not None:
+            node.reoptimize = True
+            node.block.reoptimize = True
+            self.reoptimizer.reoptimized = True
+
+    def visit_Set(self, node):
+        node.var.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if len(leaf.sets) != 1 or leaf in self.active:
+            return
+        self.active.add(leaf)
+        for ref in leaf.refs:
+            if ref.lvar is not None and ref.lvar.dest is not None:
+                ref.lvar.dest.accept(self)
 
 
 def _publish_derived_types(
@@ -3949,7 +3990,11 @@ def _publish_derived_types(
 
 def _would_reoptimize_for_context(lambda_: Lambda, context: EntryContext) -> bool:
     component = lambda_.component
-    if component is None or context.id not in ("fixnum", "observed"):
+    if component is None or context.id is None:
+        return False
+    if context.id not in ("fixnum", "observed") and not context.id.startswith(
+        "borrow.fixnum."
+    ):
         return False
     for block in component.blocks():
         for node in block.nodes():

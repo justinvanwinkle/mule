@@ -978,7 +978,13 @@ def fast_len(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
-@define_vop("parse-int-text", args=(OBJECT,), results=(OBJECT,))
+@define_vop(
+    "parse-int-text",
+    translate=fndb.PARSE_INT_TEXT,
+    args=(OBJECT,),
+    results=(OBJECT,),
+    arg_escapes=(False,),
+)
 def parse_int_text(gen, vop):
     value = gen.take(vop.args[0])
     gen.pointer_result(
@@ -986,7 +992,13 @@ def parse_int_text(gen, vop):
     )
 
 
-@define_vop("parse-int-slice", args=(OBJECT, OBJECT, OBJECT), results=(OBJECT,))
+@define_vop(
+    "parse-int-slice",
+    translate=fndb.PARSE_INT_SLICE,
+    args=(OBJECT, OBJECT, OBJECT),
+    results=(OBJECT,),
+    arg_escapes=(False, False, False),
+)
 def parse_int_slice(gen, vop):
     sequence, start, stop = (gen.take(operand) for operand in vop.args)
     gen.pointer_result(
@@ -3020,8 +3032,10 @@ def protocol_getslice(gen, vop):
 
 @define_vop(
     "text-slice-compare",
+    translate=fndb.TEXT_SLICE_COMPARE,
     args=(OBJECT, OBJECT, OBJECT, OBJECT),
     results=(OBJECT,),
+    arg_escapes=(False, False, False, False),
 )
 def text_slice_compare(gen, vop):
     sequence = gen.take(vop.args[0])
@@ -3038,8 +3052,10 @@ def text_slice_compare(gen, vop):
 
 @define_vop(
     "text-slice2-compare",
+    translate=fndb.TEXT_SLICE2_COMPARE,
     args=(OBJECT, OBJECT, OBJECT, OBJECT, OBJECT, OBJECT),
     results=(OBJECT,),
+    arg_escapes=(False, False, False, False, False, False),
 )
 def text_slice2_compare(gen, vop):
     left = gen.take(vop.args[0])

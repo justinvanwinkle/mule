@@ -494,7 +494,6 @@ def ir2_convert(
     _fuse_text_codepoint_comparisons(component)
     _mark_last_local_reads(component)
     _propagate_local_aliases(component)
-    _fuse_text_slice_compares(component)
     _mark_boolean_comparisons(component)
     _mark_borrowed_local_reads(component)
     _specialize_list_getitems(component)
@@ -915,452 +914,6 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             const_tn = const_vop.results[0].tn
             const_tn.primitive_type = FIXNUM
             const_tn.type = IntegerType(code, code)
-
-
-def _is_valid_text_slice_getslice(vop: VOP) -> bool:
-    if vop.info.name != "protocol-getslice" or len(vop.args) != 4 or not vop.results:
-        return False
-    seq_type = vop.args[0].tn.type or UNKNOWN
-    start_type = vop.args[1].tn.type or UNKNOWN
-    stop_type = vop.args[2].tn.type or UNKNOWN
-    step_type = vop.args[3].tn.type or UNKNOWN
-    return (
-        seq_type.fits_text(seq_type)
-        and (
-            start_type.fits_python_integer(start_type)
-            or start_type.fits_none(start_type)
-        )
-        and (stop_type.fits_python_integer(stop_type) or stop_type.fits_none(stop_type))
-        and (step_type.fits_none(step_type) or step_type.exact_integer() == 1)
-    )
-
-
-def _safe_slice_compare_intervening_step(vop: VOP) -> bool:
-    name = vop.info.name
-    if name in ("constant", "move"):
-        return True
-    if name == "type-check":
-        check: TypeCheck = linked(vop.codegen_info, vop, "type-check info")
-        actual = vop.args[0].tn.type or UNKNOWN
-        return not check.safety or actual.fits(check.contract.fact)
-    if name == "load-local":
-        access: LocalAccess = linked(vop.codegen_info, vop, "local access")
-        return bool(access.bound)
-    if name in _PURE_FIXNUM_VOPS and vop.results:
-        return (vop.results[0].tn.type or UNKNOWN).is_fixnum and all(
-            (arg.tn.type or UNKNOWN).is_fixnum for arg in vop.args
-        )
-    return False
-
-
-def _remove_vop_from_component(component: IR2Component, vop: VOP) -> None:
-    reads = component.reads
-    writes = component.writes
-    for ref in vop.args:
-        ref_list = reads.get(ref.tn)
-        if ref_list is not None and (vop, ref) in ref_list:
-            ref_list.remove((vop, ref))
-    for ref in vop.results:
-        ref_list = writes.get(ref.tn)
-        if ref_list is not None and (vop, ref) in ref_list:
-            ref_list.remove((vop, ref))
-
-
-def _slice_step_writer(
-    slice_vop: VOP, reads, writes, positions: dict[VOP, int]
-) -> VOP | None:
-    step_tn = slice_vop.args[3].tn
-    step_writes = writes.get(step_tn)
-    step_reads = reads.get(step_tn)
-    if (
-        step_writes is None
-        or len(step_writes) != 1
-        or step_reads is None
-        or len(step_reads) != 1
-    ):
-        return None
-    writer = step_writes[0][0]
-    if writer.info is not vops.CONSTANT or writer not in positions:
-        return None
-    return writer
-
-
-def _trace_slice_to_compare(
-    slice_index: int,
-    slice_vop: VOP,
-    reads,
-    writes,
-    positions: dict[VOP, int],
-    local_candidates: set,
-) -> tuple[VOP | None, VOP | None, VOP | None, TNRef | None]:
-    slice_res = slice_vop.results[0].tn
-    slice_res_writes = writes.get(slice_res)
-    slice_res_reads = reads.get(slice_res)
-    if (
-        slice_res_writes is None
-        or len(slice_res_writes) != 1
-        or slice_res_reads is None
-        or len(slice_res_reads) != 1
-    ):
-        return None, None, None, None
-    consumer, consumer_ref = slice_res_reads[0]
-    if consumer.info.name in ("compare-equal", "compare-not_equal"):
-        if consumer in positions and positions[consumer] > slice_index:
-            return None, None, consumer, consumer_ref
-    elif (
-        consumer.info is vops.MOVE
-        and consumer in positions
-        and positions[consumer] == slice_index + 1
-    ):
-        local_tn = consumer.results[0].tn
-        local_writes = writes.get(local_tn)
-        local_reads = reads.get(local_tn)
-        if (
-            local_tn in local_candidates
-            and local_writes is not None
-            and len(local_writes) == 1
-            and local_reads is not None
-            and len(local_reads) == 1
-        ):
-            reader, _ = local_reads[0]
-            if (
-                reader.info is vops.LOAD_LOCAL
-                and reader.codegen_info is not None
-                and reader.codegen_info.move
-                and reader.codegen_info.bound
-                and reader in positions
-                and positions[reader] > positions[consumer]
-            ):
-                loaded_tn = reader.results[0].tn
-                loaded_writes = writes.get(loaded_tn)
-                loaded_reads = reads.get(loaded_tn)
-                if (
-                    loaded_writes is not None
-                    and len(loaded_writes) == 1
-                    and loaded_reads is not None
-                    and len(loaded_reads) == 1
-                ):
-                    cmp_candidate, cmp_ref = loaded_reads[0]
-                    if (
-                        cmp_candidate.info.name
-                        in ("compare-equal", "compare-not_equal")
-                        and cmp_candidate in positions
-                        and positions[cmp_candidate] > positions[reader]
-                    ):
-                        return consumer, reader, cmp_candidate, cmp_ref
-    return None, None, None, None
-
-
-def _trace_operand_to_slice(
-    ref: TNRef,
-    compare_vop: VOP,
-    reads,
-    writes,
-    positions: dict[VOP, int],
-    removed: set[VOP],
-    local_candidates: set,
-) -> tuple[VOP, VOP, VOP | None, VOP | None] | None:
-    tn = ref.tn
-    tn_writes = writes.get(tn)
-    tn_reads = reads.get(tn)
-    if (
-        tn_writes is None
-        or len(tn_writes) != 1
-        or tn_reads is None
-        or len(tn_reads) != 1
-        or tn_reads[0][0] is not compare_vop
-    ):
-        return None
-    writer = tn_writes[0][0]
-    if writer in removed or writer not in positions:
-        return None
-    if _is_valid_text_slice_getslice(writer):
-        step_w = _slice_step_writer(writer, reads, writes, positions)
-        if step_w is not None and step_w not in removed:
-            return writer, step_w, None, None
-        return None
-    if (
-        writer.info is vops.LOAD_LOCAL
-        and writer.codegen_info is not None
-        and writer.codegen_info.move
-        and writer.codegen_info.bound
-    ):
-        local_tn = writer.args[0].tn
-        local_writes = writes.get(local_tn)
-        local_reads = reads.get(local_tn)
-        if (
-            local_tn in local_candidates
-            and local_writes is not None
-            and len(local_writes) == 1
-            and local_reads is not None
-            and len(local_reads) == 1
-        ):
-            move_w = local_writes[0][0]
-            if (
-                move_w.info is vops.MOVE
-                and move_w not in removed
-                and move_w in positions
-                and positions[move_w] < positions[writer]
-            ):
-                src_tn = move_w.args[0].tn
-                src_writes = writes.get(src_tn)
-                src_reads = reads.get(src_tn)
-                if (
-                    src_writes is not None
-                    and len(src_writes) == 1
-                    and src_reads is not None
-                    and len(src_reads) == 1
-                ):
-                    slice_w = src_writes[0][0]
-                    if (
-                        slice_w not in removed
-                        and slice_w in positions
-                        and positions[slice_w] + 1 == positions[move_w]
-                        and _is_valid_text_slice_getslice(slice_w)
-                    ):
-                        step_w = _slice_step_writer(slice_w, reads, writes, positions)
-                        if step_w is not None and step_w not in removed:
-                            return slice_w, step_w, move_w, writer
-    return None
-
-
-def _fuse_text_slice_compares(component: IR2Component) -> None:
-    """Fuse ``text[start:stop] == target`` and
-    ``left[start1:stop1] == right[start2:stop2]`` (and ``!=``) into an in-place
-    ``text-slice-compare`` or ``text-slice2-compare`` VOP when the sliced
-    sequences and target are proven ``str`` and the substring slices are not
-    read anywhere else."""
-    reads = component.reads
-    writes = component.writes
-    local_candidates = {
-        tn
-        for var in component.lambda_.locals
-        if not var.indirect
-        and not var.expression_temporary
-        and (tn := component.environment.vars.get(var)) is not None
-    }
-    for block in component.blocks:
-        vop_list = block.vops
-        positions = {step: pos for pos, step in enumerate(vop_list)}
-        removed: set[VOP] = set()
-        replacements: dict[VOP, list[VOP]] = {}
-
-        for slice_index, slice_vop in enumerate(vop_list):
-            if slice_vop in removed or not _is_valid_text_slice_getslice(slice_vop):
-                continue
-            step_writer = _slice_step_writer(slice_vop, reads, writes, positions)
-            if step_writer is None:
-                continue
-            move_vop, load_vop, compare_vop, compare_ref = _trace_slice_to_compare(
-                slice_index,
-                slice_vop,
-                reads,
-                writes,
-                positions,
-                local_candidates,
-            )
-            if compare_vop is None or compare_ref is None or compare_vop in removed:
-                continue
-            compare_index = positions[compare_vop]
-            if len(compare_vop.args) != 2 or not compare_vop.results:
-                continue
-            other_ref = (
-                compare_vop.args[1]
-                if compare_ref is compare_vop.args[0]
-                else compare_vop.args[0]
-            )
-            other_type = other_ref.tn.type or UNKNOWN
-            if not other_type.fits_text(other_type):
-                continue
-
-            slice_operand_tns = {
-                slice_vop.args[0].tn,
-                slice_vop.args[1].tn,
-                slice_vop.args[2].tn,
-            }
-            if other_ref.tn in slice_operand_tns:
-                continue
-            if any(
-                len(writes.get(tn, ())) != 1 or len(reads.get(tn, ())) != 1
-                for tn in slice_operand_tns
-            ):
-                continue
-
-            other_slice_info = _trace_operand_to_slice(
-                other_ref,
-                compare_vop,
-                reads,
-                writes,
-                positions,
-                removed,
-                local_candidates,
-            )
-            if other_slice_info is not None:
-                other_slice, other_step, other_move, other_load = other_slice_info
-                other_slice_index = positions[other_slice]
-                if other_slice is not slice_vop and other_slice_index > slice_index:
-                    other_operand_tns = {
-                        other_slice.args[0].tn,
-                        other_slice.args[1].tn,
-                        other_slice.args[2].tn,
-                    }
-                    if not (slice_operand_tns & other_operand_tns) and all(
-                        len(writes.get(tn, ())) == 1 and len(reads.get(tn, ())) == 1
-                        for tn in other_operand_tns
-                    ):
-                        allowed_steps = {
-                            move_vop,
-                            load_vop,
-                            other_step,
-                            other_slice,
-                            other_move,
-                            other_load,
-                        }
-                        intervening_two_ok = True
-                        for pos in range(slice_index + 1, compare_index):
-                            step = vop_list[pos]
-                            if step in allowed_steps:
-                                continue
-                            if (
-                                step in removed
-                                or not _safe_slice_compare_intervening_step(step)
-                            ):
-                                intervening_two_ok = False
-                                break
-                            step_tns = {ref.tn for ref in (*step.args, *step.results)}
-                            if step_tns & slice_operand_tns:
-                                intervening_two_ok = False
-                                break
-                            if pos > other_slice_index and (
-                                step_tns & other_operand_tns
-                            ):
-                                intervening_two_ok = False
-                                break
-                        if intervening_two_ok:
-                            invert = compare_vop.info.name == "compare-not_equal"
-                            for dead_vop in (
-                                step_writer,
-                                slice_vop,
-                                move_vop,
-                                load_vop,
-                                other_step,
-                                other_slice,
-                                other_move,
-                                other_load,
-                                compare_vop,
-                            ):
-                                if dead_vop is not None:
-                                    _remove_vop_from_component(component, dead_vop)
-                                    removed.add(dead_vop)
-                            fused_args = [
-                                TNRef(slice_vop.args[0].tn, False),
-                                TNRef(slice_vop.args[1].tn, False),
-                                TNRef(slice_vop.args[2].tn, False),
-                                TNRef(other_slice.args[0].tn, False),
-                                TNRef(other_slice.args[1].tn, False),
-                                TNRef(other_slice.args[2].tn, False),
-                            ]
-                            fused_results = [TNRef(compare_vop.results[0].tn, True)]
-                            fused_vop = VOP(
-                                vops.TEXT_SLICE2_COMPARE,
-                                compare_vop.node,
-                                fused_args,
-                                fused_results,
-                            )
-                            fused_vop.codegen_info = invert
-                            for ref in fused_args:
-                                reads[ref.tn].append((fused_vop, ref))
-                            for ref in fused_results:
-                                writes[ref.tn].append((fused_vop, ref))
-                            replacements[compare_vop] = [fused_vop]
-                            continue
-
-            intervening_ok = True
-            for step in vop_list[slice_index + 1 : compare_index]:
-                if step in (move_vop, load_vop):
-                    continue
-                if step in removed or not _safe_slice_compare_intervening_step(step):
-                    intervening_ok = False
-                    break
-                if any(
-                    ref.tn in slice_operand_tns for ref in (*step.args, *step.results)
-                ):
-                    intervening_ok = False
-                    break
-            if not intervening_ok:
-                continue
-
-            other_writes = writes.get(other_ref.tn)
-            other_reads = reads.get(other_ref.tn)
-            hoist_constant: VOP | None = None
-            place_at_slice = False
-            if (
-                other_writes is not None
-                and len(other_writes) == 1
-                and other_reads is not None
-                and other_reads[0][0] is compare_vop
-                and len(other_reads) == 1
-                and other_writes[0][0] in positions
-            ):
-                other_writer = other_writes[0][0]
-                writer_pos = positions[other_writer]
-                if writer_pos < slice_index:
-                    place_at_slice = True
-                elif other_writer.info is vops.CONSTANT and writer_pos < compare_index:
-                    hoist_constant = other_writer
-                    place_at_slice = True
-
-            invert = compare_vop.info.name == "compare-not_equal"
-            for dead_vop in (step_writer, slice_vop, move_vop, load_vop, compare_vop):
-                if dead_vop is not None:
-                    _remove_vop_from_component(component, dead_vop)
-                    removed.add(dead_vop)
-            if hoist_constant is not None:
-                removed.add(hoist_constant)
-
-            fused_args = [
-                TNRef(slice_vop.args[0].tn, False),
-                TNRef(slice_vop.args[1].tn, False),
-                TNRef(slice_vop.args[2].tn, False),
-                TNRef(other_ref.tn, False),
-            ]
-            fused_results = [TNRef(compare_vop.results[0].tn, True)]
-            fused_vop = VOP(
-                vops.TEXT_SLICE_COMPARE,
-                compare_vop.node,
-                fused_args,
-                fused_results,
-            )
-            fused_vop.codegen_info = invert
-            for ref in fused_args:
-                reads[ref.tn].append((fused_vop, ref))
-            for ref in fused_results:
-                writes[ref.tn].append((fused_vop, ref))
-            if place_at_slice:
-                replacements[slice_vop] = (
-                    [hoist_constant, fused_vop]
-                    if hoist_constant is not None
-                    else [fused_vop]
-                )
-            else:
-                replacements[compare_vop] = [fused_vop]
-
-        if removed:
-            dead_tns = {
-                ref.tn for step in removed for ref in (*step.args, *step.results)
-            }
-            new_vops: list[VOP] = []
-            for step in vop_list:
-                if step in replacements:
-                    new_vops.extend(replacements[step])
-                elif step not in removed:
-                    new_vops.append(step)
-            block.vops = new_vops
-            component.tns = [
-                tn
-                for tn in component.tns
-                if tn not in dead_tns or reads.get(tn) or writes.get(tn)
-            ]
 
 
 def _mark_boolean_comparisons(component: IR2Component) -> None:
@@ -1836,8 +1389,7 @@ class _BorrowedLifetime:
             )
         ):
             return bool(
-                container_borrow
-                and len(step.args) == 2
+                len(step.args) == 2
                 and all((arg.tn.type or UNKNOWN).fits(REAL) for arg in step.args)
             )
         if name in vops.TERMINATORS:
@@ -3192,66 +2744,6 @@ class _ExactTextAffixCall(NodeVisitor):
         return True
 
 
-class _UnmutatedIntRef(NodeVisitor, LeafVisitor):
-    """Return ``node`` when it is a ``Ref`` to an unmutated ``GlobalVar('int')``."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Ref(self, node: Ref):
-        if node.leaf.accept(self):
-            return node
-        return None
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_GlobalVar(self, leaf: GlobalVar):
-        return leaf.name == "int" and not leaf.sets
-
-
-class _NoneLiteralCheck(ast.Visitor):
-    def visit_Node(self, node):
-        return False
-
-    def visit_NoneLiteral(self, node: ast.NoneLiteral):
-        return True
-
-
-class _NoneConstantRef(NodeVisitor, LeafVisitor):
-    """Return ``node`` when it is a ``Ref`` to ``Constant(NoneLiteral)``."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Ref(self, node: Ref):
-        if node.leaf.accept(self):
-            return node
-        return None
-
-    def visit_Leaf(self, leaf):
-        return False
-
-    def visit_Constant(self, leaf: Constant):
-        return leaf.value.accept(_NONE_LITERAL_CHECK)
-
-
-class _GetsliceProducer(NodeVisitor):
-    """Return ``node`` when it is a known ``%getslice`` combination."""
-
-    def visit_Node(self, node):
-        return None
-
-    def visit_Combination(self, node: Combination):
-        if (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is fndb.GETSLICE
-            and len(node.args) == 4
-        ):
-            return node
-        return None
-
-
 class _ScanIntParse(NodeVisitor):
     def __init__(self, converter: _Converter):
         self.converter = converter
@@ -3260,7 +2752,6 @@ class _ScanIntParse(NodeVisitor):
         return None
 
     def visit_Combination(self, node: Combination):
-        self.converter.note_int_parse(node)
         self.converter.note_range_prepare(node)
 
 
@@ -3293,10 +2784,6 @@ _CONSTANT_INDEX = _ConstantIndex()
 _EXACT_LIST_APPEND_CALL = _ExactListAppendCall()
 _EXACT_LIST_POP_CALL = _ExactListPopCall()
 _EXACT_DICT_GET_CALL = _ExactDictGetCall()
-_UNMUTATED_INT_REF = _UnmutatedIntRef()
-_NONE_LITERAL_CHECK = _NoneLiteralCheck()
-_NONE_CONSTANT_REF = _NoneConstantRef()
-_GETSLICE_PRODUCER = _GetsliceProducer()
 
 
 class _Converter(NodeVisitor):
@@ -3317,7 +2804,6 @@ class _Converter(NodeVisitor):
             else None
         )
         self._skipped_nodes: set = set()
-        self._fused_int_calls: dict[Combination, Combination | None] = {}
         self._fused_range_prepares: dict[Combination, tuple] = {}
         self.stack_cells = {}
 
@@ -3326,7 +2812,6 @@ class _Converter(NodeVisitor):
         self._store_var = None
         self._scan_int_parse = None
         self._skipped_nodes.clear()
-        self._fused_int_calls.clear()
         self._fused_range_prepares.clear()
 
     # TNs
@@ -3460,7 +2945,6 @@ class _Converter(NodeVisitor):
         if block.loop is not None and block.loop.is_header(block):
             self.emit(vops.INSERT_SAFEPOINT, block.start.next)
         self._skipped_nodes.clear()
-        self._fused_int_calls.clear()
         self._fused_range_prepares.clear()
         nodes = tuple(block.nodes())
         if self._scan_int_parse is not None:
@@ -3470,74 +2954,6 @@ class _Converter(NodeVisitor):
             if node not in self._skipped_nodes:
                 node.accept(self)
         self.convert_transfer(block)
-
-    def lvar_fits_text(self, lvar) -> bool:
-        return bool(lvar.uses) and all(
-            (vtype := self.context.type_of(use)).fits_text(TEXT_TYPE)
-            and not vtype.may_be_unbound
-            for use in lvar.uses
-        )
-
-    def lvar_fits_slice_bound(self, lvar) -> bool:
-        return bool(lvar.uses) and all(
-            (
-                (vtype := self.context.type_of(use)).fits(PYTHON_INTEGER)
-                or vtype.fits_none(NONE_TYPE)
-            )
-            and not vtype.may_be_unbound
-            for use in lvar.uses
-        )
-
-    def lvar_fits_none(self, lvar) -> bool:
-        return bool(lvar.uses) and all(
-            (vtype := self.context.type_of(use)).fits_none(NONE_TYPE)
-            and not vtype.may_be_unbound
-            for use in lvar.uses
-        )
-
-    def note_int_parse(self, node: Combination) -> None:
-        if (
-            node.kind is not CallKind.FULL
-            or len(node.args) != 1
-            or (node.info is not None and node.info.keywords)
-            or len(node.fun.uses) != 1
-            or node.fun.dest is not node
-        ):
-            return
-        fun_ref = node.fun.use().accept(_UNMUTATED_INT_REF)
-        if fun_ref is None or fun_ref.block is not node.block:
-            return
-        arg_lvar = node.args[0]
-        if len(arg_lvar.uses) != 1 or arg_lvar.dest is not node:
-            return
-        arg_use = arg_lvar.use()
-        arg_type = self.context.type_of(arg_use)
-        if not (arg_type.fits_text(TEXT_TYPE) and not arg_type.may_be_unbound):
-            return
-        slice_node = arg_use.accept(_GETSLICE_PRODUCER)
-        if (
-            slice_node is not None
-            and slice_node.block is node.block
-            and slice_node.next is node.prev
-        ):
-            seq_lvar, start_lvar, stop_lvar, step_lvar = slice_node.args
-            if len(step_lvar.uses) == 1 and step_lvar.dest is slice_node:
-                step_ref = step_lvar.use().accept(_NONE_CONSTANT_REF)
-                if (
-                    step_ref is not None
-                    and step_ref.block is node.block
-                    and self.lvar_fits_text(seq_lvar)
-                    and self.lvar_fits_slice_bound(start_lvar)
-                    and self.lvar_fits_slice_bound(stop_lvar)
-                    and self.lvar_fits_none(step_lvar)
-                ):
-                    self._skipped_nodes.add(fun_ref)
-                    self._skipped_nodes.add(step_ref)
-                    self._skipped_nodes.add(slice_node)
-                    self._fused_int_calls[node] = slice_node
-                    return
-        self._skipped_nodes.add(fun_ref)
-        self._fused_int_calls[node] = None
 
     def note_range_prepare(self, node: Combination) -> None:
         if (
@@ -3903,31 +3319,6 @@ class _Converter(NodeVisitor):
                     local_environment=True,
                 ),
             )
-            if discard:
-                self.emit_discard(node, result)
-            return
-        if node in self._fused_int_calls:
-            slice_node = self._fused_int_calls[node]
-            result, discard = self.result_tn(node)
-            if slice_node is not None:
-                seq_lvar, start_lvar, stop_lvar, _ = slice_node.args
-                self.emit(
-                    vops.PARSE_INT_SLICE,
-                    node,
-                    args=(
-                        self.lvar_tn(seq_lvar),
-                        self.lvar_tn(start_lvar),
-                        self.lvar_tn(stop_lvar),
-                    ),
-                    results=(result,),
-                )
-            else:
-                self.emit(
-                    vops.PARSE_INT_TEXT,
-                    node,
-                    args=(self.lvar_tn(node.args[0]),),
-                    results=(result,),
-                )
             if discard:
                 self.emit_discard(node, result)
             return

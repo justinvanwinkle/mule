@@ -373,15 +373,15 @@ suite failure or performance measurement.
 - **SBCL reference**: `src/compiler/seqtran.lisp` (3,371 lines in SBCL vs
   `mule/compiler/seqtran.py` and `mule/compiler/containtran.py`).
 - **Remaining gaps and proposed transforms**:
-  1. **IR1-level slice-comparison and slice-parse fusion**: Currently,
-     `text[start:stop] == "lit"` (`_fuse_text_slice_compares`),
-     `text[i] == "c"` (`_fuse_char_index_compares`), `text.find(...)`
-     (`exact_text_find`), and `int(text[start:stop])` (`_fuse_int_slice_parse`)
-     are recognized in `ir2tran.py` so they work in `EntryContext`s. Once
-     Section 1B provides per-context IR1 specialization, express these
-     rewrites as `@deftransform`s on `%compare_*`, `%resolve_method`, and `int`
-     in `seqtran.py` so their result types (`BOOLEAN`, `FIXNUM`, `INTEGER`) feed
-     directly back into `constraint.py` and downstream IR1 transforms.
+  1. **IR1-level character-comparison and text-method transforms**: `str[a:b] == target`
+     (`%text_slice_compare` / `%text_slice2_compare`) and `int(str[a:b])`
+     (`%parse_int_text` / `%parse_int_slice`) are now lowered in IR1 via
+     `@deftransform`s and `splice_fun_args` in `seqtran.py` and `srctran.py`,
+     with multi-use local slice forwarding in `escape.py` and `scalar.py`.
+     Remaining IR2 pattern matchers for `text[i] == "c"`
+     (`_fuse_text_codepoint_comparisons`) and `text.find(...)`
+     (`convert_call_resolved`) should likewise move to IR1 `@deftransform`s
+     (see Sections 6D and 6F).
   2. **Pure comprehension and generator fusion**: Lower `sum([...])`,
      `any([...])`, `all([...])`, `min([...])`, `max([...])`, and
      `list(x for x in seq)` directly into counted or iterator-driven
@@ -902,40 +902,28 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
      attribute-name guessing once `propagate-to-args` and declared annotations
      drive entry specialization.
 
-### 6C. IR1 combination matching (`cmatch` / `splice-fun-args`) to replace physical IR1 adjacency and IR2 slice peepholes
+### 6C. IR1 combination matching (`cmatch` / `splice-fun-args`) to replace physical IR1 adjacency and IR2 slice peepholes (completed)
 
-- **Current special case**:
-  - IR1 transforms in `mule/compiler/modarith.py:89-161`
-    (`_match_assoc_int_binary`), `mule/compiler/containtran.py:362-525`
-    (`_transform_small_containment`), and `mule/compiler/seqtran.py:1168-1331`
-    (`_optimize_getslice`) require physical node adjacency
-    (`inner_node.next is fun_ref.prev`).
-  - IR2 `mule/compiler/ir2tran.py` contains a 445-line VOP peephole pass for
-    `str[a:b] == target` (`_fuse_text_slice_compares`, lines 717-1143, with
-    `_safe_slice_compare_intervening_step` tailored to skip `i = end + 1` in
-    `json_tokenizer.py`) and `note_int_parse` (lines 3183-3229) for
-    `int(str[a:b])`.
-- **SBCL reference**: `lvar-matches` and `cmatch` in
-  `src/compiler/combination-match.lisp`, `splice-fun-args` and
-  `almost-immediately-used-p` in `src/compiler/ir1util.lisp`,
-  `deftransform string=*` in `src/compiler/seqtran.lisp`, and `%subseq` splicing
-  in `src/compiler/srctran.lisp`.
-- **Required implementation**:
-  1. Implement `lvar_matches`, `almost_immediately_used_p`, and
-     `splice_fun_args` in `mule/compiler/ir1opt.py`, matching producer
-     `Combination`s through `Lvar.uses` and single-assignment local `LambdaVar`
-     references (`ok-lvar-lambda-var`) across intervening flushable or
-     non-interfering nodes.
-  2. Canonicalize commutative constants (`const + x -> x + const`,
-     `const & x -> x & const`, `const == x -> x == const`) as in SBCL's
-     `associate-arguments` (`src/compiler/srctran.lisp`), and replace all
-     `node.next is fun_ref.prev` checks in `modarith.py`, `containtran.py`, and
-     `seqtran.py` with `lvar_matches` / `splice_fun_args` / `constant_lvar_value`.
-  3. Move `str[a:b] == target` and `int(str[a:b])` into IR1 `@deftransform`s in
-     `seqtran.py` and `srctran.py` using `splice_fun_args` on `%getslice`,
-     extend `scalar.py` to forward `(seq, start, stop)` across non-escaping
-     multi-use local slice bindings (`if word == "a" or word == "b":`), and
-     delete `_fuse_text_slice_compares` and `note_int_parse` from `ir2tran.py`.
+- **Implemented architecture**:
+  - `ok_lvar_lambda_var`, `almost_immediately_used_p`, `lvar_matches`, and
+    `splice_fun_args` in `mule/compiler/ir1opt.py` match producer
+    `Combination`s through `Lvar.uses` and single-assignment local `LambdaVar`
+    references across intervening flushable or effectless nodes, following
+    SBCL's `lvar-matches` (`src/compiler/combination-match.lisp`) and
+    `almost-immediately-used-p` / `splice-fun-args` (`src/compiler/ir1util.lisp`).
+  - `_canonicalize_commutative_constant` in `mule/compiler/ir1opt.py`
+    canonicalizes commutative constants (`const + x -> x + const`,
+    `const & x -> x & const`, `const == x -> x == const`), and IR1 transforms
+    in `modarith.py`, `containtran.py`, `srctran.py`, `typetran.py`, and
+    `seqtran.py` match through `splice_fun_args` and `almost_immediately_used_p`
+    rather than requiring physical `inner_node.next is fun_ref.prev` adjacency.
+  - `str[a:b] == target` (`%text_slice_compare` / `%text_slice2_compare`) and
+    `int(str[a:b])` (`%parse_int_text` / `%parse_int_slice`) are IR1
+    `@deftransform`s in `mule/compiler/seqtran.py` and `mule/compiler/srctran.py`
+    using `splice_fun_args` on `%getslice`; `escape.py` and `scalar.py` forward
+    `(seq, start, stop)` across non-escaping multi-use local slice bindings;
+    and `_fuse_text_slice_compares` and `note_int_parse` have been removed from
+    `mule/compiler/ir2tran.py`.
 
 ### 6D. Single-character string comparison transforms and codepoint representations (`seqtran.lisp` / `represent.lisp`)
 

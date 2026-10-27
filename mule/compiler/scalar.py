@@ -24,7 +24,7 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .ir1util import block_exception_target
-from .ir2tran import LocalAccess
+from .ir2tran import LocalAccess, _BorrowedLifetime
 from .ltn import primitive_type_of
 from .vmdef import define_vop
 from .vop import VOP, T, TNRef
@@ -41,7 +41,7 @@ def _store_element(gen, vop):
 
 
 _STORE_ELEMENT = _store_element
-_BUILDERS = frozenset({"build-list", "build-tuple"})
+_BUILDERS = frozenset({"build-list", "build-tuple", "protocol-getslice"})
 _COPIES = frozenset({"move", "load-local"})
 _READS = frozenset({"protocol-getitem", "unpack-ref"})
 
@@ -169,6 +169,30 @@ def _contains_template(width, not_in: bool):
     return generate
 
 
+@cache
+def _slice_compare_template(invert: bool):
+    @define_vop(
+        "scalar-slice-compare",
+        args=(vops.OBJECT, vops.OBJECT, vops.OBJECT, vops.OBJECT),
+        results=(vops.OBJECT,),
+        arg_escapes=(False, False, False, False),
+    )
+    def generate(gen, vop):
+        seq_ref, start_ref, stop_ref, target_ref = vop.args
+        seq = gen.load(seq_ref)
+        start = gen.load(start_ref)
+        stop = gen.load(stop_ref)
+        target = gen.take(target_ref)
+        invert_flag = 1 if invert else 0
+        res = gen.operation(
+            f"call ptr @mule_text_slice_eq(ptr {seq}, ptr {start}, ptr {stop}, ptr {target}, i32 {invert_flag})"
+        )
+        gen.check_pointer(res)
+        gen.native_result(vop.results[0], res, (target,))
+
+    return generate
+
+
 def _index(tn, writes):
     definitions = writes.get(tn, ())
     if len(definitions) != 1:
@@ -247,8 +271,74 @@ class _Family:
         shape = {(vop.info.name, len(vop.args)) for vop in self.origins}
         if len(shape) != 1:
             return False
-        self.mutable = next(iter(shape))[0] == "build-list"
-        self.width = next(iter(shape))[1]
+        origin_kind, origin_arity = next(iter(shape))
+        self.is_text_slice = origin_kind == "protocol-getslice"
+        self.borrow_slice_seq = False
+        if self.is_text_slice:
+            if origin_arity != 4:
+                return False
+            for origin in self.origins:
+                seq_type = origin.args[0].tn.type or UNKNOWN
+                start_type = origin.args[1].tn.type or UNKNOWN
+                stop_type = origin.args[2].tn.type or UNKNOWN
+                step_type = origin.args[3].tn.type or UNKNOWN
+                if (
+                    not seq_type.fits_text(TEXT_TYPE)
+                    or not (start_type.is_fixnum or start_type.fits_none(NONE_TYPE))
+                    or not (stop_type.is_fixnum or stop_type.fits_none(NONE_TYPE))
+                    or not (
+                        step_type.fits_none(NONE_TYPE)
+                        or _index(origin.args[3].tn, self.component.writes) == 1
+                    )
+                ):
+                    return False
+            self.mutable = False
+            self.width = 3
+            compare_readers = []
+            for tn in self.members:
+                for writer, _ in self.component.writes.get(tn, ()):
+                    if writer.info.name not in _BUILDERS | _COPIES | {"unbind-local"}:
+                        return False
+                for reader, ref in self.component.reads.get(tn, ()):
+                    if reader.node in self.component.context.element_contracts:
+                        return False
+                    name = reader.info.name
+                    if name in _COPIES | {"discard"}:
+                        if reader.args[0] is not ref:
+                            return False
+                    elif name in ("compare-equal", "compare-not_equal"):
+                        if len(reader.args) != 2:
+                            return False
+                        other = (
+                            reader.args[1].tn
+                            if reader.args[0] is ref
+                            else reader.args[0].tn
+                        )
+                        if other in self.members or not (
+                            other.type or UNKNOWN
+                        ).fits_text(TEXT_TYPE):
+                            return False
+                        compare_readers.append(reader)
+                    else:
+                        return False
+            if not compare_readers:
+                return False
+            if len(self.origins) == 1:
+                origin = next(iter(self.origins))
+                seq_tn = origin.args[0].tn
+                seq_writes = self.component.writes.get(seq_tn, ())
+                if seq_tn.borrowed_from is not None and len(seq_writes) == 1:
+                    seq_writer = seq_writes[0][0]
+                    local_source = (
+                        None if seq_tn.borrowed_from is seq_tn else seq_tn.borrowed_from
+                    )
+                    if _BorrowedLifetime(self.component).protected(
+                        seq_writer, compare_readers, local_source
+                    ):
+                        self.borrow_slice_seq = True
+            return True
+        self.mutable = origin_kind == "build-list"
+        self.width = origin_arity
         for tn in self.members:
             for writer, _ in self.component.writes.get(tn, ()):
                 if writer.info.name not in _BUILDERS | _COPIES | {
@@ -394,23 +484,35 @@ class _Family:
             if vop in self.origins:
                 if owners:
                     return None
+                origin_args = vop.args[:3] if self.is_text_slice else vop.args
                 slots = [
                     self.component.tn(
                         ref.tn.primitive_type,
                         name=f"$scalar.{vop.number}.{index}",
                     )
-                    for index, ref in enumerate(vop.args)
+                    for index, ref in enumerate(origin_args)
                 ]
-                for ref, slot in zip(vop.args, slots, strict=True):
+                for ref, slot in zip(origin_args, slots, strict=True):
                     slot.type = ref.tn.type or UNKNOWN
+                if self.is_text_slice and self.borrow_slice_seq:
+                    slots[0].borrowed_from = origin_args[0].tn.borrowed_from
                 last_read = [None] * self.width
                 children_inert = all(
-                    not (ref.tn.type or UNKNOWN).may_run_user_code for ref in vop.args
+                    not (ref.tn.type or UNKNOWN).may_run_user_code
+                    for ref in origin_args
                 )
                 rewritten = [
-                    _store_op(vop.node, ref.tn, slot, release=False)
-                    for ref, slot in zip(vop.args, slots, strict=True)
+                    _operation(vops.MOVE, vop.node, (ref.tn,), (slot,), data=False)
+                    if self.is_text_slice and self.borrow_slice_seq and slot_idx == 0
+                    else _store_op(vop.node, ref.tn, slot, release=False)
+                    for slot_idx, (ref, slot) in enumerate(
+                        zip(origin_args, slots, strict=True)
+                    )
                 ]
+                if self.is_text_slice and vop.args[3].tn.borrowed_from is None:
+                    rewritten.append(
+                        _operation(vops.DISCARD, vop.node, (vop.args[3].tn,))
+                    )
                 owners.add(vop.results[0].tn)
                 valid.add(vop.results[0].tn)
                 initialized = {vop.results[0].tn}
@@ -422,6 +524,29 @@ class _Family:
                     return None
                 owners.discard(target)
                 valid.discard(target)
+            elif name in ("compare-equal", "compare-not_equal") and self.is_text_slice:
+                ref = vop.args[0] if vop.args[0].tn in self.members else vop.args[1]
+                other = vop.args[1].tn if ref is vop.args[0] else vop.args[0].tn
+                source = ref.tn
+                if (
+                    source not in valid
+                    or not owners
+                    or other in self.members
+                    or not (other.type or UNKNOWN).fits_text(TEXT_TYPE)
+                ):
+                    return None
+                last_read = [None] * self.width
+                rewritten.append(
+                    _operation(
+                        _slice_compare_template(name == "compare-not_equal"),
+                        vop.node,
+                        (*slots, other),
+                        (vop.results[0].tn,),
+                    )
+                )
+                if source.borrowed_from is None:
+                    owners.discard(source)
+                    valid.discard(source)
             elif name in ("compare-is", "compare-is_not"):
                 ref = vop.args[0] if vop.args[0].tn in self.members else vop.args[1]
                 source = ref.tn
@@ -576,6 +701,8 @@ class _Family:
                 # explicit deletion of the last alias.
                 for index in reversed(range(self.width)):
                     slot = slots[index]
+                    if self.is_text_slice and self.borrow_slice_seq and index == 0:
+                        continue
                     if children_inert and last_read[index] is not None:
                         last_read[index].codegen_info = LocalAccess(
                             slot.name, True, bound=True
@@ -597,7 +724,7 @@ class _Family:
         children_inert = not any(
             (ref.tn.type or UNKNOWN).may_run_user_code
             for origin in self.origins
-            for ref in origin.args
+            for ref in (origin.args[:3] if self.is_text_slice else origin.args)
         )
         anchor_id = min(tn.number for tn in self.members)
         slots = [
@@ -607,6 +734,8 @@ class _Family:
             )
             for index in range(self.width)
         ]
+        if self.is_text_slice and self.borrow_slice_seq:
+            slots[0].borrowed_from = next(iter(self.origins)).args[0].tn.borrowed_from
         order = {tn: index for index, tn in enumerate(self.component.tns)}
         ir2_blocks = self.component.ir2_blocks
         succs = {
@@ -726,14 +855,30 @@ class _Family:
                             ):
                                 return None
                             pending_origin_target = sole_owner
+                    origin_args = vop.args[:3] if self.is_text_slice else vop.args
                     for slot_idx, (ref, slot) in enumerate(
-                        zip(vop.args, slots, strict=True)
+                        zip(origin_args, slots, strict=True)
                     ):
                         local_slot_types[slot_idx] = local_slot_types[slot_idx].join(
                             ref.tn.type or UNKNOWN
                         )
+                        if (
+                            self.is_text_slice
+                            and self.borrow_slice_seq
+                            and slot_idx == 0
+                        ):
+                            rewritten.append(
+                                _operation(
+                                    vops.MOVE, vop.node, (ref.tn,), (slot,), data=False
+                                )
+                            )
+                        else:
+                            rewritten.append(
+                                _store_op(vop.node, ref.tn, slot, release=True)
+                            )
+                    if self.is_text_slice and vop.args[3].tn.borrowed_from is None:
                         rewritten.append(
-                            _store_op(vop.node, ref.tn, slot, release=True)
+                            _operation(vops.DISCARD, vop.node, (vop.args[3].tn,))
                         )
                     owners.add(res_tn)
                     valid.add(res_tn)
@@ -760,6 +905,31 @@ class _Family:
                     owners.discard(target)
                     valid.discard(target)
                     initialized.discard(target)
+                elif (
+                    name in ("compare-equal", "compare-not_equal")
+                    and self.is_text_slice
+                ):
+                    ref = vop.args[0] if vop.args[0].tn in self.members else vop.args[1]
+                    other = vop.args[1].tn if ref is vop.args[0] else vop.args[0].tn
+                    source = ref.tn
+                    if (
+                        source not in valid
+                        or not owners
+                        or other in self.members
+                        or not (other.type or UNKNOWN).fits_text(TEXT_TYPE)
+                    ):
+                        return None
+                    rewritten.append(
+                        _operation(
+                            _slice_compare_template(name == "compare-not_equal"),
+                            vop.node,
+                            (*slots, other),
+                            (vop.results[0].tn,),
+                        )
+                    )
+                    if source.borrowed_from is None:
+                        owners.discard(source)
+                        valid.discard(source)
                 elif name in ("compare-is", "compare-is_not"):
                     ref = vop.args[0] if vop.args[0].tn in self.members else vop.args[1]
                     source = ref.tn
@@ -926,7 +1096,13 @@ class _Family:
                     and not owners
                     and (not children_inert or name == "unbind-local")
                 ):
-                    for slot in reversed(slots):
+                    for slot_idx, slot in reversed(list(enumerate(slots))):
+                        if (
+                            self.is_text_slice
+                            and self.borrow_slice_seq
+                            and slot_idx == 0
+                        ):
+                            continue
                         rewritten.append(
                             _operation(vops.UNBIND_LOCAL, vop.node, results=(slot,))
                         )
@@ -1050,8 +1226,9 @@ def replace_local_aggregates(component):
     # the removed container. Its original type facts remain authoritative.
     for replacement in rewritten.values():
         for vop in replacement:
-            for ref in vop.results:
-                ref.tn.borrowed_from = None
+            if vop.info.name in ("load-local", "scalar-element-select"):
+                for ref in vop.results:
+                    ref.tn.borrowed_from = None
     component.reads.clear()
     component.writes.clear()
     for block in component.blocks:
