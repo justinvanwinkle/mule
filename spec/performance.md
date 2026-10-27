@@ -732,3 +732,61 @@ Accepted external CPU utilization was respectively 0.471, 1.690, 0.745, and
 swap-out activity during those accepted comparisons and no I/O-wait saturation.
 An earlier run in `/tmp/mule-6g-before` exceeded the CPU-noise limit and included
 active swapping; none of its timings contributed to this table.
+
+## General fixed-slot access and singleton fill (verification pending, 2026-10-27)
+
+Section 6J replaces the compiler's `_Table` field maps with owner-derived class
+layouts and guarded attribute access. Singleton repetition uses the compiled
+fill algorithm. Correctness and optimized-code checks pass, including the actual
+exact-dictionary get/set protocol entries at `-O2` and `-O3` without LTO.
+
+The first layout implementation lost receiver facts at the separately compiled
+protocol boundary. The dictionary wrappers called unknown-receiver bodies rather
+than the specialized table helpers inspected by the original regression. A
+repair publishes implementation layouts separately from constructor result types,
+declares internal protocol argument domains, and exports the actual typed
+descriptor body under a stable protocol symbol. Generic callable bodies remain
+unchanged. The regression now follows the real wrapper-to-algorithm call.
+
+The comparison used unchanged `perf/runtimes.example.toml` settings: Mule `-O2`,
+no LTO, Rust `-O3`, `--jobs 4`, three measured samples, seed 42, one kernel loop,
+one separate warmup, and affinity CPUs 0 through 31. Workload sizes were 80,000
+for `word_frequency` and 100,000 for `account_ledger`. Every reported runtime
+result matched the CPython oracle.
+
+```sh
+uv run python -m perf.suite.perfutils run \
+  --config perf/runtimes.example.toml --jobs 4 --samples 3 --no-history \
+  word_frequency account_ledger
+```
+
+The fixed baseline was `7d8bdd6`, in worktree `general-slot-fill-baseline`.
+The initial candidate was `8ef8736`; the receiver-proof repair was measured at
+`1c3b37b`. Reports are under the respective worktrees' ignored `perf/results/`
+directories: `20261027T023054.647709Z`, `20261027T023311.704085Z`, and
+`20261027T032301.613870Z`. Each contains raw samples, commands, hashes, revision
+identity, and CPU observations.
+
+The CPU-noise guard accepted these attempts, but it does not validate memory
+or I/O contention. The repaired candidate's resource log shows active swapping
+inside the measured interval, including approximately 270 MiB/s peak swap-out.
+Its 5.307-second `word_frequency` median must not be treated as a clean
+comparison with the baseline's recorded 3.205 seconds. A representative
+before/after timing conclusion remains pending. No speedup is established.
+
+Separate bounded Callgrind snapshots explain the remaining generated work.
+After receiver-proof repair, actual callers reach `dict_get.protocol` and
+`dict_setitem.protocol`; hot generic storage reads/writes and entry-index
+comparisons disappear, and reader field retains disappear. Normalized exclusive
+instructions per call to the unchanged storage hash routine are approximately
+435 in the baseline and 725 in the repaired candidate. Attribute hit/layout
+helpers contribute about 147 additional instructions per hash. Retain/release
+helpers contribute about 60 additional instructions relative to the baseline.
+These partial instrumented snapshots identify work; they are not timing samples.
+
+The current branch is not merged into `master`. Further removal of ordinary
+attribute guards cannot assume that mutable Python descriptors or hooks are
+absent. One proposed direction is general lowering of the existing physical
+`instance_field` / `set_instance_field` primitives, with explicit use of those
+operations in private dictionary storage algorithms. That source-level semantic
+change awaits approval and is not implemented here.
