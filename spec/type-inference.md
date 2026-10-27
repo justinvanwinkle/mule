@@ -150,6 +150,24 @@ no-inlining policy and supplies the dynamic opt-out corresponding to SBCL's
 contracts retain their existing policy rules. This mandatory inferred check is
 the user's requested boundary, not an assumption that rebinding cannot occur.
 
+### Inferred instance fields
+
+Field predictions join the stores attributed to a class during local-call
+analysis. A reachable store whose receiver has no class identity in any analyzed
+entry makes that field ambiguous, including stores inside known methods. Method
+ownership does not prove the runtime receiver's class. A variadic constructor
+can have only a general entry with an unknown receiver. Its assignments must
+not disappear from the evidence used to predict the field type.
+
+Ambiguous fields retain generic access rather than a checked narrow prediction
+from the remaining stores. This preserves `None` defaults and arbitrary supplied
+values when another method later writes text, integers, or dictionaries.
+This changes the evidence accepted by the existing IR1 analysis, not the
+runtime check mechanism. SBCL's `src/pcl/ctor.lisp`, `with-type-checked` and
+`fake-initialization-emf`, check initialization values against slot definition
+types. Python's unannotated instance fields provide no equivalent declared
+slot contract that would justify rejecting values omitted from inference.
+
 ### 2.2 Hybrid package and wheel model (package `.so` + `interface.json` + `.py` source)
 
 To support **instant runtime imports (including dynamic `importlib.import_module`)**, **fast separate compilation**, and **whole-program optimization**, compiled libraries and future Mule wheels use a three-part layout:

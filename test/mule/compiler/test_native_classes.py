@@ -415,6 +415,29 @@ def test_method_self_types_receiver_and_preserves_override_semantics(tmp_path):
     assert result.stdout == "12 111 -1\n6 0 105\n"
 
 
+@pytest.mark.parametrize("replacement", ["'ready'", "42", "{'ready': 42}"])
+def test_optional_field_constructor_with_kwargs_preserves_initial_value(
+    tmp_path, replacement
+):
+    source = (
+        "class Summary:\n"
+        " def __init__(self, value=None, **kwargs):\n"
+        "  self.value = value\n"
+        " def fill(self):\n"
+        "  if self.value is None:\n"
+        f"   self.value = {replacement}\n"
+        "  return self.value\n"
+        "empty = Summary()\n"
+        "print(empty.value is None)\n"
+        f"print(empty.fill() == {replacement})\n"
+        "provided = Summary(value=False, extra=True)\n"
+        "print(provided.fill() is False)\n"
+    )
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "True\nTrue\nTrue\n"
+
+
 def test_instance_field_types_specialize_method_calls_and_preserve_dynamic_override(
     tmp_path,
 ):

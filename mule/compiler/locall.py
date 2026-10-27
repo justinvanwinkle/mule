@@ -1983,11 +1983,10 @@ def _update_class_field_types(
             ):
                 prev = direct_stores[recv_cls].get(field_name, BOTTOM)
                 direct_stores[recv_cls][field_name] = prev.join(stored_type)
-        if (
-            found_context
-            and not saw_typed_receiver
-            and not (lam.method_class is not None and lam.method_class in class_facts)
-        ):
+        # Method ownership alone does not type the receiver. Variadic methods,
+        # for example, may have only a general entry with an unknown receiver.
+        # Their writes still prevent other stores from defining a field type.
+        if found_context and not saw_typed_receiver:
             ambiguous_fields.add(field_name)
 
     for lam, node in setitem_sites:
