@@ -11,7 +11,8 @@ constant-lvar/dead-operand helpers, and monotonic `derive_node_type`
 (Section 3), loop optimizations / loop-invariant code motion / induction-variable
 range and relational constraint inference (Section 4), and identity-aware float
 storage and coercions, flow-proven fixnum locals, numeric internal calling
-conventions, LLVM-visible private leaf boxes (parts of Section 5), and general
+conventions, LLVM-visible private leaf boxes (parts of Section 5),
+module-level constant folding via write-set tracking (Section 6A), and general
 tuple delivery with per-store liveness (Section 6G); **proposed** for Sections
 1C–2, the rest of Section 5, and the remaining Section 6 replacements of
 benchmark-specific special cases with general SBCL mechanisms.
@@ -845,31 +846,26 @@ shaped around individual benchmarks rather than general SBCL analyses and
 transforms. Each item below states the current special case, the corresponding
 SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
 
-### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`)
+### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`) — **implemented**
 
-- **Current special case**: `_GlobalConstantStores.visit_GlobalVar`
-  (`mule/compiler/locall.py:756-792`) only folds module-level bindings whose
-  identifier satisfies `leaf.name.startswith("_") and leaf.name.isupper()`
-  (matching `_VOCAB`, `_TAGS`, `_RECORDS` in benchmark suites), while
-  `_import_constant_leaf` (`mule/compiler/locall.py:2051-2069`) requires the
-  opposite (`not orig_name.startswith("_") and orig_name.isupper()`).
-- **SBCL reference**: `find-free-var` and `ir1-convert-var` in
-  `src/compiler/ir1tran.lisp`, `:variable :kind :constant` / `:global` in
-  `src/compiler/globaldb.lisp`, and `leaf-ever-set` / `basic-var-sets` on
-  `BasicVar` in `src/compiler/node.lisp`. Constantness is determined by binding
-  write sets and declaration/module policy, never by identifier spelling or case.
-- **Required implementation**:
-  1. Remove all `startswith("_")` and `.isupper()` identifier checks from
-     `_GlobalConstantStores`, `_GlobalBindingUses`, and `_import_constant_leaf`
-     in `mule/compiler/locall.py`.
-  2. Populate `GlobalVar.sets` during IR1 conversion (`ir1tran.py`) in the same
-     way as `LambdaVar.sets`, and record whether the module component contains
-     dynamic module-namespace mutations (`globals()[...]`, `setattr(sys.modules[...], ...)`).
-  3. Treat any module-level `GlobalVar` with a single top-level assignment to an
-     immutable constant or frozen container initializer and no other writes in
-     the compilation unit (or an explicit `Final` annotation) as a constant/proven
-     binding, and export that binding fact in compiled module summaries for
-     cross-module imports.
+- **Status**: **Implemented**.
+  - Removed all `startswith("_")` and `.isupper()` identifier-spelling checks
+    from `_GlobalConstantStores` and cross-module constant import propagation in
+    `mule/compiler/locall.py`, and from `_GlobalConstantScan` in
+    `mule/compiler/main.py`.
+  - Tracked module-level `GlobalVar.sets` alongside dominance/post-dominance
+    (`_unconditional_toplevel_stores` in `mule/compiler/locall.py`) and
+    module-namespace dynamic mutation flags (`Component.mutates_module_namespace`
+    in `mule/compiler/node.py` / `ir1tran.py` and `has_module_namespace_mutations`
+    in `mule/compiler/locall.py` covering `from ... import *`, mutating uses of
+    `globals()`, `exec`/`eval`, and `setattr`/`delattr`/`.attr = ...` on
+    `sys.modules[...]`).
+  - Recognized single unconditional top-level assignments to immutable constants
+    (including through `Cast` nodes), frozen container initializers
+    (`frozenset(...)`, `tuple(...)`, `bytes(...)`), and explicit `Final` /
+    `Final[T]` / `typing.Final` annotations, and exported proven constant
+    bindings in module summaries for cross-module imports without treating
+    imported function bindings as value constants.
 
 ### 6B. Call-site argument propagation (`propagate-to-args`) vs. unannotated parameter guessing
 

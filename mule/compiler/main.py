@@ -200,6 +200,9 @@ class _ConstantLeaf(NodeVisitor, LeafVisitor):
     def visit_Ref(self, node: Ref):
         return node.leaf.accept(self)
 
+    def visit_Cast(self, node: Cast):
+        return node.value.uses[0].accept(self) if len(node.value.uses) == 1 else None
+
     def visit_Leaf(self, leaf):
         return None
 
@@ -243,13 +246,8 @@ class _GlobalConstantScan(NodeVisitor, LeafVisitor):
                 and len(store.value.uses) == 1
             ):
                 origin = store.value.uses[0].accept(ir1opt._ImportedAttrOrigin())
-                if (
-                    origin is not None
-                    and origin[1].isupper()
-                    and (
-                        self.imported_targets is None
-                        or origin not in self.imported_targets
-                    )
+                if origin is not None and (
+                    self.imported_targets is None or origin not in self.imported_targets
                 ):
                     vtype = self.imported_types.get(origin)
                     if vtype is not None:
