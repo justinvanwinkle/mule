@@ -4591,6 +4591,8 @@ LIST_TYPE = ListType()
 EMPTY_LIST_TYPE = ListType(BOTTOM)
 DICT_TYPE = DictType()
 EMPTY_DICT_TYPE = DictType(BOTTOM, BOTTOM)
+SET_TYPE = InstanceType("mule_dict_set")
+FROZENSET_TYPE = InstanceType("mule_dict_frozenset")
 ITERATOR_TYPE = IteratorType()
 _FIXNUM_INTEGER = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 OPTIONAL_FIXNUM = union_type(_FIXNUM_INTEGER, NONE_TYPE)
@@ -4607,6 +4609,8 @@ CLASS_FUNCTION_TYPE = ClassType((FUNCTION_TYPE,))
 CLASS_TUPLE_TYPE = ClassType((TupleType(),))
 CLASS_LIST_TYPE = ClassType((EMPTY_LIST_TYPE,))
 CLASS_DICT_TYPE = ClassType((EMPTY_DICT_TYPE,))
+CLASS_SET_TYPE = ClassType((SET_TYPE,))
+CLASS_FROZENSET_TYPE = ClassType((FROZENSET_TYPE,))
 CLASS_ITERATOR_TYPE = ClassType((ITERATOR_TYPE,))
 CLASS_OBJECT_TYPE = ClassType((UNKNOWN,))
 
@@ -4620,6 +4624,8 @@ BUILTIN_CLASS_TYPES: dict[str, ClassType] = {
     "tuple": CLASS_TUPLE_TYPE,
     "list": CLASS_LIST_TYPE,
     "dict": CLASS_DICT_TYPE,
+    "set": CLASS_SET_TYPE,
+    "frozenset": CLASS_FROZENSET_TYPE,
     "object": CLASS_OBJECT_TYPE,
     "type": CLASS_TYPE_TYPE,
 }
@@ -4630,6 +4636,8 @@ STORAGE_CLASS_TYPES: dict[str, ValueType] = {
     "TupleStorage": TupleType(),
     "ListStorage": LIST_TYPE,
     "dict": DICT_TYPE,
+    "set": SET_TYPE,
+    "frozenset": FROZENSET_TYPE,
 }
 
 

@@ -1248,6 +1248,7 @@ def clone_lambda_component(lambda_: Lambda):
     old_blocks = tuple(old_component.blocks())
     new_component = Component(old_component.name)
     new_component.kind = old_component.kind
+    new_component.mutates_module_namespace = old_component.mutates_module_namespace
     new_component.lambdas = list(old_component.lambdas)
     new_component.reoptimize = False
     new_component.reanalyze = False

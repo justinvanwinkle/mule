@@ -1619,6 +1619,7 @@ class Component:
         "kind",
         "lambdas",
         "last_block",
+        "mutates_module_namespace",
         "name",
         "new_functionals",
         "outer_loop",
@@ -1643,6 +1644,7 @@ class Component:
         self.reanalyze_functionals: list[Functional] = []
         self.reoptimize: bool | Literal["maybe"] = True
         self.reanalyze = False
+        self.mutates_module_namespace = False
         self.name = name
         self.info = None
         self.delete_blocks: list[Block] = []

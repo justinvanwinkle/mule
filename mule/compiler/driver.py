@@ -906,6 +906,17 @@ def import_resolver(
     compiler.exported_types.update(interface.exported_types)
     compiler.storage_methods.update(interface.storage_methods)
     compiler.builtin_return_types.update(interface.builtin_return_types)
+    from .protocols import NATIVE_MODULE_TARGETS
+
+    compiler.exported_targets.update(NATIVE_MODULE_TARGETS)
+    for mod in interface.modules.values():
+        if mod.prefix:
+            fn_prefix = f"{mod.prefix}mule_fn_"
+            for fn_name, fn in interface.functions.items():
+                if fn_name.startswith(fn_prefix):
+                    pub_name = fn_name[len(fn_prefix) :]
+                    if "." not in pub_name:
+                        compiler.exported_targets[mod.name, pub_name] = fn
     if module is not None:
         compiler.modules[module.name] = module
     return compiler
