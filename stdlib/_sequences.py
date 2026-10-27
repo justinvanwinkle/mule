@@ -722,12 +722,13 @@ def dict_get(table, key, default):
     slot = perturb & mask
     while True:
         entry = _storage_read(table._indices, slot)
-        if entry is _TABLE_EMPTY:
+        if entry >= 0:
+            if _storage_read(table._hashes, entry) == code:
+                existing = _storage_read(table._keys, entry)
+                if existing is key or existing == key:
+                    return _storage_read(table._values, entry)
+        elif entry is _TABLE_EMPTY:
             return default
-        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
-            existing = _storage_read(table._keys, entry)
-            if existing is key or existing == key:
-                return _storage_read(table._values, entry)
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 
@@ -741,12 +742,13 @@ def dict_getitem(table, key):
     slot = perturb & mask
     while True:
         entry = _storage_read(table._indices, slot)
-        if entry is _TABLE_EMPTY:
+        if entry >= 0:
+            if _storage_read(table._hashes, entry) == code:
+                existing = _storage_read(table._keys, entry)
+                if existing is key or existing == key:
+                    return _storage_read(table._values, entry)
+        elif entry is _TABLE_EMPTY:
             raise KeyError(key)
-        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
-            existing = _storage_read(table._keys, entry)
-            if existing is key or existing == key:
-                return _storage_read(table._values, entry)
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 
@@ -760,13 +762,14 @@ def dict_setitem(table, key, value):
     slot = perturb & mask
     while True:
         entry = _storage_read(table._indices, slot)
-        if entry is _TABLE_EMPTY:
+        if entry >= 0:
+            if _storage_read(table._hashes, entry) == code:
+                existing = _storage_read(table._keys, entry)
+                if existing is key or existing == key:
+                    _storage_write(table._values, entry, value)
+                    return
+        elif entry is _TABLE_EMPTY:
             break
-        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
-            existing = _storage_read(table._keys, entry)
-            if existing is key or existing == key:
-                _storage_write(table._values, entry, value)
-                return
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
     if (_storage_length(table._keys) + 1) * 3 > _storage_length(table._indices) * 2:
@@ -793,12 +796,13 @@ def dict_contains(table, key):
     slot = perturb & mask
     while True:
         entry = _storage_read(table._indices, slot)
-        if entry is _TABLE_EMPTY:
+        if entry >= 0:
+            if _storage_read(table._hashes, entry) == code:
+                existing = _storage_read(table._keys, entry)
+                if existing is key or existing == key:
+                    return True
+        elif entry is _TABLE_EMPTY:
             return False
-        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
-            existing = _storage_read(table._keys, entry)
-            if existing is key or existing == key:
-                return True
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 
@@ -812,12 +816,13 @@ def dict_not_contains(table, key):
     slot = perturb & mask
     while True:
         entry = _storage_read(table._indices, slot)
-        if entry is _TABLE_EMPTY:
+        if entry >= 0:
+            if _storage_read(table._hashes, entry) == code:
+                existing = _storage_read(table._keys, entry)
+                if existing is key or existing == key:
+                    return False
+        elif entry is _TABLE_EMPTY:
             return True
-        if entry is not _TABLE_DUMMY and _storage_read(table._hashes, entry) == code:
-            existing = _storage_read(table._keys, entry)
-            if existing is key or existing == key:
-                return False
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 

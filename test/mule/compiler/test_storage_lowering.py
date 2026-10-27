@@ -364,7 +364,11 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         "mule_sequences_mule_fn_dict_setitem.body",
     ):
         body = llvm_fns[probe_fn]
-        assert "@mule.fast.storage.read.borrow(" in body
+        assert "storage.read." in body
+        assert "@mule.fast.storage.read.borrow(" not in body
+        assert "@mule.fast.storage.read(" not in body
+        assert "@mule.fast.storage.write(" not in body
+        assert "@mule.fast.storage.length(" not in body
         assert "@mule.attr.layout(" not in body, (
             f"{probe_fn} emitted layout guard instead of direct _Table slot offset"
         )

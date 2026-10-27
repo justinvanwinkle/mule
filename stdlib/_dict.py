@@ -146,12 +146,13 @@ def _table_find(self, key, code):
     slot = perturb & mask
     while True:
         entry = _storage_read(self._indices, slot)
-        if entry is _EMPTY:
+        if entry >= 0:
+            if _storage_read(self._hashes, entry) == code:
+                existing = _storage_read(self._keys, entry)
+                if existing is key or existing == key:
+                    return slot, entry
+        elif entry is _EMPTY:
             return slot, -1
-        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
-            existing = _storage_read(self._keys, entry)
-            if existing is key or existing == key:
-                return slot, entry
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 
@@ -165,19 +166,20 @@ def _table_lookup(self, key):
     slot = perturb & mask
     while True:
         entry = _storage_read(self._indices, slot)
-        if entry is _EMPTY:
+        if entry >= 0:
+            if _storage_read(self._hashes, entry) == code:
+                existing = _storage_read(self._keys, entry)
+                if existing is key or existing == key:
+                    return entry
+        elif entry is _EMPTY:
             return _EMPTY
-        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
-            existing = _storage_read(self._keys, entry)
-            if existing is key or existing == key:
-                return entry
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 
 
 def _table_get_value(self, key, default):
     entry = _table_lookup(self, key)
-    return _storage_read(self._values, entry) if entry is not _EMPTY else default
+    return _storage_read(self._values, entry) if entry >= 0 else default
 
 
 def _table_resize(self, minimum):
@@ -224,13 +226,14 @@ def _table_insert(self, key, value):
     slot = perturb & mask
     while True:
         entry = _storage_read(self._indices, slot)
-        if entry is _EMPTY:
+        if entry >= 0:
+            if _storage_read(self._hashes, entry) == code:
+                existing = _storage_read(self._keys, entry)
+                if existing is key or existing == key:
+                    _storage_write(self._values, entry, value)
+                    return
+        elif entry is _EMPTY:
             break
-        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
-            existing = _storage_read(self._keys, entry)
-            if existing is key or existing == key:
-                _storage_write(self._values, entry, value)
-                return
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
     if (_storage_length(self._keys) + 1) * 3 > _storage_length(self._indices) * 2:
@@ -258,17 +261,18 @@ def _table_remove(self, key):
     slot = perturb & mask
     while True:
         entry = _storage_read(self._indices, slot)
-        if entry is _EMPTY:
+        if entry >= 0:
+            if _storage_read(self._hashes, entry) == code:
+                existing = _storage_read(self._keys, entry)
+                if existing is key or existing == key:
+                    value = _storage_read(self._values, entry)
+                    _storage_write(self._indices, slot, _DUMMY)
+                    _storage_write(self._keys, entry, _DELETED)
+                    _storage_write(self._values, entry, None)
+                    self._used = (self._used - 1) & _MASK_LIMIT
+                    return value
+        elif entry is _EMPTY:
             return _MISSING
-        if entry is not _DUMMY and _storage_read(self._hashes, entry) == code:
-            existing = _storage_read(self._keys, entry)
-            if existing is key or existing == key:
-                value = _storage_read(self._values, entry)
-                _storage_write(self._indices, slot, _DUMMY)
-                _storage_write(self._keys, entry, _DELETED)
-                _storage_write(self._values, entry, None)
-                self._used = (self._used - 1) & _MASK_LIMIT
-                return value
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 

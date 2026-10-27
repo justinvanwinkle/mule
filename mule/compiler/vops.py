@@ -3328,6 +3328,146 @@ def text_access(function):
     def emit(gen, vop, values):
         arg_type = (vop.args[0].tn.type or UNKNOWN) if vop.args else UNKNOWN
         if storage_helper is not None:
+            if function == "mule_storage_length" and (
+                arg_type.is_exact_list or arg_type.is_exact_tuple
+            ):
+                exact_len = arg_type.exact_length()
+                if exact_len is not None:
+                    count = str(exact_len)
+                else:
+                    len_addr = gen.operation(
+                        f"getelementptr i64, ptr {values[0]}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+                    )
+                    count = gen.operation(f"load i64, ptr {len_addr}")
+                return gen.encode(count)
+            if (
+                function == "mule_storage_read"
+                and (arg_type.is_exact_list or arg_type.is_exact_tuple)
+                and len(vop.args) == 2
+                and (vop.args[1].tn.type or UNKNOWN).is_fixnum
+                and vop.results
+            ):
+                sequence, index = values[0], values[1]
+                idx_type = vop.args[1].tn.type or UNKNOWN
+                non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
+                raw = gen.decode(index)
+                exact_len = arg_type.exact_length()
+                if exact_len is not None:
+                    length = str(exact_len)
+                else:
+                    len_addr = gen.operation(
+                        f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+                    )
+                    length = gen.operation(f"load i64, ptr {len_addr}")
+                if non_negative:
+                    pos = raw
+                else:
+                    neg = gen.operation(f"icmp slt i64 {raw}, 0")
+                    wrapped = gen.operation(f"add i64 {raw}, {length}")
+                    pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw}")
+                inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+                read_lbl = gen.fresh("storage.read")[1:]
+                slow_lbl = gen.fresh("storage.slow")[1:]
+                done_lbl = gen.fresh("storage.done")[1:]
+                gen.line(
+                    f"br i1 {inside}, label %{read_lbl}, label %{slow_lbl}, "
+                    f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                )
+                gen.lines.append(read_lbl + ":")
+                data_addr = gen.operation(
+                    f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+                )
+                data = gen.operation(f"load ptr, ptr {data_addr}")
+                slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+                fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+                res_tn = vop.results[0].tn
+                res_type = res_tn.type or UNKNOWN
+                unchecked_contract = gen._has_unchecked_element_contract(res_tn)
+                immortal_elem = not unchecked_contract and (
+                    not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+                )
+                if vop.codegen_info != "storage_borrow" and not immortal_elem:
+                    if not unchecked_contract and res_type.is_heap_object:
+                        gen.heap_values.add(fast_val)
+                    fast_val = gen.retain(fast_val)
+                read_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(slow_lbl + ":")
+                slow_val = gen.operation(
+                    f"call ptr @mule_storage_read(ptr {sequence}, ptr {index})"
+                )
+                slow_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(done_lbl + ":")
+                return gen.operation(
+                    f"phi ptr [{fast_val}, %{read_end}], [{slow_val}, %{slow_end}]"
+                )
+            if (
+                function == "mule_storage_write"
+                and arg_type.is_exact_list
+                and len(vop.args) == 3
+                and (vop.args[1].tn.type or UNKNOWN).is_fixnum
+            ):
+                sequence, index, replacement = values[0], values[1], values[2]
+                idx_type = vop.args[1].tn.type or UNKNOWN
+                val_type = vop.args[2].tn.type or UNKNOWN
+                elem_type = arg_type.iterate_type().next_item_type()
+                non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
+                raw = gen.decode(index)
+                len_addr = gen.operation(
+                    f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+                )
+                length = gen.operation(f"load i64, ptr {len_addr}")
+                if non_negative:
+                    pos = raw
+                else:
+                    neg = gen.operation(f"icmp slt i64 {raw}, 0")
+                    wrapped = gen.operation(f"add i64 {raw}, {length}")
+                    pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw}")
+                inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+                write_lbl = gen.fresh("storage.write")[1:]
+                slow_lbl = gen.fresh("storage.slow")[1:]
+                done_lbl = gen.fresh("storage.done")[1:]
+                gen.line(
+                    f"br i1 {inside}, label %{write_lbl}, label %{slow_lbl}, "
+                    f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                )
+                gen.lines.append(write_lbl + ":")
+                data_addr = gen.operation(
+                    f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+                )
+                data = gen.operation(f"load ptr, ptr {data_addr}")
+                slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+                old_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+                if val_type.is_fixnum or val_type.is_immortal:
+                    owned_val = replacement
+                else:
+                    if val_type.is_heap_object:
+                        gen.heap_values.add(replacement)
+                    owned_val = gen.retain(replacement)
+                gen.line(f"store ptr {owned_val}, ptr {slot}")
+                if not (
+                    val_type.is_fixnum
+                    or val_type.is_immortal
+                    or val_type.fits_text(val_type)
+                ):
+                    gen.line(
+                        f"call void @mule_storage_track(ptr {sequence}, ptr {replacement})"
+                    )
+                if not (elem_type.is_fixnum or elem_type.is_immortal):
+                    gen.release(old_val)
+                write_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(slow_lbl + ":")
+                slow_val = gen.operation(
+                    f"call ptr @mule_storage_write(ptr {sequence}, ptr {index}, ptr {replacement})"
+                )
+                slow_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(done_lbl + ":")
+                return gen.operation(
+                    f"phi ptr [@mule.none, %{write_end}], [{slow_val}, %{slow_end}]"
+                )
             helper = storage_helper
             if function == "mule_storage_read" and vop.results:
                 res_tn = vop.results[0].tn
