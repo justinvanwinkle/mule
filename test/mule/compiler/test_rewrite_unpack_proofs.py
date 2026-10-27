@@ -8,6 +8,7 @@ from mule.compiler.codegen import compile_component
 from mule.compiler.ctype import UNKNOWN
 from mule.compiler.ltn import EntryContext
 from mule.compiler.main import compile_source
+from mule.compiler.vops import VALUE_BUFFER_DATA_OFFSET
 from test.mule.compiler.rewrite_support import build_case
 
 
@@ -64,28 +65,64 @@ def _parent_pointer_aliases(lines, root):
     return aliases
 
 
-def _assert_single_capture_acquisition(body):
-    reads = list(
-        re.finditer(r"@mule_tuple_slot\(ptr(?:\s+\w+)*\s+(%[\w.$-]+), i64 \d+\)", body)
-    )
-    assert reads, "Known tuple extraction must remain observable in this case"
+def _physical_tuple_reads(body, parent_aliases):
+    """Trace an inlined tuple borrow from the parent through its data buffer."""
+    addresses = set()
+    definitions = list(re.finditer(r"^\s*(%[\w.$-]+) = (.*)", body, re.MULTILINE))
+    for definition in definitions:
+        field = re.match(
+            r"getelementptr (?:[a-z]+ )*i8, ptr (%[\w.$-]+), i64 (-?\d+)",
+            definition[2],
+        )
+        if (
+            field
+            and field[1] in parent_aliases
+            and int(field[2]) == VALUE_BUFFER_DATA_OFFSET
+        ):
+            addresses.add(definition[1])
+    data = set()
+    for definition in definitions:
+        load = re.match(r"load ptr, ptr (%[\w.$-]+)", definition[2])
+        if load and load[1] in addresses:
+            data.update(_parent_pointer_aliases(body.splitlines(), definition[1]))
+    slots = {pointer: 0 for pointer in data}
+    for definition in definitions:
+        slot = re.match(
+            r"getelementptr (?:[a-z]+ )*(i8|ptr), ptr (%[\w.$-]+), i64 (-?\d+)",
+            definition[2],
+        )
+        if slot and slot[2] in data:
+            offset = int(slot[3]) * (8 if slot[1] == "ptr" else 1)
+            slots[definition[1]] = offset
+    reads = {}
+    for definition in definitions:
+        load = re.match(r"load ptr, ptr (%[\w.$-]+)", definition[2])
+        if load and load[1] in slots:
+            reads.setdefault(slots[load[1]], definition.end())
+    return reads
+
+
+def _assert_single_capture_acquisition(
+    body, *, arity=2, producer="mule_sequence_tuple_owned"
+):
     constructions = list(
         re.finditer(
-            r"^\s*(%[\w.$-]+) = [^\n]*@mule_sequence_tuple_owned\(", body, re.MULTILINE
+            rf"^\s*(%[\w.$-]+) = [^\n]*@{re.escape(producer)}\(", body, re.MULTILINE
         )
     )
     assert constructions, "Trace the allocated tuple, not an unrelated reference count"
     inspected = False
     for construction in constructions:
-        # Include acquisition before the first slot. Stop after the last slot,
-        # before later ordinary indexing or printing legitimately copies owners.
-        prefix = body[construction.start() : reads[-1].end()]
-        aliases = _parent_pointer_aliases(prefix.splitlines(), construction[1])
-        parent_reads = [read for read in reads if read[1] in aliases]
-        if len(parent_reads) < 2:
+        aliases = _parent_pointer_aliases(body.splitlines(), construction[1])
+        reads = _physical_tuple_reads(body[construction.start() :], aliases)
+        required_offsets = {8 * index for index in range(arity)}
+        if not required_offsets <= reads.keys():
             continue
         inspected = True
-        region = body[construction.start() : parent_reads[-1].end()]
+        # Inspect the first physical acquisition of every unpacked child. Later
+        # indexing and printing can legitimately copy the named tuple's owner.
+        last_read = max(reads[offset] for offset in required_offsets)
+        region = body[construction.start() : construction.start() + last_read]
         acquisitions = []
         for line in region.splitlines():
             increment = re.search(r"atomicrmw(?: volatile)? add ptr (%[\w.$-]+),", line)
@@ -215,16 +252,16 @@ def unpack_record(text):
 unpack_record(input())
 """
     case = build_case(tmp_path, source)
-    body = case.function_ir(r"^mule_fn_unpack_record\.")
+    # input() supplies text, so the guarded call selects this exact-text entry.
+    # The ordinary object entry must retain its arbitrary-method fallback.
+    caller = case.function_ir(r"^mule_module\.fn$")
+    assert re.search(r'@"?mule_fn_unpack_record\.spec\.\d+', caller)
+    body = case.function_ir(r"^mule_fn_unpack_record\.spec\.\d+$")
     assert "mule_text_partition" in body
-    assert "mule_tuple_slot" in body
-    # Ordinary record[index] expressions can legitimately retain checked reads.
-    # The structural reads must use the proved-slot primitive, not only a helper
-    # whose implementation repeats generic checks.
-    slots = case.function_assembly(r"^mule_tuple_slot$")
-    assert re.search(r"\bmov\w*\s+[^\n]*\([^\n]*,[^\n]*\)", slots)
-    for forbidden in ("mule_storage_read", "mule_tuple_shape_matches", "mule_call"):
-        assert forbidden not in slots
+    assert "mule_tuple_shape_matches" not in body
+    assert "mule_fast_unpack" not in body
+    assert "mule.fast.unpack" not in body
+    _assert_single_capture_acquisition(body, arity=3, producer="mule_text_partition")
     for text in ("key:value:tail", "no separator", ":", "界:🙂"):
         case.compare(stdin=text + "\n")
 
@@ -289,11 +326,14 @@ def test_unpack_failed_stores_release_capture_before_handler_and_preserve_earlie
     tmp_path,
 ):
     source = """
+from _weakref import ref
+refs = []
 class Token:
     def __init__(self, label):
         self.label = label
-    def __del__(self):
-        print('destroy', self.label)
+        def destroyed(unused):
+            print('destroy', label)
+        refs.append(ref(self, destroyed))
 
 def produce(label):
     yield Token(label + '-first')
@@ -314,6 +354,7 @@ def unpack_record(label):
     except ValueError:
         print('nested', outer.label, inner)
     print('leaving')
+    del outer
 
 unpack_record(input())
 print('done')

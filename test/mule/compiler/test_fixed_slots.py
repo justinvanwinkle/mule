@@ -257,3 +257,35 @@ print(cache.read(), cache.read())
 """
     case = build_case(tmp_path, source, optimize=1)
     case.compare()
+
+
+@pytest.mark.integration
+def test_slot_read_owns_value_across_function_weak_callback(tmp_path):
+    source = """
+from weakref import ref
+events = []
+class Payload:
+    pass
+class Packet:
+    __slots__ = ("value",)
+    def __init__(self):
+        self.value = Payload()
+    def check(self):
+        def trigger():
+            pass
+        def callback(ignored):
+            self.value = None
+            events.append("trigger")
+        # Keep an owning binding across the weak-reference constructor, so
+        # destruction occurs at the overwrite under test, not at that call.
+        keep = trigger
+        watch = ref(trigger, callback)
+        result = self.value is (trigger := (keep := None))
+        return result and self is not None, watch() is None
+packet = Packet()
+watch = ref(packet.value, lambda ignored: events.append("payload"))
+print(packet.check())
+print(events, watch() is None)
+"""
+    case = build_case(tmp_path, source)
+    case.compare()

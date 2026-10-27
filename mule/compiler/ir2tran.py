@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from mule import ast
 
 from . import fndb, vops
+from .callconv import TupleDelivery, tuple_return_convention
 
 if TYPE_CHECKING:
     from .annotation_types import Contract
@@ -47,6 +48,7 @@ from .ctype import (
     NoneType,
     TupleType,
     ValueType,
+    ValueTypeVisitor,
 )
 from .ir1util import block_exception_target, made_lambda
 from .ltn import EntryContext, primitive_type_of, template_results_ok
@@ -268,6 +270,8 @@ _BORROWABLE_CONSTANT = _BorrowableConstant()
 
 
 def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
+    if vop.info is vops.MOVE and vop.codegen_info is DEAD_LOCAL_STORE:
+        return True
     name = vop.info.name
     if name in _FIXNUM_BINARY_VOPS | _FIXNUM_UNARY_VOPS | _FIXNUM_COMPARISON_VOPS:
         return True
@@ -461,6 +465,7 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     """Convert ``lambda_`` under ``context`` into VOPs."""
     environment = IR2Environment(lambda_, context)
     component = IR2Component(lambda_, context, environment)
+    component.tuple_return = tuple_return_convention(lambda_, context)
     converter = _Converter(component)
     converter.prepare_environment()
     blocks = list(linked(lambda_.component, lambda_, "component").blocks())
@@ -491,6 +496,217 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
     _borrow_fixed_slot_reads(component)
     _clear_lvar_info(lambda_)
     return component
+
+
+def select_tuple_delivery(component, arities, method_targets):
+    """Deliver unpacked values through fixed locations using IR2 def-use edges.
+
+    A region owns the unconsumed slots from acquisition through each projection.
+    Regions cannot overlap because this ABI uses one output buffer per frame.
+    Target instructions are consumers, not part of the matching grammar.
+    """
+    plan = component.tuple_delivery = TupleDelivery()
+    if component.context.plan is not None:
+        return
+    reads, writes = component.reads, component.writes
+    positions = {
+        op: (block, i) for block in component.blocks for i, op in enumerate(block.vops)
+    }
+
+    def definition(tn):
+        defs = writes.get(tn, ())
+        return defs[0][0] if len(defs) == 1 else None
+
+    def sole_reader(tn):
+        uses = reads.get(tn, ())
+        return uses[0][0] if len(uses) == 1 else None
+
+    for block in component.blocks:
+        occupied = set()
+        for unpack in block.vops:
+            if unpack.info.name != "structural-unpack":
+                continue
+            arity = unpack.codegen_info.arity
+            if arity is None or not 1 <= arity <= 8:
+                continue
+            captured = sole_reader(unpack.results[0].tn)
+            if captured is None or captured.info is not vops.MOVE:
+                continue
+            root = captured.results[0].tn
+            if (
+                root.leaf is None
+                or not root.leaf.expression_temporary
+                or len(writes.get(root, ())) != 1
+            ):
+                continue
+            projections = []
+            discards = []
+            valid = True
+            for reader, _ in reads.get(root, ()):
+                if (
+                    reader.info.name == "unpack-ref"
+                    and reader.codegen_info.borrow_parent
+                ):
+                    projections.append(reader)
+                elif reader.info is vops.LOAD_LOCAL and reader.codegen_info.move:
+                    discard = sole_reader(reader.results[0].tn)
+                    if discard is None or discard.info is not vops.DISCARD:
+                        valid = False
+                        break
+                    discards.append(reader)
+                else:
+                    valid = False
+                    break
+            if not valid or len(discards) != 1 or len(projections) != arity:
+                continue
+            if any(
+                positions.get(op, (None,))[0] is not block
+                for op in [captured, *projections, *discards]
+            ):
+                continue
+            projections.sort(key=lambda op: positions[op][1])
+            if [op.codegen_info.index for op in projections] != list(range(arity)):
+                continue
+            if not (
+                positions[unpack][1]
+                < positions[captured][1]
+                < positions[projections[0]][1]
+                and positions[projections[-1]][1] < positions[discards[0]][1]
+            ):
+                continue
+            producer = definition(unpack.args[0].tn)
+            assertion = None
+            if producer is not None and producer.info is vops.TYPE_CHECK:
+                assertion = producer
+                if sole_reader(assertion.results[0].tn) is not unpack:
+                    continue
+                producer = definition(producer.args[0].tn)
+                if not vops.checks_unpacked_return(
+                    assertion.codegen_info.contract, arity
+                ):
+                    continue
+            call = None
+            if producer is not None and sole_reader(producer.results[0].tn) in (
+                assertion,
+                unpack,
+            ):
+                if producer.info is vops.FULL_CALL:
+                    site = producer.codegen_info
+                    if (
+                        arities.get(site.target) == arity
+                        and site.target.call_order(
+                            site.keywords, len(producer.args) - 1
+                        )
+                        is not None
+                    ):
+                        call = producer
+                elif producer.info is vops.LOCAL_EXTENT_CALL:
+                    target = producer.codegen_info.target
+                    if (
+                        arities.get(target) == arity
+                        and target.signature.return_annotation is None
+                    ):
+                        call = producer
+                elif (
+                    producer.info is vops.CALL_RESOLVED
+                    and producer.codegen_info.exact_text_partition
+                    and arity == 3
+                ):
+                    call = producer
+            if assertion is not None and call is None:
+                continue
+            start = producer if call is not None else unpack
+            if positions.get(start, (None,))[0] is not block:
+                continue
+            first, last = positions[start][1], positions[discards[0]][1]
+            interval = set(range(first, last + 1))
+            if interval & occupied:
+                continue
+            # Unknown tuple/iterable results can use the same slot ABI. This
+            # helper validates and extracts all children before any target runs.
+            if call is not None:
+                plan.calls[call] = arity
+                plan.unpacks.add(unpack)
+                call.results[0].tn.type = NONE_TYPE
+                if assertion is not None:
+                    plan.call_assertions[call] = assertion
+                    assertion.results[0].tn.type = NONE_TYPE
+            else:
+                plan.slot_unpacks[unpack] = arity
+                if (
+                    producer is not None
+                    and producer.info.name == "protocol-next_item"
+                    and (producer.args[0].tn.type or UNKNOWN).fits_none(NONE_TYPE)
+                    and len(block.block.pred) == 1
+                ):
+                    predecessor = component.ir2_blocks.get(block.block.pred[0])
+                    if predecessor is not None:
+                        branches = [
+                            op
+                            for op in predecessor.vops
+                            if op.info is vops.BRANCH
+                            and op.codegen_info.consequent == block.label
+                        ]
+                        if len(branches) == 1:
+                            advance = definition(branches[0].args[0].tn)
+                            if (
+                                advance is not None
+                                and advance.info.name == "sequence-available"
+                            ):
+                                plan.sequence_available[advance] = arity
+            occupied.update(interval)
+            plan.moves.add(captured)
+            plan.discard_loads.add(discards[0])
+            plan.temp_tns.add(root)
+            plan.max_arity = max(plan.max_arity, arity)
+            for tn in (unpack.results[0].tn, root, discards[0].results[0].tn):
+                tn.type = NONE_TYPE
+            remaining = tuple(range(arity))
+            for op in block.vops[first + 1 : last + 1]:
+                plan.remaining[op] = remaining
+                if op in projections:
+                    slot = op.codegen_info.index
+                    plan.refs[op] = (slot, arity)
+                    remaining = tuple(index for index in remaining if index != slot)
+
+    # Fold return checks into direct-call boundaries using the same def-use index.
+    for block in component.blocks:
+        for call in block.vops:
+            if call in plan.calls or call.info not in (
+                vops.FULL_CALL,
+                vops.LOCAL_EXTENT_CALL,
+                vops.CALL_RESOLVED,
+            ):
+                continue
+            assertion = sole_reader(call.results[0].tn)
+            if assertion is None or assertion.info is not vops.TYPE_CHECK:
+                continue
+            if call.info is vops.CALL_RESOLVED:
+                info = call.codegen_info
+                if info.is_exact:
+                    continue
+                target = info.target
+                count = len(call.args) - 2
+                direct = (
+                    target is not None
+                    and not info.keywords
+                    and target.call_order((), count + 1) is not None
+                )
+                direct = direct or any(
+                    candidate.call_order(info.keywords, count, receiver=bound)
+                    is not None
+                    for candidate in method_targets.get(info.name, ())
+                    for bound in (True, False)
+                )
+            else:
+                site = call.codegen_info
+                direct = (
+                    site.target is not None
+                    and site.target.call_order(site.keywords, len(call.args) - 1)
+                    is not None
+                )
+            if direct:
+                plan.direct_assertions[call] = assertion
 
 
 _CODEPOINT_TYPE = IntegerType(0, 0x10FFFF)
@@ -1365,6 +1581,9 @@ class _BorrowedLifetime:
                 return (), ()
             aliases.add(tn)
             for reader, ref in self.component.reads.get(tn, ()):
+                if reader.info is vops.MOVE and reader.codegen_info is DEAD_LOCAL_STORE:
+                    consumers.add(reader)
+                    continue
                 if reader.info is vops.MOVE:
                     target = reader.results[0].tn
                     if target.leaf is not None or target is source:
@@ -2354,8 +2573,17 @@ _SUSPENSION_VOPS = frozenset(
 
 def _safe_fixed_slot_region_step(component, step, value, root) -> bool:
     if step.info.name == "move":
-        return _safe_container_local_region_step(
+        if not _safe_container_local_region_step(
             component, step, value, root, None, value.type or UNKNOWN
+        ):
+            return False
+        target = step.results[0].tn
+        # A dead store still releases the previous binding. Its weak-reference
+        # callbacks can replace the borrowed field, even for function values.
+        return (
+            step.codegen_info is False
+            or target.borrowed_from is not None
+            or (target.type or UNKNOWN).accept(_INERT_LOCAL_VALUE)
         )
     return _safe_list_borrow_step(step, root)
 
@@ -2436,9 +2664,67 @@ def _borrow_fixed_slot_reads(component: IR2Component) -> None:
                 component.writes[ref.tn].append((step, ref))
 
 
+DEAD_LOCAL_STORE = object()
+
+
+class _InertLocalValue(ValueTypeVisitor):
+    """Values whose earlier destruction cannot invoke finalizers or weakrefs.
+
+    Operation purity does not imply destruction safety: functions, classes,
+    and iterators can expose finalization through weak references. Mutable
+    containers also require a lifetime-wide element proof, not a current type.
+    """
+
+    def visit_ValueType(self, fact):
+        return False
+
+    def _bound_scalar(self, fact):
+        return not fact.may_be_unbound
+
+    visit_IntegerType = _bound_scalar
+    visit_PythonIntegerType = _bound_scalar
+    visit_BooleanType = _bound_scalar
+    visit_FloatType = _bound_scalar
+    visit_NoneType = _bound_scalar
+    visit_ImmortalType = _bound_scalar
+    visit_TextType = _bound_scalar
+    visit_BytesType = _bound_scalar
+    visit_ByteArrayType = _bound_scalar
+
+    def visit_TupleType(self, fact):
+        return (
+            fact.is_exact_tuple
+            and fact.elements is not None
+            and all(element.accept(self) for element in fact.elements)
+        )
+
+    def visit_UnionType(self, fact):
+        return not fact.may_be_unbound and all(
+            member.accept(self) for member in fact.members
+        )
+
+
+_INERT_LOCAL_VALUE = _InertLocalValue()
+
+
+def _mark_dead_local_store(vop: VOP, live: set, candidates: set) -> None:
+    if (
+        vop.info is vops.MOVE
+        and vop.results[0].tn in candidates
+        and vop.results[0].tn not in live
+        and (vop.args[0].tn.type or UNKNOWN).accept(_INERT_LOCAL_VALUE)
+    ):
+        # Releasing an arbitrary value here could invoke __del__ before the
+        # binding's original overwrite or exit. Inert values have no such effect.
+        vop.codegen_info = DEAD_LOCAL_STORE
+
+
 def _mark_last_local_reads(component: IR2Component) -> None:
-    """Mark ``LOAD_LOCAL`` VOPs that are the final read of their local on all
-    normal and exception paths before the local is overwritten or the body exits."""
+    """Mark ownership transfers and dead stores from instruction-level liveness.
+
+    Handler reads, closed-over slots, borrowed roots, and suspended frame
+    bindings retain the ownership required by their observable lifetimes.
+    """
     environment = component.environment
     candidates = {
         tn
@@ -2461,8 +2747,22 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         if component.lambda_.coroutine_body
         else set()
     )
+    borrowed_roots = {
+        tn.borrowed_from for tn in component.tns if tn.borrowed_from is not None
+    }
+    dead_store_candidates = {
+        tn
+        for tn in candidates
+        if tn.borrowed_from is None
+        and tn not in borrowed_roots
+        and tn.leaf not in environment.cells
+        and tn.leaf not in environment.copies
+        and tn not in visible_candidates
+    }
     for block in component.blocks:
         for vop in block.vops:
+            if vop.info is vops.MOVE and vop.codegen_info is DEAD_LOCAL_STORE:
+                vop.codegen_info = True
             if vop.info is vops.LOAD_LOCAL and (
                 vop.args[0].tn in candidates
                 or vop.args[0].tn.borrowed_from is vop.args[0].tn
@@ -2480,6 +2780,7 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         for vop in reversed(blocks[0].vops):
             if visible_candidates and vop.info.name in _SUSPENSION_VOPS:
                 live.update(visible_candidates)
+            _mark_dead_local_store(vop, live, dead_store_candidates)
             if vop.info is vops.LOAD_LOCAL:
                 tn = vop.args[0].tn
                 access: LocalAccess = linked(vop.codegen_info, vop, "local access")
@@ -2546,6 +2847,7 @@ def _mark_last_local_reads(component: IR2Component) -> None:
                 live.update(handler_live)
             if visible_candidates and vop.info.name in _SUSPENSION_VOPS:
                 live.update(visible_candidates)
+            _mark_dead_local_store(vop, live, dead_store_candidates)
             if vop.info is vops.LOAD_LOCAL:
                 tn = vop.args[0].tn
                 access: LocalAccess = linked(vop.codegen_info, vop, "local access")

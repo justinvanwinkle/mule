@@ -6,8 +6,10 @@ from test.mule.compiler.test_exception_groups import compare
 
 def test_unknown_sequence_unpack_checks_storage_before_iteration():
     llvm = emit_llvm("def unpack(value):\n a, b = value\n return a + b\n")
-    assert "call i32 @mule_list_shape_matches" in llvm
-    assert "call ptr @mule_storage_tuple" in llvm
+    # The slot helper checks exact tuple/list shape and prefetches all children
+    # before the compiled iterator fallback or any assignment target runs.
+    assert "call i32 @mule_fast_unpack" in llvm
+    assert 'call ptr @"mule.protocol.unpack"' in llvm
 
 
 def test_unpack_subclasses_and_wrong_lengths_use_iteration(tmp_path):
@@ -92,6 +94,7 @@ def main(mod):
     )
     assert "call ptr @mule_list_getitem" in llvm
     assert 'call ptr @"mule.protocol._list_fill"' in llvm
+    assert "call i32 @mule_fast_unpack" in llvm
     assert "call ptr @mule_storage_append_move" in llvm
     assert "call ptr @mule_fast_iterate_move" in llvm
     assert "call ptr @mule.fast.unpack.slots.2" in llvm

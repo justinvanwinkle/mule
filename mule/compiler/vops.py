@@ -309,6 +309,18 @@ def load_global(gen, vop):
 
 @define_vop("move", args=(None,), results=(None,))
 def move(gen, vop):
+    # ir2tran imports this template table during module initialization.
+    from .ir2tran import DEAD_LOCAL_STORE
+
+    if vop.codegen_info is DEAD_LOCAL_STORE:
+        source, target = vop.args[0], vop.results[0]
+        value = gen.take(source)
+        if target.tn.sc in OBJECT:
+            # The previous binding still loses its reference at this assignment.
+            gen.store(target, "null")
+        if source.tn.sc in OBJECT:
+            gen.release(value)
+        return
     if gen.is_unpacked_move(vop):
         gen.take(vop.args[0])
         return
@@ -2823,6 +2835,28 @@ def structural_unpack(gen, vop):
         return
     slot_arity = gen.unpacked_slot_arity(vop)
     if slot_arity is not None:
+        if vop.codegen_info.proved:
+            # The exact tuple and its arity are already proven. Acquire every
+            # child before a target can mutate another binding to the source.
+            # Iterator delivery uses null to signal that these slots are filled.
+            already = gen.operation(f"icmp eq ptr {value}, null")
+            copy_label = gen.fresh("unpack.copy")[1:]
+            done_label = gen.fresh("unpack.done")[1:]
+            gen.line(f"br i1 {already}, label %{done_label}, label %{copy_label}")
+            gen.lines.append(copy_label + ":")
+            for index in range(slot_arity):
+                child = gen.operation(
+                    f"call ptr @mule.fast.tuple.slot(ptr {value}, i64 {index})"
+                )
+                slot = gen.operation(f"getelementptr ptr, ptr %unpack.out, i64 {index}")
+                gen.line(f"store ptr {child}, ptr {slot}")
+            gen.release(value)
+            gen.line(f"br label %{done_label}")
+            gen.lines.append(done_label + ":")
+            gen.release(count)
+            gen.immortal_values.add("@mule.none")
+            gen.publish(vop.results[0], "@mule.none")
+            return
         helper = gen.module.unpack_slots_helper(slot_arity)
         gen.pointer_result(
             vop.results[0],
@@ -3189,14 +3223,9 @@ def unpack_ref(gen, vop):
         position = gen.take(vop.args[1])
         slot = gen.operation(f"getelementptr ptr, ptr %unpack.out, i64 {slot_idx}")
         result = gen.operation(f"load ptr, ptr {slot}")
+        gen.unpacked_remaining_slots = gen.unpacked_ref_remaining(vop)
         if gen.is_unpacked_immortal_ref(vop):
             gen.immortal_values.add(result)
-        if gen.is_unpacked_dead_ref(vop):
-            gen.release(result)
-            gen.release(position)
-            gen.immortal_values.add("@mule.none")
-            gen.publish(vop.results[0], "@mule.none")
-            return
         gen.publish(vop.results[0], result)
         gen.release(position)
         gen.refine(vop.results[0].tn, result)

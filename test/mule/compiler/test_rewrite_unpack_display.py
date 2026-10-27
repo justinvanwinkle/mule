@@ -126,7 +126,9 @@ unpack_effects(shared, shared, False)
 
 
 @pytest.mark.integration
-def test_unpack_mismatch_nested_and_subscript_targets_keep_fallback_semantics(tmp_path):
+def test_unpack_mismatch_nested_and_subscript_targets_preserve_store_semantics(
+    tmp_path,
+):
     source = """
 def produce(value, label):
     print('rhs', label)
@@ -186,9 +188,9 @@ unpack_subscript([], value, 0)
         "unpack_too_many",
         "unpack_too_few",
         "unpack_nested",
-        "unpack_subscript",
     ):
         assert list(known_calls(_function(source, name), "%unpack")), name
+    assert not list(known_calls(_function(source, "unpack_subscript"), "%unpack"))
     case = build_case(tmp_path, source)
     # Inspect actual calls rather than matching "unpack" in the function header.
     fallback = case.function_ir(r"^mule_fn_unpack_nested\.")
