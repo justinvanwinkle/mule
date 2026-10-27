@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from .ctype import ValueType
+from .ctype import UNKNOWN, ValueType
+from .fndb import PROTOCOLS
 from .inputs import _recording, read_source
 from .ir1util import known_calls, made_lambda
 from .main import compile_toplevel, ir1_phases
@@ -34,6 +35,30 @@ def exports(entry) -> dict:
         linked(call.info, call, "function definition").public_name: made_lambda(call)
         for call in known_calls(entry, "%make_function")
     }
+
+
+def protocol_argument_types(name: str, builtin_targets) -> tuple[ValueType, ...] | None:
+    """Resolve a declared internal entry domain through its implementation owner.
+
+    Missing or ambiguous layout metadata cannot establish a physical receiver
+    proof. Unrestricted arguments need no implementation identity.
+    """
+    info = PROTOCOLS.get(name)
+    if info is None or info.argument_types is None:
+        return None
+    arguments = []
+    for domain in info.argument_types:
+        if domain is UNKNOWN:
+            arguments.append(UNKNOWN)
+            continue
+        implementations = {
+            target.implementation_type(domain) for target in builtin_targets.values()
+        }
+        implementations.discard(UNKNOWN)
+        if len(implementations) != 1:
+            return None
+        arguments.append(next(iter(implementations)))
+    return tuple(arguments)
 
 
 def _populate_in_memory_stdlib_summaries() -> None:
@@ -109,6 +134,16 @@ def prepare(program):
     compilation.storage_methods = imports.storage_methods
     compilation.builtin_return_types = imports.builtin_return_types
     compilation.builtin_targets = imports.builtin_targets
+    functions = exports(compilation.entry)
+    for name, info in PROTOCOLS.items():
+        if info.argument_types is None:
+            continue
+        function = functions.get(name)
+        if function is None:
+            raise ValueError(f"declared compiled protocol {name!r} has no definition")
+        function.entry_parameter_types = protocol_argument_types(
+            name, imports.builtin_targets
+        )
     ir1_phases(compilation)
     imports.record_types("$mule.sequences", compilation)
     program.exported_types.update(imports.exported_types)

@@ -115,6 +115,11 @@ class BuiltinsInterface:
                         "variadic": function.signature.variadic,
                         "closure": function.takes_closure,
                         "return_type": function.return_type.to_dict(),
+                        "entry_parameter_types": None
+                        if function.entry_parameter_types is None
+                        else [
+                            fact.to_dict() for fact in function.entry_parameter_types
+                        ],
                     }
                     for name, function in self.functions.items()
                 },
@@ -162,6 +167,12 @@ class BuiltinsInterface:
                 value_type_from_dict(entry["return_type"])
                 if "return_type" in entry
                 else UNKNOWN,
+                entry_parameter_types=None
+                if entry.get("entry_parameter_types") is None
+                else tuple(
+                    value_type_from_dict(fact)
+                    for fact in entry["entry_parameter_types"]
+                ),
             )
             for name, entry in data["functions"].items()
         }
@@ -232,6 +243,11 @@ class ModuleInterface:
                         "closure": function.takes_closure,
                         "return_type": function.return_type.to_dict(),
                         "namespace": function.namespace,
+                        "entry_parameter_types": None
+                        if function.entry_parameter_types is None
+                        else [
+                            fact.to_dict() for fact in function.entry_parameter_types
+                        ],
                     }
                     for name, function in self.functions.items()
                 },
@@ -268,6 +284,12 @@ class ModuleInterface:
                 if "return_type" in entry
                 else UNKNOWN,
                 entry.get("namespace", ""),
+                entry_parameter_types=None
+                if entry.get("entry_parameter_types") is None
+                else tuple(
+                    value_type_from_dict(fact)
+                    for fact in entry["entry_parameter_types"]
+                ),
             )
             for name, entry in data.get("functions", {}).items()
         }
@@ -292,6 +314,7 @@ class ModuleInterface:
                     new_target=functions.get(new_name) if new_name else None,
                     init_target=functions.get(init_name) if init_name else None,
                     records_type_origin=entry.get("records_type_origin", False),
+                    layout_type=value_type_from_dict(entry["layout_type"]),
                 )
         storage_methods = {
             tuple(key.split(".", 1)): value_type_from_dict(val)
@@ -323,6 +346,7 @@ def module_interface(
             lambda_.takes_closure,
             facts[lambda_].return_type if lambda_ in facts else UNKNOWN,
             lambda_.namespace,
+            entry_parameter_types=lambda_.entry_parameter_types,
         )
         for lambda_ in compilation.lambdas
         if lambda_.kind is not FunctionalKind.TOPLEVEL
@@ -355,6 +379,7 @@ def module_interface(
                         lam.takes_closure,
                         facts[lam].return_type if lam in facts else UNKNOWN,
                         lam.namespace,
+                        entry_parameter_types=lam.entry_parameter_types,
                     )
                 else:
                     functions[fn.name] = fn
@@ -376,6 +401,7 @@ def module_interface(
                             lam.takes_closure,
                             facts[lam].return_type if lam in facts else UNKNOWN,
                             lam.namespace,
+                            entry_parameter_types=lam.entry_parameter_types,
                         )
                     else:
                         functions[member.name] = member
@@ -522,6 +548,7 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
             lambda_.signature,
             lambda_.takes_closure,
             unit.facts[lambda_].return_type if lambda_ in unit.facts else UNKNOWN,
+            entry_parameter_types=lambda_.entry_parameter_types,
         )
         for lambda_ in unit.lambdas
     }

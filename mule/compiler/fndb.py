@@ -20,6 +20,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     BOTTOM,
     BYTES_TYPE,
+    DICT_TYPE,
     EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
@@ -547,6 +548,7 @@ _PROTOCOL_DERIVE_TYPES = {
         else _arg_type(node.args[0]).getitem_type(_arg_type(node.args[1]))
     ),
     "setitem": lambda node: NONE_TYPE,
+    "dict_setitem": lambda node: NONE_TYPE,
     "unpack": _derive_unpack,
 }
 
@@ -563,6 +565,12 @@ _NON_INTEGER_FIRST_PROTOCOLS = frozenset(
 )
 _INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
 
+_PROTOCOL_ARGUMENT_TYPES = {
+    "dict_get": (DICT_TYPE, UNKNOWN, UNKNOWN),
+    "dict_getitem": (DICT_TYPE, UNKNOWN),
+    "dict_setitem": (DICT_TYPE, UNKNOWN, UNKNOWN),
+}
+
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
 PROTOCOLS = {
     name: defknown(
@@ -575,9 +583,13 @@ PROTOCOLS = {
         numeric=(name == "make_slice"),
         non_integer_first_arg=(name in _NON_INTEGER_FIRST_PROTOCOLS),
         index_second_arg=(name in _INDEX_SECOND_PROTOCOLS),
+        argument_types=_PROTOCOL_ARGUMENT_TYPES.get(name),
     )
     for name in (
         "_list_fill",
+        "dict_get",
+        "dict_getitem",
+        "dict_setitem",
         "iterate",
         "next_item",
         "getitem",

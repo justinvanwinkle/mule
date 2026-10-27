@@ -176,6 +176,25 @@ on its general entry. This retains useful field-derived method predictions
 without assuming that an unknown receiver has the declaring class or exporting
 a result valid only for narrowed ordinary arguments.
 
+Known-function metadata also declares argument domains for exact-receiver
+compiled protocol entries. This follows the typed `gethash` and `%instance-ref`
+declarations in SBCL's `src/compiler/fndb.lisp` and
+`src/compiler/generic/vm-fndb.lisp`. Preparation resolves those semantic domains
+through the defining class target's independent `layout_type`, then requests a
+separate local-call context. Missing or ambiguous owner metadata disables that
+specialization. The general body remains valid for unknown callers.
+
+The defining unit exports the requested descriptor body as `FUNCTION.protocol`.
+It retains that explicit context even without a local call or further
+optimization. The imported function interface carries its resolved entry
+domains, so a protocol wrapper can call the stable symbol without reconstructing
+the owner's private variants. Only wrappers whose registered contract supplies
+the caller proof use it. Ordinary external binding still calls the general
+body. The exported protocol body preserves borrowed arguments and object return
+conventions rather than introducing a native adapter or a forwarding algorithm.
+Layouts do not imply constructor return types, immutable attributes, or missing
+field-value proofs.
+
 Unlike SBCL's tracing collector, Mule must preserve owned references when a
 field is overwritten or read. A borrowed read additionally needs a rooted owner
 and a region that cannot replace its slot or invoke arbitrary Python code.
@@ -187,6 +206,9 @@ Function and class destruction can invoke weak-reference callbacks even when
 ordinary operations on those values do not run user code. The slot borrow pass
 uses the inert-value destruction proof for overwritten bindings, including dead
 stores that still release the old binding.
+An eligible physical storage read or length operation can borrow its receiver
+from a fixed slot through the same no-callback proof. Mutation and Python method
+consumers do not acquire that permission merely from their argument types.
 
 A guarded borrowed read produces a nullable owned descriptor as well as its
 borrowed result. On the direct hit, that owner is null. On fallback, it owns the

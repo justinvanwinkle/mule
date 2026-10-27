@@ -447,6 +447,7 @@ class ModuleCompiler:
             )
         method_defs = class_method_definitions(compilation.entry)
         class_fields = compilation.locall_state.get("class_fields", {})
+        class_layouts = compilation.locall_state.get("class_layouts", {})
         all_class_ids = list(dict.fromkeys([*class_names, *method_defs, *class_fields]))
         for class_id in all_class_ids:
             class_name = class_names.get(class_id, class_id)
@@ -493,6 +494,7 @@ class ModuleCompiler:
                 new_target=methods.get("__new__"),
                 init_target=methods.get("__init__"),
                 records_type_origin=records_type_origin,
+                layout_type=class_layouts.get(class_id, UNKNOWN),
             )
             self.exported_targets[namespace, class_name] = cls_target
         for leaf, vtype in collect_global_constants(compilation.lambdas).items():

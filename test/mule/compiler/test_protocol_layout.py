@@ -53,3 +53,55 @@ print(len(table))
     assert any(left in decoded and right in decoded for left, right in equalities)
     case.compare("abcdef\n")
     case.compare("\n")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("optimize", [2, 3])
+def test_exact_dict_protocol_calls_reach_typed_storage_loops(tmp_path, optimize):
+    case = build_case(
+        tmp_path,
+        """
+grow = False
+mutation_target = None
+class Key:
+    def __init__(self, value):
+        self.value = value
+    def __hash__(self):
+        return 7
+    def __eq__(self, other):
+        global grow
+        if type(other) is not Key:
+            return NotImplemented
+        if grow:
+            grow = False
+            for index in range(20):
+                mutation_target[index] = index
+        return self.value == other.value
+def exercise(n):
+    global grow, mutation_target
+    table = {}
+    mutation_target = table
+    for index in range(n):
+        table[index] = table.get(index, 0) + 1
+        print(table[index])
+    table[Key(1)] = 91
+    grow = True
+    print(table.get(Key(1)), table[Key(1)], len(table))
+    table[Key(1)] = 92
+    print(table.get(Key(1)), table[Key(1)])
+exercise(len(input()))
+""",
+        optimize=optimize,
+    )
+    for operation in ("dict_get", "dict_getitem", "dict_setitem"):
+        wrapper = case.function_ir(rf"^mule\.protocol\.{operation}$", optimized=False)
+        selected = re.search(r'call ptr @"([^"\n]+\.protocol)"', wrapper)
+        assert selected is not None, wrapper
+        body = case.function_ir(re.escape(selected[1]) + "$", unit="builtins")
+        assert re.search(r"getelementptr i8, ptr %[-\w.]+, i64 32\b", body)
+        decoded = set(re.findall(r"(%[-\w.]+) = ashr i64 %[-\w.]+, 1\b", body))
+        comparisons = re.findall(r"icmp eq i64 (%[-\w.]+), (%[-\w.]+)", body)
+        assert any(left in decoded and right in decoded for left, right in comparisons)
+        assert not re.search(r"@mule\.fast\.storage\.(?:read|write|length)\(", body)
+    case.compare("abcdef\n")
+    case.compare("\n")

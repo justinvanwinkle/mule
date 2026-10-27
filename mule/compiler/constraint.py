@@ -110,16 +110,24 @@ _AS_TUPLE_TYPE = _AsTupleType()
 
 
 class _InstanceFieldType(ValueTypeVisitor):
-    def __init__(self, class_facts, name):
+    def __init__(self, class_facts, storage_methods, name):
         self.class_facts = class_facts
+        self.storage_methods = storage_methods
         self.name = name
 
     def visit_ValueType(self, fact):
         return UNKNOWN
 
     def visit_InstanceType(self, fact):
-        facts = self.class_facts.get(fact.instance_class())
-        return facts.fields.get(self.name, UNKNOWN) if facts is not None else UNKNOWN
+        identity = fact.instance_class()
+        if identity is None:
+            return UNKNOWN
+        facts = self.class_facts.get(identity)
+        if facts is not None:
+            return facts.fields.get(self.name, UNKNOWN)
+        if self.storage_methods is None:
+            return UNKNOWN
+        return self.storage_methods.get((identity, self.name), UNKNOWN)
 
     def visit_UnionType(self, fact):
         if fact.may_be_unbound:
@@ -2822,7 +2830,9 @@ class _Walk:
     def instance_field_type(self, receiver_type: ValueType, name: str) -> ValueType:
         """The predicted field type on instances of the receiver's class,
         restricted to shapes whose consumers guard their runtime operations."""
-        return receiver_type.accept(_InstanceFieldType(self.class_facts, name))
+        return receiver_type.accept(
+            _InstanceFieldType(self.class_facts, self.storage_methods, name)
+        )
 
     def builtin_target(
         self, fun_lvar

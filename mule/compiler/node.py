@@ -876,6 +876,7 @@ class Lambda(Functional):
         "declared_free",
         "default_types",
         "entries",
+        "entry_parameter_types",
         "environment",
         "generator_body",
         "generator_outer",
@@ -948,6 +949,7 @@ class Lambda(Functional):
         # Python closes over them even when the body never uses them.
         self.declared_free: list[LambdaVar] = []
         self.default_types: tuple[ValueType, ...] = ()
+        self.entry_parameter_types: tuple[ValueType, ...] | None = None
         self.type_deriver: Callable[[tuple[ValueType, ...]], ValueType] | None = None
         self.self_type_deriver: (
             Callable[[tuple[ValueType, ...]], ValueType | None] | None
@@ -964,7 +966,13 @@ class Lambda(Functional):
         return self
 
     def to_interface_entry(self) -> dict:
-        return {"kind": "function", "name": self.name}
+        return {
+            "kind": "function",
+            "name": self.name,
+            "entry_parameter_types": None
+            if self.entry_parameter_types is None
+            else [fact.to_dict() for fact in self.entry_parameter_types],
+        }
 
     def global_constant_type(self) -> ValueType:
         return UNKNOWN
@@ -1108,6 +1116,9 @@ class Lambda(Functional):
         cls_name = self.code.qualname.split(".", 1)[0]
         return STORAGE_CLASS_TYPES.get(cls_name, UNKNOWN)
 
+    def implementation_type(self, domain: ValueType) -> ValueType:
+        return UNKNOWN
+
 
 @dataclass(frozen=True, slots=True)
 class ClassConstructorTarget:
@@ -1119,6 +1130,10 @@ class ClassConstructorTarget:
     new_target: Lambda | None = None
     init_target: Lambda | None = None
     records_type_origin: bool = False
+    layout_type: ValueType = UNKNOWN
+
+    def implementation_type(self, domain: ValueType) -> ValueType:
+        return self.layout_type if self.base_type == domain else UNKNOWN
 
     def as_lambda(self) -> Lambda | None:
         return None
@@ -1137,6 +1152,7 @@ class ClassConstructorTarget:
             "new_target": None if self.new_target is None else self.new_target.name,
             "init_target": None if self.init_target is None else self.init_target.name,
             "records_type_origin": self.records_type_origin,
+            "layout_type": self.layout_type.to_dict(),
         }
 
     def interface_members(self) -> tuple:
@@ -1234,6 +1250,9 @@ class ForeignCallTarget:
     derive_fn: Callable | None = None
     propagate_fn: Callable | None = None
     constrain_fn: Callable | None = None
+
+    def implementation_type(self, domain: ValueType) -> ValueType:
+        return UNKNOWN
 
     def as_lambda(self) -> Lambda | None:
         return None

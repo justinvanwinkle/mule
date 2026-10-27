@@ -55,6 +55,9 @@ class FunInfo:
     # undeclared position is assumed to be kept.
     borrowed_args: frozenset[int] = frozenset()
     result_arg: int | None = None
+    # Domains of a compiler-selected internal protocol entry. The source
+    # callable retains its general signature and entry behavior.
+    argument_types: tuple[ValueType, ...] | None = None
 
     def borrows_argument(self, index: int) -> bool:
         return index in self.borrowed_args
@@ -99,6 +102,7 @@ def defknown(
     index_second_arg: bool = False,
     borrowed_args: frozenset[int] = frozenset(),
     result_arg: int | None = None,
+    argument_types: tuple[ValueType, ...] | None = None,
 ) -> FunInfo:
     info = FunInfo(
         name,
@@ -113,6 +117,7 @@ def defknown(
         index_second_arg=index_second_arg,
         borrowed_args=borrowed_args,
         result_arg=result_arg,
+        argument_types=argument_types,
     )
     if name in KNOWN:
         raise ValueError(f"known function {name} is already defined")

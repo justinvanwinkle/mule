@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from mule import ast
 from mule.diagnostics import phase
 
-from . import argument_layout, vops
+from . import argument_layout, fndb, vops
 from .callconv import CallConvention, tuple_return_convention
 from .ctype import (
     BOTTOM,
@@ -380,12 +380,16 @@ class ForeignFunction:
     takes_closure: bool
     return_type: ValueType = UNKNOWN
     namespace: str = ""
+    entry_parameter_types: tuple[ValueType, ...] | None = None
 
     def as_lambda(self) -> None:
         return None
 
     def as_function(self) -> ForeignFunction:
         return self
+
+    def implementation_type(self, domain: ValueType) -> ValueType:
+        return UNKNOWN
 
     def global_constant_type(self) -> ValueType:
         return UNKNOWN
@@ -427,7 +431,15 @@ class ForeignFunction:
         return self.derive_return_type(arg_types, keywords)
 
     def to_interface_entry(self) -> dict:
-        return {"kind": "function", "name": self.name}
+        return {
+            "kind": "function",
+            "name": self.name,
+            "entry_parameter_types": (
+                None
+                if self.entry_parameter_types is None
+                else [fact.to_dict() for fact in self.entry_parameter_types]
+            ),
+        }
 
     def call_order(self, keywords, count, *, receiver=False):
         return self.signature.call_order(
@@ -548,6 +560,17 @@ class _Symbols:
         return _symbol(name)
 
 
+def _declared_protocol_context(function: Function, facts):
+    """The retained entry accepting the entire declared protocol domain."""
+    parameters = function.entry_parameter_types
+    if parameters is None or facts is None:
+        return None
+    for context in facts.variants:
+        if context.id == "fixnum" and context.parameters == parameters:
+            return context.id
+    raise ValueError(f"{function.name}: missing declared protocol entry {parameters!r}")
+
+
 class _SpecializedSymbols:
     """The guarded entry of a lambda for one of its entry contexts."""
 
@@ -568,7 +591,11 @@ class _SpecializedSymbols:
         variants = facts.variants if facts is not None else ()
         for variant, context in enumerate(variants):
             if context.id == context_id:
-                name = f"{lambda_.name}.spec.{variant}"
+                name = (
+                    f"{lambda_.name}.protocol"
+                    if context_id == _declared_protocol_context(lambda_, facts)
+                    else f"{lambda_.name}.spec.{variant}"
+                )
                 if lambda_ not in self.owned:
                     self.foreign[name] = ("body", lambda_)
                 return _symbol(name)
@@ -820,11 +847,20 @@ class ModuleGenerator:
         self.layouts = program.layouts
         self.sequence_functions = program.sequence_functions
         with phase("native entry selection", level=logging.DEBUG):
-            self.native_plans = select_native_plans(lambdas, self.facts, self.layouts)
+            self.native_plans = {
+                function: plan
+                for function, plan in select_native_plans(
+                    lambdas, self.facts, self.layouts
+                ).items()
+                if function.entry_parameter_types is None
+            }
         self.return_tuple_arities: dict[Lambda, int] = {}
         self.return_tuple_uses: dict[Lambda, frozenset] = {}
         for lambda_ in lambdas:
-            if lambda_ not in self.native_plans:
+            if (
+                lambda_ not in self.native_plans
+                and lambda_.entry_parameter_types is None
+            ):
                 info = tuple_return_convention(lambda_)
                 if info is not None:
                     (
@@ -927,7 +963,7 @@ class ModuleGenerator:
                 return index
         raise KeyError((lambda_.name, context_id))
 
-    def variants_of(self, lambda_: Lambda):
+    def variants_of(self, lambda_: Function):
         facts = self.facts.get(lambda_)
         return facts.variants if facts is not None else ()
 
@@ -1423,13 +1459,29 @@ class ModuleGenerator:
         )
         return "\n".join(lines)
 
+    def protocol_body(self, name: str) -> str:
+        """An entry valid for this protocol's fixed caller-proven domain.
+
+        Public calls still use the generic body. Missing imported proof keeps
+        the protocol generic too, rather than inventing a receiver layout.
+        """
+        function = self.sequence_functions[name]
+        info = fndb.PROTOCOLS.get(name)
+        if (
+            info is not None
+            and info.argument_types is not None
+            and function.entry_parameter_types is not None
+        ):
+            return self.reference(function, f"{function.name}.protocol", "body")
+        return self.bodies[function]
+
     def protocol_helper(self, name: str, arity: int) -> str:
         existing = self.protocol_helpers.get(name)
         if existing is not None:
             return existing
         symbol = _symbol(f"mule.protocol.{name}")
         self.protocol_helpers[name] = symbol
-        body = self.bodies[self.sequence_functions[name]]
+        body = self.protocol_body(name)
         params = ", ".join(f"ptr %arg.{i}" for i in range(arity))
         operands = ", ".join(["ptr %globals", *(f"ptr %arg.{i}" for i in range(arity))])
         borrowed_protocol = name in _BORROWED_SEQUENCE_PROTOCOLS
@@ -3081,6 +3133,10 @@ class ModuleGenerator:
         contexts_by_key: dict[tuple[Function, object], tuple[Lambda, EntryContext]] = {}
         for lambda_ in program.lambdas:
             general, variants = self.contexts(lambda_)
+            declared = _declared_protocol_context(lambda_, self.facts[lambda_])
+            if declared is not None:
+                # Imported callers need this entry even without a local call.
+                self.specialized[lambda_, declared]
             contexts_by_key[lambda_, None] = (lambda_, general)
             functions.append(self.emit_body(lambda_, general))
             for variant in variants:
@@ -5659,7 +5715,13 @@ class FunctionGenerator:
             and not self.raw
             and not self.unpacked
             and self.convention is None
-            and self.context.id is None
+            and (
+                self.context.id is None
+                or self.context.id
+                == _declared_protocol_context(
+                    self.lambda_, self.module.facts.get(self.lambda_)
+                )
+            )
             and self.context.rejected_fixnum_guard is None
             else "internal "
         )

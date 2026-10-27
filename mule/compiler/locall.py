@@ -1476,6 +1476,9 @@ def _collect_class_tables(lambdas):
                 new_target=methods.get("__new__"),
                 init_target=methods.get("__init__"),
                 records_type_origin=records_type_origin,
+                layout_type=InstanceType(
+                    class_id, fixed_slots=layouts.get(class_id, ())
+                ),
             )
             # A custom constructor can return another class without changing
             # this class's layout or the facts guarded method entries can use.
@@ -2236,7 +2239,13 @@ def analyze(
                 and signature.annotations[0] is None
                 and lambda_.vars[0].name not in lambda_.local_annotations
             )
-            if is_typed_method:
+            if lambda_.entry_parameter_types is not None:
+                if len(lambda_.entry_parameter_types) != len(lambda_.vars):
+                    raise ValueError(
+                        f"entry parameter arity mismatch for {lambda_.name}"
+                    )
+                parameters[lambda_, "fixnum"] = lambda_.entry_parameter_types
+            elif is_typed_method:
                 spec_params = (
                     InstanceType(
                         lambda_.method_class,
@@ -3235,6 +3244,7 @@ def analyze(
             ret_type = summaries[key].normalized_bottom()
             if (
                 identifier == "fixnum"
+                and lambda_.entry_parameter_types is None
                 and body.element_contracts == facts.element_contracts
                 and not _specializes_body(
                     graph,
@@ -3340,6 +3350,10 @@ def analyze(
         state_cache["results"] = dict(results)
         state_cache["class_fields"] = {
             cls_id: dict(cf.fields) for cls_id, cf in class_facts.items()
+        }
+        state_cache["class_layouts"] = {
+            cls_id: InstanceType(cls_id, fixed_slots=cf.fixed_slots)
+            for cls_id, cf in class_facts.items()
         }
     return results
 

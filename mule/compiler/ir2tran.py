@@ -2628,10 +2628,21 @@ def _borrow_fixed_slot_reads(component: IR2Component) -> None:
             root = load.args[0].tn
             if not _plain_local(root):
                 continue
-            # Mutation consumers can destroy an old value and execute finalizers.
-            if consumer.info.name not in ("compare-is", "compare-is_not") and (
-                (value.type or UNKNOWN).may_run_user_code
-                or not _can_borrow_list_getitem(consumer, ref)
+            physical_read = (
+                consumer.info.name
+                in ("primitive-_storage_read", "primitive-_storage_length")
+                and ref is consumer.args[0]
+                and _safe_list_borrow_step(consumer, root)
+            )
+            # Physical reads do not invoke the stored value's Python methods.
+            # Mutation consumers can destroy an old value and run callbacks.
+            if (
+                not physical_read
+                and consumer.info.name not in ("compare-is", "compare-is_not")
+                and (
+                    (value.type or UNKNOWN).may_run_user_code
+                    or not _can_borrow_list_getitem(consumer, ref)
+                )
             ):
                 continue
             if any(

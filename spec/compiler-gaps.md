@@ -1063,6 +1063,10 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
 
 ### 6I. Known-function database (`fndb.lisp`) and IR1 method resolution vs. hardcoded Rust/math bypasses
 
+Section 6J adds declared argument domains for existing compiled protocol entries
+and preserves their owner layouts across unit interfaces. It does not replace
+the method and math selection mechanisms below.
+
 - **Current special case**: `ir2tran.py:382-439, 3747-3922` hardcodes 6
   `exact_text_*` / `exact_bytearray_append` methods to Rust helpers in
   `mule/runtime/sequences.rs` (leaving 0-arg `str.split()`, `rsplit`, `strip`,
@@ -1105,6 +1109,13 @@ Status: implemented, with conservative layout and borrowing boundaries below.
     instance layout, mutation epoch, and complete FIELD/index encoding. This
     preserves descriptor replacement, custom attribute hooks, and unset-slot
     errors. A predicted index never authorizes an unguarded storage access.
+  - Class constructor targets export an independent implementation layout,
+    without changing their semantic result type. Imported field predictions use
+    that actual owner identity. Known-function argument domains request separate
+    descriptor entries for existing exact-receiver protocols, exported as
+    `FUNCTION.protocol`; generic bodies retain unknown receiver behavior.
+    This transfers the proof through the actual dictionary get/set probe loops,
+    not merely through an unused specialized table helper.
   - IR2 borrows an eligible temporary slot read through one same-block consumer
     when intervening operations cannot replace the slot or invoke user code.
     An explicit nullable owner holds an owned fallback lookup result, while
