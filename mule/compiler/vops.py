@@ -267,7 +267,9 @@ def load_local(gen, vop):
     if access.move:
         gen.line(f"store ptr null, ptr {source.tn.slot}")
     if access.bound:
-        gen.record_facts(source.tn, value)
+        # Slot loads already record their facts; register loads do not.
+        if source.tn in gen.registers:
+            gen.record_facts(source.tn, value)
         gen.record_facts(result.tn, value)
         if (
             not access.move

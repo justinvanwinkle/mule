@@ -627,14 +627,14 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
                 base_facts=context.base_escape_facts,
             )
         with phase("LTN %s context %s", lambda_.name, context.id, level=logging.DEBUG):
-            ltn_analyze(lambda_, context)
+            ltn_token = ltn_analyze(lambda_, context)
         with phase(
             "IR2 conversion %s context %s",
             lambda_.name,
             context.id,
             level=logging.DEBUG,
         ):
-            component = ir2_convert(lambda_, context)
+            component = ir2_convert(lambda_, context, ltn_token=ltn_token)
             replace_local_aggregates(component)
         with phase(
             "representation selection %s context %s",

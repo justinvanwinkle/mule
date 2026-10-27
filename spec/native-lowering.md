@@ -38,6 +38,16 @@ type from the lvar's derived type. A common float or fixnum representation can
 therefore survive a return or control-flow merge; genuinely heterogeneous
 alternatives retain the existing object representation.
 
+SBCL caches this type on the lvar in `src/compiler/node.lisp`,
+`lvar-derived-type`, and invalidates it when the IR1 value changes. Mule's
+producer facts vary by entry context, so LTN keeps the joined type on its
+temporary IR2 lvar annotation instead. IR2 conversion reuses it only when its
+LTN token matches the annotation's token. The caller must pass the token from
+the preceding LTN invocation and keep the graph and context facts unchanged
+between those phases. Older annotations and native-plan selections that did
+not compute a join use the current facts instead. The annotation is cleared
+after conversion.
+
 ## Proven floats in object entries
 
 LTN distinguishes a proven, bound Python float from an unknown descriptor and
