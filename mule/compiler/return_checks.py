@@ -353,18 +353,12 @@ class _AssertResult(NodeVisitor):
                 or target.code.firstlineno > location[1]
             ):
                 return
-            annotation = target.signature.implementation_return_annotation
-            declared = None if annotation is None else annotation.definition_contract()
-            if declared is not None:
-                contract = DeclaredReturnContract(target.name, declared)
-            else:
-                arguments = tuple(
-                    self.lvar_type(arg).widen_constant() for arg in call.args
-                )
-                inferred = target.derive_return_type(arguments, call.info.keywords)
-                if inferred is UNKNOWN or inferred is BOTTOM or inferred.may_be_unbound:
-                    return
-                contract = InferredReturnContract(target.name, inferred)
+            arguments = tuple(self.lvar_type(arg).widen_constant() for arg in call.args)
+            contract = _target_return_contract(
+                target, self.all_facts.get(target), arguments, call.info.keywords
+            )
+            if contract is None:
+                return
         else:
             return
         checked = contract.fact

@@ -1160,25 +1160,21 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
      containers) and remove the `element_contracts` side-table and
      `_IsElementPreservingBuiltin`.
 
-### 6L. Pre-representation calling-convention selection (`locall.lisp`) and general inline string equality (`seqtran.lisp`)
+### 6L. Pre-representation calling-convention selection (`locall.lisp`) and general inline string equality (`seqtran.lisp`) — Implemented
 
-- **Current special case**:
-  - `select_numeric_calls` (`mule/compiler/codegen.py:2831-3130`) runs inside
-    `codegen.py` after `represent.py`, skips self-recursive functions
-    (`target is component.lambda_`), and rejects guarded `-> int` returns
-    (`return_checks.py:322`).
-  - `_emit_inline_latin1_compare` (`mule/compiler/vops.py:1679-1793`) only
-    handles `TextLiteral`s of length `2..24` and synthesizes fake `inline.text`
-    SSA names.
-- **SBCL reference**: `convert-local-call` and `merge-tail-sets` in
-  `src/compiler/locall.lisp`, `src/compiler/represent.lisp`, and `string=*` in
-  `src/compiler/seqtran.lisp`.
-- **Required implementation**:
-  1. Select `CallingConvention` (`FIXNUM` / `DOUBLE` parameter and return SCs)
-     in `callconv.py` before `represent.py:select_representations`, support
-     self-recursive calls to `numeric_entry`, and support guarded `-> int`
-     return conventions symmetrically with `-> float`.
-  2. Handle length-0 and length-1 `TextLiteral` equality via direct length /
-     `latin1_character` pointer comparison and use a clean `alwaysinline` helper
-     for general `InlineLatin1` equality on both literal and variable operands
-     without fake SSA names.
+- **Implemented architecture**:
+  - `NumericEntry`, `numeric_entry`, and `select_numeric_calls` live in
+    `mule/compiler/callconv.py` alongside `CallConvention` and run in
+    `compile_component` after `assign_variable_primitive_types(component)` and
+    before `represent.py:select_representations(component)` (so representation
+    selection runs once with final call operand/result restrictions).
+    `select_numeric_calls` supports self-recursive calls to `numeric_entry`
+    (`target is component.lambda_`) and guarded `-> int` return conventions
+    (`return_checks.py:visit_Combination` uses `_target_return_contract`).
+  - `_pack_inline_latin1_words` and `_emit_inline_latin1_compare`
+    (`mule/compiler/vops.py`) cover length `0..24` Latin-1 literals (comparing
+     only the 16-bit `(len << 8) | kind_tag` header for `""` and the header plus
+    `words[0]` for single-character literals without materializing a borrowed
+    text slot or synthesizing fake `inline.text` SSA names), and general `str`
+    equality uses the `alwaysinline` `@mule.fast.text.eq` /
+    `@mule.fast.text.ne` helpers before falling back to `@mule_text_eq`.

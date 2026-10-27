@@ -78,6 +78,56 @@ def calculate(n, label):
     assert body.index(extraction) < body.index("fmul double")
 
 
+def test_self_recursive_and_guarded_fixnum_numeric_entries():
+    llvm = emit_llvm(
+        """
+def masked_step(x: int) -> int:
+    total = 0
+    for i in range(4):
+        total = (total + x + i) & 0xFFFF
+    return total
+
+def outer(n: int) -> float:
+    def rec_countdown(k, acc):
+        if k <= 0:
+            return acc & 0xFFFF
+        return rec_countdown((k - 1) & 0xFFFF, (acc + masked_step(k)) & 0xFFFF) & 0xFFFF
+
+    def rec_scale(k, x):
+        if k <= 0:
+            return x * 1.5
+        return rec_scale((k - 1) & 0xFFFF, x) + 0.25
+
+    c = rec_countdown(n & 0xFF, 0) & 0xFFFF
+    return rec_scale(c, 2.5) + 1.0
+"""
+    )
+    assert "define internal i64 @mule_fn_masked_step.numeric." in llvm
+    assert (
+        'define internal i64 @"mule_fn_outer.<locals>.rec_countdown.numeric.observed"('
+        "ptr %globals, ptr %error.flag, ptr %closure, i64 %parameter.0, i64 %parameter.1)"
+    ) in llvm
+    assert (
+        'define internal double @"mule_fn_outer.<locals>.rec_scale.numeric.general"('
+        "ptr %globals, ptr %error.flag, ptr %closure, ptr %parameter.0, double %parameter.1)"
+    ) in llvm
+    rec_numeric = llvm.split(
+        'define internal i64 @"mule_fn_outer.<locals>.rec_countdown.numeric.observed"'
+    )[1].split("\n}")[0]
+    assert 'call i64 @"mule.numeric.mule_fn_masked_step.' in rec_numeric
+    assert (
+        'call i64 @"mule_fn_outer.<locals>.rec_countdown.numeric.observed"('
+        in rec_numeric
+    )
+    scale_numeric = llvm.split(
+        'define internal double @"mule_fn_outer.<locals>.rec_scale.numeric.general"'
+    )[1].split("\n}")[0]
+    assert (
+        'call double @"mule_fn_outer.<locals>.rec_scale.numeric.general"('
+        in scale_numeric
+    )
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -172,6 +222,42 @@ def positive(text):
 positive('1.25')
 positive('-0.0')
 """,
+        """
+def masked_step(x: int) -> int:
+    total = 0
+    for i in range(4):
+        total = (total + x + i) & 0xFFFF
+    return total
+
+def outer(n: int) -> float:
+    def rec_countdown(k, acc):
+        if k <= 0:
+            return acc & 0xFFFF
+        return rec_countdown((k - 1) & 0xFFFF, (acc + masked_step(k)) & 0xFFFF) & 0xFFFF
+
+    def rec_scale(k, x):
+        if k <= 0:
+            return x * 1.5
+        return rec_scale((k - 1) & 0xFFFF, x) + 0.25
+
+    c = rec_countdown(n & 0xFF, 0) & 0xFFFF
+    return rec_scale(c, 2.5) + 1.0
+
+def check_str_eq(a: str, b: str):
+    return (
+        a == '',
+        a != '',
+        a == 'x',
+        a != 'x',
+        a == 'alpha_beta',
+        a == b,
+        a != b,
+    )
+
+print(outer(0), outer(3))
+for s in ('', 'x', 'y', 'alpha_beta', 'alpha_beta_gamma_delta_epsilon', 'λ'):
+    print(check_str_eq(s, 'alpha_beta'), check_str_eq(s, s))
+""",
     ],
     ids=[
         "escaped-origin-numeric-copy",
@@ -181,6 +267,7 @@ positive('-0.0')
         "failed-assignment-identity",
         "mixed-type-destination",
         "float-subclass-positive",
+        "self-recursive-numeric-and-inline-str-eq",
     ],
 )
 def test_mixed_representations_preserve_python_float_semantics(tmp_path, source):

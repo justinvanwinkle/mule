@@ -165,7 +165,7 @@ class _BoxedConstant(ast.Visitor):
 
     def visit_TextLiteral(self, node):
         if _is_inline_text_compare_only(self.gen, self.result.tn, node.value):
-            self.gen.native_result(self.result, self.gen.fresh("inline.text"))
+            self.gen.native_result(self.result, "null")
             return
         if not self.result.tn.sc.owned or (self.result.tn.type or UNKNOWN).is_immortal:
             self.gen.native_result(
@@ -1693,13 +1693,15 @@ for _operator, _opcode in UNARY_OPCODES.items():
 def _pack_inline_latin1_words(
     literal: str | None,
 ) -> tuple[int, tuple[int, ...]] | None:
-    if literal is None or not (2 <= len(literal) <= 24):
+    if literal is None or len(literal) > 24:
         return None
     try:
         raw = literal.encode("latin-1")
     except UnicodeEncodeError:
         return None
     n = len(raw)
+    if n == 0:
+        return 0, ()
     padded = raw.ljust(24, b"\x00")
     w0 = int.from_bytes(padded[0:8], "little", signed=True)
     if n <= 8:
@@ -1739,14 +1741,23 @@ def _tn_exact_text(gen, tn, value_type) -> str | None:
     return _constant_text_value(gen, tn)
 
 
-def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
-    if not (left_type.fits_text(left_type) and right_type.fits_text(right_type)):
-        return False
+def _uses_pointer_text_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
     if (
+        _pack_inline_latin1_words(_constant_text_value(gen, left_tn)) is not None
+        or _pack_inline_latin1_words(_constant_text_value(gen, right_tn)) is not None
+    ):
+        return False
+    return (
         left_type.singleton_text() is not None
         or right_type.singleton_text() is not None
         or (left_type.is_interned_text and right_type.is_interned_text)
-    ):
+    )
+
+
+def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -> bool:
+    if not (left_type.fits_text(left_type) and right_type.fits_text(right_type)):
+        return False
+    if _uses_pointer_text_compare(gen, left_tn, left_type, right_tn, right_type):
         return False
     return (
         _pack_inline_latin1_words(_tn_exact_text(gen, right_tn, right_type)) is not None
@@ -1758,7 +1769,11 @@ def _uses_inline_latin1_compare(gen, left_tn, left_type, right_tn, right_type) -
 def _is_inline_text_compare_only(gen, tn, value: str) -> bool:
     if (
         gen.raw
-        or tn.borrowed_from is None
+        or (
+            tn.borrowed_from is None
+            and tn.sc.owned
+            and not (tn.type or UNKNOWN).is_immortal
+        )
         or tn not in gen.registers
         or _pack_inline_latin1_words(value) is None
     ):
@@ -1856,10 +1871,8 @@ def _define_compare(operator, opcode):
             and left_type.fits_text(left_type)
             and right_type.fits_text(right_type)
         ):
-            if opcode in (0, 1) and (
-                left_type.singleton_text() is not None
-                or right_type.singleton_text() is not None
-                or (left_type.is_interned_text and right_type.is_interned_text)
+            if opcode in (0, 1) and _uses_pointer_text_compare(
+                gen, left.tn, left_type, right.tn, right_type
             ):
                 predicate = "eq" if opcode == 0 else "ne"
                 condition = gen.operation(f"icmp {predicate} ptr {lhs}, {rhs}")
@@ -1867,15 +1880,13 @@ def _define_compare(operator, opcode):
                     f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
                 )
             elif opcode in (0, 1):
-                right_inline = _pack_inline_latin1_words(
-                    _tn_exact_text(gen, right.tn, right_type)
-                )
+                right_exact = _tn_exact_text(gen, right.tn, right_type)
+                left_exact = _tn_exact_text(gen, left.tn, left_type)
+                right_inline = _pack_inline_latin1_words(right_exact)
                 left_inline = (
                     None
                     if right_inline is not None
-                    else _pack_inline_latin1_words(
-                        _tn_exact_text(gen, left.tn, left_type)
-                    )
+                    else _pack_inline_latin1_words(left_exact)
                 )
                 if right_inline is not None:
                     boolean = _emit_inline_latin1_compare(
@@ -1885,7 +1896,7 @@ def _define_compare(operator, opcode):
                     boolean = _emit_inline_latin1_compare(
                         gen, rhs, left_inline[0], left_inline[1], opcode
                     )
-                else:
+                elif right_exact is not None or left_exact is not None:
                     matched = gen.operation(
                         f"call i32 @mule_text_eq(ptr {lhs}, ptr {rhs})"
                     )
@@ -1893,6 +1904,11 @@ def _define_compare(operator, opcode):
                     condition = gen.operation(f"icmp {predicate} i32 {matched}, 0")
                     boolean = gen.operation(
                         f"select i1 {condition}, ptr @mule.true, ptr @mule.false"
+                    )
+                else:
+                    helper_name = "eq" if opcode == 0 else "ne"
+                    boolean = gen.operation(
+                        f"call ptr @mule.fast.text.{helper_name}(ptr {lhs}, ptr {rhs})"
                     )
             else:
                 boolean = gen.operation(
@@ -4768,6 +4784,63 @@ slow:
 }}"""
 
 
+def _text_compare_helper(op: int) -> str:
+    name = "eq" if op == 0 else "ne"
+    same_res = "@mule.true" if op == 0 else "@mule.false"
+    diff_res = "@mule.false" if op == 0 else "@mule.true"
+    slow_pred = "ne" if op == 0 else "eq"
+    return f"""define internal ptr @mule.fast.text.{name}(ptr %lhs, ptr %rhs) alwaysinline {{
+entry:
+  %same.ptr = icmp eq ptr %lhs, %rhs
+  br i1 %same.ptr, label %equal, label %check.header
+check.header:
+  %lh.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_KIND_TAG_OFFSET}
+  %rh.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_KIND_TAG_OFFSET}
+  %lh = load i16, ptr %lh.ptr, align 8
+  %rh = load i16, ptr %rh.ptr, align 8
+  %or.h = or i16 %lh, %rh
+  %kinds = and i16 %or.h, 255
+  %both.inline = icmp eq i16 %kinds, 0
+  br i1 %both.inline, label %inline.header, label %slow
+inline.header:
+  %same.header = icmp eq i16 %lh, %rh
+  br i1 %same.header, label %inline.w0, label %unequal
+inline.w0:
+  %lw0.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_INLINE_WORDS_OFFSET}
+  %rw0.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_INLINE_WORDS_OFFSET}
+  %lw0 = load i64, ptr %lw0.ptr, align 8
+  %rw0 = load i64, ptr %rw0.ptr, align 8
+  %eq.w0 = icmp eq i64 %lw0, %rw0
+  br i1 %eq.w0, label %check.len, label %unequal
+check.len:
+  %more = icmp ugt i16 %lh, 2048
+  br i1 %more, label %inline.rest, label %equal
+inline.rest:
+  %lw1.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_INLINE_WORDS_OFFSET + 8}
+  %rw1.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_INLINE_WORDS_OFFSET + 8}
+  %lw1 = load i64, ptr %lw1.ptr, align 8
+  %rw1 = load i64, ptr %rw1.ptr, align 8
+  %lw2.ptr = getelementptr inbounds i8, ptr %lhs, i64 {TEXT_INLINE_WORDS_OFFSET + 16}
+  %rw2.ptr = getelementptr inbounds i8, ptr %rhs, i64 {TEXT_INLINE_WORDS_OFFSET + 16}
+  %lw2 = load i64, ptr %lw2.ptr, align 8
+  %rw2 = load i64, ptr %rw2.ptr, align 8
+  %eq.w1 = icmp eq i64 %lw1, %rw1
+  %eq.w2 = icmp eq i64 %lw2, %rw2
+  %eq.rest = and i1 %eq.w1, %eq.w2
+  %inline.res = select i1 %eq.rest, ptr {same_res}, ptr {diff_res}
+  ret ptr %inline.res
+equal:
+  ret ptr {same_res}
+unequal:
+  ret ptr {diff_res}
+slow:
+  %matched = call i32 @mule_text_eq(ptr %lhs, ptr %rhs)
+  %cond = icmp {slow_pred} i32 %matched, 0
+  %slow.res = select i1 %cond, ptr @mule.true, ptr @mule.false
+  ret ptr %slow.res
+}}"""
+
+
 # Exact ordering of a machine integer against a binary64: doubles beyond the
 # i64 range order by sign, and in-range doubles split into an integer part,
 # which is compared as an integer, and a fraction that breaks ties.
@@ -4993,6 +5066,7 @@ def helpers(*, bootstrap: bool = False) -> str:
             *(_unary_helper(op, fixnum=True) for op in range(3)),
             *(_compare_helper(op) for op in range(8)),
             *(_compare_bool_helper(op) for op in range(6)),
+            *(_text_compare_helper(op) for op in range(2)),
         ]
     )
 

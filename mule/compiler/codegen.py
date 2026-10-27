@@ -38,7 +38,12 @@ from mule import ast
 from mule.diagnostics import phase
 
 from . import argument_layout, vops
-from .callconv import CallConvention, tuple_return_convention
+from .callconv import (
+    NumericEntry,
+    numeric_entry,
+    select_numeric_calls,
+    tuple_return_convention,
+)
 from .ctype import (
     BOTTOM,
     FIXNUM_MAX,
@@ -65,7 +70,7 @@ from .node import (
     linked,
 )
 from .represent import (
-    can_use_double,
+    assign_variable_primitive_types,
     emit_moves_and_coercions,
     fresh_box_returns,
     mark_private_boxes,
@@ -77,7 +82,6 @@ from .traceback_sites import SourceHighlights
 from .vop import (
     BOOLEAN,
     BOOLEAN_T,
-    BOXED_FLOAT,
     CLASS,
     DESCRIPTOR,
     DOUBLE,
@@ -92,7 +96,6 @@ from .vop import (
     SIGNED,
     TN,
     BoxLayout,
-    TNRef,
 )
 
 if TYPE_CHECKING:
@@ -628,7 +631,9 @@ def generate(program: Program) -> str:
     return llvm
 
 
-def compile_component(lambda_: Lambda, context, *, select_calls=None):
+def compile_component(
+    lambda_: Lambda, context, *, select_calls=None, emit_coercions: bool = True
+):
     """Run the IR2 phases for one body (``compile-component`` for a backend
     whose register allocation LLVM performs)."""
     with specialized_ir1_context(lambda_, context):
@@ -654,11 +659,13 @@ def compile_component(lambda_: Lambda, context, *, select_calls=None):
             context.id,
             level=logging.DEBUG,
         ):
+            assign_variable_primitive_types(component)
+            if select_calls is not None:
+                select_calls(component)
             select_representations(component)
-            if select_calls is not None and select_calls(component):
-                select_representations(component)
-            emit_moves_and_coercions(component)
-            _specialize_list_getitems(component)
+            if emit_coercions:
+                emit_moves_and_coercions(component)
+                _specialize_list_getitems(component)
         return component
 
 
@@ -780,28 +787,6 @@ class TupleConstant:
     slot: str
     entry: str
     borrowed_entry: str = ""
-
-
-@dataclass(slots=True)
-class NumericEntry:
-    function: Lambda
-    context: EntryContext
-    symbol: str
-    proven: bool = True
-    result_contract: object = None
-
-
-def _numeric_argument_fits(actual, expected) -> bool:
-    # Boolean facts can fit integer bounds, but their singleton pointers do
-    # not have the tagged fixnum representation that a scalar entry decodes.
-    if expected.is_fixnum and not actual.is_fixnum:
-        return False
-    if (
-        primitive_type_of(expected) is BOXED_FLOAT
-        and primitive_type_of(actual) is not BOXED_FLOAT
-    ):
-        return False
-    return actual.fits(expected)
 
 
 class ModuleGenerator:
@@ -2730,65 +2715,15 @@ class ModuleGenerator:
         borrowed_parameters: frozenset[int] = frozenset(),
     ) -> NumericEntry:
         """Select an internal ABI without changing the entry's semantic facts."""
-        returned = (
-            DOUBLE if primitive_type_of(context.return_type) is BOXED_FLOAT else SIGNED
-        )
-        parameters = tuple(
-            DOUBLE
-            if primitive_type_of(fact) is BOXED_FLOAT
-            else SIGNED
-            if fact.is_fixnum
-            else DESCRIPTOR
-            for fact in context.parameters
-        )
-        probe_key = function, context.id
-        probe = self.numeric_entries.get(probe_key)
-        if probe is not None:
-            parameters = linked(
-                probe.context.convention, probe, "convention"
-            ).parameters
-        else:
-            numeric_probe = replace(
-                context, convention=CallConvention(parameters, returned)
-            )
-            # Signature probing does not select calls or retain cloned IR1 nodes.
-            # Object-sensitive parameter uses must keep the incoming object itself.
-            component = compile_component(function, numeric_probe)
-            parameters = tuple(
-                DESCRIPTOR
-                if sc is DOUBLE
-                and not can_use_double(component, component.environment.vars[var])
-                else sc
-                for var, sc in zip(function.vars, parameters, strict=True)
-            )
-        borrowed_descriptors = frozenset(
-            i for i in borrowed_parameters if parameters[i] is DESCRIPTOR
-        )
-        context_id = (
-            "borrow."
-            + str(context.id or "general")
-            + "."
-            + ".".join(map(str, sorted(borrowed_descriptors)))
-            if borrowed_descriptors
-            else context.id
-        )
-        key = function, context_id
-        existing = self.numeric_entries.get(key)
-        if existing is not None:
-            return existing
-        numeric = replace(
-            context,
-            id=context_id,
-            borrowed_parameters=borrowed_descriptors,
-            convention=CallConvention(parameters, returned),
-        )
-        entry = NumericEntry(
+        return numeric_entry(
+            self,
             function,
-            numeric,
-            _symbol(f"{function.name}.numeric.{context_id or 'general'}"),
+            context,
+            borrowed_parameters,
+            probe_component=lambda fn, ctx: compile_component(
+                fn, ctx, emit_coercions=False
+            ),
         )
-        self.numeric_entries[key] = entry
-        return entry
 
     def guarded_numeric_call_helper(self, entry: NumericEntry) -> str:
         convention = linked(entry.context.convention, entry, "convention")
@@ -2906,159 +2841,7 @@ class ModuleGenerator:
 
     def select_numeric_calls(self, component) -> bool:
         """Use scalar locations for proven or guarded calls and compatible consumers."""
-        if component.context.plan is not None or component.context.borrowed_parameters:
-            return False
-        changed = False
-        block_by_vop = {vop: block for block in component.blocks for vop in block.vops}
-        pending = [
-            vop
-            for block in component.blocks
-            for vop in block.vops
-            if vop.info in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
-        ]
-        while pending:
-            remaining = []
-            progress = False
-            for vop in pending:
-                site = vop.codegen_info
-                borrowed_args = frozenset(
-                    index
-                    for index, ref in enumerate(vop.args[1:])
-                    if ref.tn.borrowed_from is not None and ref.tn.sc.owned
-                )
-                if borrowed_args and (
-                    not site.proven or not (borrowed_args <= site.borrowable_arguments)
-                ):
-                    continue
-                target = site.target
-                if (
-                    site.keywords
-                    or target not in self.owned
-                    or (
-                        target in self.native_plans
-                        and (site.proven or self.native_plans[target].dependencies)
-                    )
-                    or target is component.lambda_
-                    or target.call_order((), len(vop.args) - 1)
-                    != tuple(range(len(target.vars)))
-                ):
-                    continue
-                assertion_vop = None
-                result_contract = None
-                if site.proven:
-                    result = vop.results[0].tn
-                else:
-                    if self.closure_of(target):
-                        continue
-                    block = block_by_vop.get(vop)
-                    if block is None or vop not in block.vops:
-                        continue
-                    idx = block.vops.index(vop)
-                    if (
-                        idx + 1 >= len(block.vops)
-                        or block.vops[idx + 1].info is not vops.TYPE_CHECK
-                    ):
-                        continue
-                    assertion_vop = block.vops[idx + 1]
-                    delivered = vop.results[0].tn
-                    if (
-                        assertion_vop.args[0].tn is not delivered
-                        or len(component.writes.get(delivered, ())) != 1
-                        or len(component.reads.get(delivered, ())) != 1
-                    ):
-                        continue
-                    result = assertion_vop.results[0].tn
-                    if assertion_vop.codegen_info.safety:
-                        result_contract = assertion_vop.codegen_info.contract
-                fact = result.type or UNKNOWN
-                ignore_vops = (
-                    (vop, assertion_vop) if assertion_vop is not None else (vop,)
-                )
-                if primitive_type_of(fact) is BOXED_FLOAT:
-                    if not can_use_double(component, result, ignore=ignore_vops):
-                        remaining.append(vop)
-                        continue
-                elif not fact.is_fixnum or not site.proven:
-                    continue
-                arguments = tuple(arg.tn.type or UNKNOWN for arg in vop.args[1:])
-                general, variants = self.contexts(target)
-                context = next(
-                    (
-                        candidate
-                        for candidate in (*variants, general)
-                        if all(
-                            _numeric_argument_fits(actual, expected)
-                            for actual, expected in zip(
-                                arguments, candidate.parameters, strict=True
-                            )
-                        )
-                        and (
-                            candidate.return_type.is_fixnum
-                            if fact.is_fixnum
-                            else primitive_type_of(candidate.return_type) is BOXED_FLOAT
-                        )
-                        and candidate.return_type.fits(fact)
-                    ),
-                    None,
-                )
-                if context is None:
-                    continue
-                entry = self.numeric_entry(target, context, borrowed_args)
-                convention = linked(entry.context.convention, entry, "convention")
-                if not site.proven and any(
-                    sc not in (DOUBLE, SIGNED) for sc in convention.parameters
-                ):
-                    continue
-                if assertion_vop is not None:
-                    delivered = vop.results[0].tn
-                    block = block_by_vop[vop]
-                    block.vops.remove(assertion_vop)
-                    component.reads.pop(delivered, None)
-                    component.writes.pop(delivered, None)
-                    vop.results[0] = TNRef(result, True)
-                    component.writes[result] = [(vop, vop.results[0])]
-                restrictions = tuple(
-                    (DESCRIPTOR, DOUBLE)
-                    if sc is DOUBLE
-                    else (IMMEDIATE, SIGNED)
-                    if sc is SIGNED
-                    else OBJECT
-                    for sc in convention.parameters
-                )
-                vop.info = replace(
-                    vops.LOCAL_CALL,
-                    args=(
-                        (REFERENCE,) if site.local_environment else OBJECT,
-                        *restrictions,
-                    ),
-                    arg_escapes=(
-                        False,
-                        *(
-                            sc is DESCRIPTOR
-                            and i not in entry.context.borrowed_parameters
-                            for i, sc in enumerate(convention.parameters)
-                        ),
-                    ),
-                    results=(
-                        (DOUBLE,)
-                        if convention.returned is DOUBLE
-                        else (IMMEDIATE, SIGNED),
-                    ),
-                )
-                vop.codegen_info = (
-                    entry
-                    if site.proven
-                    else replace(
-                        entry,
-                        proven=False,
-                        result_contract=result_contract,
-                    )
-                )
-                progress = changed = True
-            if not progress:
-                break
-            pending = remaining
-        return changed
+        return select_numeric_calls(self, component)
 
     def fresh_box_result(self, component, vop):
         """Transfer fresh object ownership only across proven factory calls."""
