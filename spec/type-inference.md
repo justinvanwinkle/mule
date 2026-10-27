@@ -327,6 +327,44 @@ For a single `Lambda` and parameter tuple, `propagate()` runs a worklist over th
    - For `"fixnum"` and `"observed"` entry contexts whose narrower parameter types unlock additional IR1 transforms (`_would_reoptimize_for_context`), `specialized_ir1_context` clones the `Lambda`'s IR1 component during IR2 translation, runs `ir1opt` + `dfo` + `loop.analyze` under that entry's types, lowers the specialized IR2/LLVM body, and restores the canonical IR1 component.
    - **Current limitation in `_SpecializesBody`**: `locall.analyze` retains a `"fixnum"` entry context (including `(InstanceType(cls), ...)` on class methods) only when `_SpecializesBody` observes that a node narrows to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a `list`/`str`/`dict` container operation. Methods whose specialization consists of `InstanceType` attribute reads/writes (`GETATTR` / `SETATTR`) or `PYTHON_INTEGER` results currently drop their `"fixnum"` variant (`variants=()`). Extending `_SpecializesBody` to preserve `InstanceType` slot specialization is tracked in [compiler-gaps.md](compiler-gaps.md#0-high-impact-architectural-parity-gaps-from-the-14-workload-suite-audit-proposed).
 
+#### Bounded text content domain
+
+The bounded text content component is the first isolated increment toward
+caller-site specialization. It does not replace or extend the active
+`TextType` producers, propagation rules, or code generation in this increment.
+Integration with those consumers is a separate change.
+
+SBCL's `src/code/type.lisp` implements array/string shape subtyping in
+`(array :simple-subtypep)`, unions in `(array :simple-union2)`, and
+intersections in `array-intersection`. Dimensions are exact or wildcard
+constraints, independent of array element representation. Mule follows that
+separation between content constraints and physical representation.
+
+The Python-specific extension represents a non-negative character-length
+interval and guaranteed prefix and suffix, each limited to five Unicode
+characters. Unlike SBCL's exact/wildcard array dimensions, intervals retain
+useful information for strings of varying lengths. Guaranteed ends retain
+partial content without retaining arbitrary-size literals. These constraints
+do not establish interning, object identity, storage ownership, or subclass
+behavior. No executable behavior or performance claim follows until later
+increments integrate the component with compiler proofs and consumers.
+
+The component provides union approximation, intersection, containment,
+widening, concrete membership, and serialization. Union retains only common
+guarantees. Intersection reports an empty domain when lengths or ends
+conflict. Overlapping ends must agree at a permitted length. Canonicalization
+reduces implied length and end constraints without enumerating strings.
+Widening drops a decreasing lower bound or increasing upper bound and retains
+only common ends, so ascending chains stabilize. Length bounds have no fixed
+numeric limit. Operation cost depends on the five-character affix limit, not
+the maximum represented string length.
+
+The component is content metadata rather than a language-level `ValueType`.
+Its intersection uses `None` for the empty content domain, not the Python
+`None` value. Constructors reject inconsistent constraints and oversized ends.
+Literal construction records exact character length and bounded ends only.
+Serialization preserves these content facts and requires all fields.
+
 #### Known analysis gaps
 
 - **Confirmed `TYPE_CHECKING` miscompile:** `fold_type_checking_constants` in
