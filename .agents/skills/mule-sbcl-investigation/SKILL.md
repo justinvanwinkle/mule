@@ -110,6 +110,12 @@ Do not create competing agent-memory or instruction authorities.
 
 Before reporting completion, reconcile actual changes, completed checks,
 artifact identity, and the original workload result.
-A local mechanism may work while the original performance target remains unmet.
+**SBCL parity is the mandatory completion gate:** never commit, merge, or claim
+completion until the implementation is at least as good as SBCL in stage
+placement, IR mechanism, and domain coverage (annotated/unannotated functions,
+recursion, closures, mixed calling conventions, and general operand shapes),
+with zero test workarounds for unhandled cases.
+A local mechanism may work while the original performance target or full SBCL
+parity remains unmet.
 A merged commit, valid IR, passing suite, or isolated speedup is not that target.
 If blocked or redirected, preserve the unresolved state without claiming success.

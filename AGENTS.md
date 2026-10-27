@@ -205,6 +205,24 @@ missing compiler infrastructure, or an easier Rust implementation do not by
 themselves justify a different architecture. Identify missing stages explicitly
 and implement the corresponding compiler machinery.
 
+**SBCL parity is the completion standard.** Do not commit, merge, or report a
+compiler task as complete until the answer to "Is this at least as good as SBCL?"
+is unambiguously **yes**:
+
+- **Stage and mechanism parity:** The analysis or transformation lives in the
+  same compiler phase and uses the same producer/consumer IR architecture as
+  SBCL (for example, IR1 `deftransform` / `seqtran` rather than ad-hoc inspection
+  during VOP code emission, and `locall` / `ltn` / `ir2tran` call-convention
+  selection rather than post-pass VOP surgery or throwaway compilation probes).
+- **Generality and coverage parity:** It handles the full domain SBCL handles
+  (annotated and unannotated functions, self and mutual recursion, closures,
+  mixed scalar and descriptor conventions, and general bounds/lengths), not a
+  narrow subset tailored to a single benchmark or test case.
+- **No test workarounds for compiler gaps:** If a natural program form (such as
+  a top-level annotated recursive function) fails to get the optimization, treat
+  that as an unfinished defect in the compiler and fix it before completing the
+  task. Never reshape a test to work around a case where Mule still trails SBCL.
+
 The compiler is written in Python and must eventually self host. Language-level
 runtime and standard-library code must be written in Mule Python and compiled
 by Mule, as SBCL compiles its Lisp language implementation. This includes class
