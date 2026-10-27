@@ -3652,18 +3652,29 @@ class _Converter(NodeVisitor):
             code_target is target or (node.kind is CallKind.GUARDED and node.proven)
         )
         info = node.info
+        keywords = info.keywords if info is not None else ()
+        order = (
+            target.call_order(keywords, len(node.args))
+            if target is not None and target in self.context.borrowed_callees
+            else None
+        )
+        borrowable = (
+            frozenset(
+                arg_idx
+                for param_idx, arg_idx in enumerate(order)
+                if arg_idx is not None
+                and arg_idx >= 0
+                and param_idx in self.context.borrowed_callees[target]
+            )
+            if order is not None
+            else frozenset()
+        )
         site = CallSite(
-            info.keywords if info is not None else (),
+            keywords,
             info.location if info is not None else None,
             target,
             proven,
-            self.context.borrowed_callees.get(target, frozenset())
-            if target is not None
-            and (info is None or not info.keywords)
-            and target is not None
-            and target in self.context.borrowed_callees
-            and target.call_order((), len(node.args)) == tuple(range(len(node.args)))
-            else frozenset(),
+            borrowable,
         )
         result, discard = self.result_tn(node)
         if discard and not proven:

@@ -3,6 +3,7 @@
 import re
 
 from mule.compiler import emit_llvm
+from mule.compiler.driver import compile_program
 from mule.compiler.escape import analyze_escapes
 from mule.compiler.main import compile_source
 from test.mule.compiler.test_exception_groups import compare
@@ -211,3 +212,104 @@ for item in ["alpha", "beta"]:
     print(update_word(item))
 """,
     )
+
+
+def test_keyword_default_and_builtin_method_consumers_keep_parameters_borrowed():
+    program = compile_program("""
+import math
+
+def top_helper(value, scale: int = 1):
+    return (value is None) or (scale == 0)
+
+def caller_kw_and_default(first, second):
+    def helper(value, scale=1):
+        return (value is None) or (scale == 0)
+
+    def string_methods(text: str, sub: str, sep: str) -> int:
+        if not text:
+            return 0
+        a = text.find(sub)
+        b = text.startswith(sub)
+        parts = text.split(sep)
+        head, _, tail = text.partition(sep)
+        return a + (1 if b else 0) + len(parts) + len(head) + len(tail)
+
+    def container_methods(
+        items: list[int], buf: bytearray, mapping: dict[str, int], key: str
+    ) -> int:
+        items.append(1)
+        popped = items.pop()
+        buf.append(65)
+        got = mapping.get(key, 0)
+        return popped + got + len(items) + len(buf)
+
+    def math_and_compare(x: float, y: int) -> bool:
+        return math.sqrt(x) > 0.0 and y == 3 and not y
+
+    s = string_methods("alpha,beta", "a", ",")
+    c = container_methods([1, 2], bytearray(b"x"), {"k": 1}, "k")
+    m = math_and_compare(4.0, 3)
+    return (
+        helper(value=first)
+        and helper(second, scale=2)
+        and (s + c > 0 or m)
+    )
+""")
+    facts = analyze_escapes(program.lambdas)
+    by_name = {fn.code.name: fn for fn in program.lambdas if fn.code is not None}
+    assert not facts.parameter_escapes(by_name["top_helper"], 0)
+    assert not facts.parameter_escapes(by_name["helper"], 0)
+    assert not facts.parameter_escapes(by_name["helper"], 1)
+    assert not facts.parameter_escapes(by_name["caller_kw_and_default"], 0)
+    assert not facts.parameter_escapes(by_name["caller_kw_and_default"], 1)
+    assert not facts.parameter_escapes(by_name["string_methods"], 0)
+    assert not facts.parameter_escapes(by_name["string_methods"], 1)
+    assert not facts.parameter_escapes(by_name["string_methods"], 2)
+    assert not facts.parameter_escapes(by_name["container_methods"], 0)
+    assert not facts.parameter_escapes(by_name["container_methods"], 1)
+    assert not facts.parameter_escapes(by_name["container_methods"], 2)
+    assert not facts.parameter_escapes(by_name["container_methods"], 3)
+    assert not facts.parameter_escapes(by_name["math_and_compare"], 0)
+    assert not facts.parameter_escapes(by_name["math_and_compare"], 1)
+
+
+def test_cross_module_foreign_function_escape_summary_borrows_parameter(tmp_path):
+    lib_path = tmp_path / "helper_mod.py"
+    lib_path.write_text(
+        """\
+def inspect_only(value, extra: int = 1):
+    return (value is None) or (extra == 0)
+
+def captures_arg(value):
+    return [value]
+""",
+        encoding="utf-8",
+    )
+    main_source = """\
+import helper_mod
+
+def pass_to_borrowed(item):
+    return helper_mod.inspect_only(item)
+
+def pass_to_borrowed_kw(item):
+    return helper_mod.inspect_only(value=item, extra=2)
+
+def pass_to_capturing(item):
+    return helper_mod.captures_arg(item)
+
+def caller(item):
+    return (
+        pass_to_borrowed(item),
+        pass_to_borrowed_kw(item),
+        pass_to_capturing(item),
+        item,
+    )
+"""
+    llvm = emit_llvm(main_source, roots=(tmp_path,))
+    borrowed = function_body(llvm, '"mule_fn_pass_to_borrowed.borrow.general.0"')
+    assert "store ptr %arg.0, ptr %local.0" not in borrowed
+    assert "release(ptr %arg.0)" not in borrowed
+    kw_borrowed = function_body(llvm, '"mule_fn_pass_to_borrowed_kw.borrow.general.0"')
+    assert "store ptr %arg.0, ptr %local.0" not in kw_borrowed
+    assert "release(ptr %arg.0)" not in kw_borrowed
+    assert '"mule_fn_pass_to_capturing.borrow.' not in llvm

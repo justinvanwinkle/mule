@@ -380,12 +380,24 @@ class ForeignFunction:
     takes_closure: bool
     return_type: ValueType = UNKNOWN
     namespace: str = ""
+    borrowed_parameters: frozenset[int] = frozenset()
 
     def as_lambda(self) -> None:
         return None
 
     def as_function(self) -> ForeignFunction:
         return self
+
+    def supports_escape_summary(self) -> bool:
+        return not self.signature.variadic
+
+    def classify_call_escape(
+        self, solver, source, param_index: int, *, direct_positional: bool = True
+    ) -> None:
+        if param_index in self.borrowed_parameters:
+            solver.allocation_only_escape(source)
+        else:
+            solver.escape(source)
 
     def global_constant_type(self) -> ValueType:
         return UNKNOWN
@@ -965,7 +977,6 @@ class ModuleGenerator:
                     and not self.local_environments.is_local(function)
                 )
                 or function.signature.variadic
-                or function.signature.default_parameters
                 or function.method_class is not None
                 # CO_GENERATOR, CO_COROUTINE, CO_ASYNC_GENERATOR.
                 or (function.code is not None and function.code.flags & 0x2A0)
@@ -2379,7 +2390,10 @@ class ModuleGenerator:
 
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
             if borrowed_arguments:
-                context = self.borrowed_context(function, context, borrowed_arguments)
+                borrowed_params = frozenset(
+                    pos for pos, idx in enumerate(order) if idx in borrowed_arguments
+                )
+                context = self.borrowed_context(function, context, borrowed_params)
             entered = f"entered.{tag}"
             builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
             builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
@@ -2828,12 +2842,13 @@ class ModuleGenerator:
             self.backend_contexts[key] = context
         return context
 
-    def numeric_entry(self, function: Lambda, context: EntryContext) -> NumericEntry:
+    def numeric_entry(
+        self,
+        function: Lambda,
+        context: EntryContext,
+        borrowed_parameters: frozenset[int] = frozenset(),
+    ) -> NumericEntry:
         """Select an internal ABI without changing the entry's semantic facts."""
-        key = function, context.id
-        existing = self.numeric_entries.get(key)
-        if existing is not None:
-            return existing
         returned = (
             DOUBLE if primitive_type_of(context.return_type) is BOXED_FLOAT else SIGNED
         )
@@ -2845,22 +2860,51 @@ class ModuleGenerator:
             else DESCRIPTOR
             for fact in context.parameters
         )
-        numeric = replace(context, convention=CallConvention(parameters, returned))
-        # Signature probing does not select calls or retain cloned IR1 nodes.
-        # Object-sensitive parameter uses must keep the incoming object itself.
-        component = compile_component(function, numeric)
-        parameters = tuple(
-            DESCRIPTOR
-            if sc is DOUBLE
-            and not can_use_double(component, component.environment.vars[var])
-            else sc
-            for var, sc in zip(function.vars, parameters, strict=True)
+        probe_key = function, context.id
+        probe = self.numeric_entries.get(probe_key)
+        if probe is not None:
+            parameters = linked(
+                probe.context.convention, probe, "convention"
+            ).parameters
+        else:
+            numeric_probe = replace(
+                context, convention=CallConvention(parameters, returned)
+            )
+            # Signature probing does not select calls or retain cloned IR1 nodes.
+            # Object-sensitive parameter uses must keep the incoming object itself.
+            component = compile_component(function, numeric_probe)
+            parameters = tuple(
+                DESCRIPTOR
+                if sc is DOUBLE
+                and not can_use_double(component, component.environment.vars[var])
+                else sc
+                for var, sc in zip(function.vars, parameters, strict=True)
+            )
+        borrowed_descriptors = frozenset(
+            i for i in borrowed_parameters if parameters[i] is DESCRIPTOR
         )
-        numeric.convention = CallConvention(parameters, returned)
+        context_id = (
+            "borrow."
+            + str(context.id or "general")
+            + "."
+            + ".".join(map(str, sorted(borrowed_descriptors)))
+            if borrowed_descriptors
+            else context.id
+        )
+        key = function, context_id
+        existing = self.numeric_entries.get(key)
+        if existing is not None:
+            return existing
+        numeric = replace(
+            context,
+            id=context_id,
+            borrowed_parameters=borrowed_descriptors,
+            convention=CallConvention(parameters, returned),
+        )
         entry = NumericEntry(
             function,
             numeric,
-            _symbol(f"{function.name}.numeric.{context.id or 'general'}"),
+            _symbol(f"{function.name}.numeric.{context_id or 'general'}"),
         )
         self.numeric_entries[key] = entry
         return entry
@@ -2996,11 +3040,13 @@ class ModuleGenerator:
             progress = False
             for vop in pending:
                 site = vop.codegen_info
-                # Immediates have no counted ownership to specialize; borrowing
-                # one must not prevent an otherwise valid numeric convention.
-                if any(
-                    ref.tn.borrowed_from is not None and ref.tn.sc.owned
-                    for ref in vop.args[1:]
+                borrowed_args = frozenset(
+                    index
+                    for index, ref in enumerate(vop.args[1:])
+                    if ref.tn.borrowed_from is not None and ref.tn.sc.owned
+                )
+                if borrowed_args and (
+                    not site.proven or not (borrowed_args <= site.borrowable_arguments)
                 ):
                     continue
                 target = site.target
@@ -3076,7 +3122,7 @@ class ModuleGenerator:
                 )
                 if context is None:
                     continue
-                entry = self.numeric_entry(target, context)
+                entry = self.numeric_entry(target, context, borrowed_args)
                 convention = linked(entry.context.convention, entry, "convention")
                 if not site.proven and any(
                     sc not in (DOUBLE, SIGNED) for sc in convention.parameters
@@ -3106,7 +3152,11 @@ class ModuleGenerator:
                     ),
                     arg_escapes=(
                         False,
-                        *(sc is DESCRIPTOR for sc in convention.parameters),
+                        *(
+                            sc is DESCRIPTOR
+                            and i not in entry.context.borrowed_parameters
+                            for i, sc in enumerate(convention.parameters)
+                        ),
                     ),
                     results=(
                         (DOUBLE,)
@@ -5460,7 +5510,11 @@ class FunctionGenerator:
             raw_owned = []
             for ref, sc in zip(arguments, convention.parameters, strict=True):
                 taken = self.take(ref)
-                if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
+                if (
+                    sc is not DESCRIPTOR
+                    and ref.tn.sc in OBJECT
+                    and ref.tn.borrowed_from is None
+                ):
                     raw_owned.append(taken)
             operands = [
                 f"ptr {callee}",
@@ -5513,7 +5567,11 @@ class FunctionGenerator:
         raw_owned = []
         for ref, sc in zip(arguments, convention.parameters, strict=True):
             taken = self.take(ref)
-            if sc is not DESCRIPTOR and ref.tn.sc in OBJECT:
+            if (
+                sc is not DESCRIPTOR
+                and ref.tn.sc in OBJECT
+                and ref.tn.borrowed_from is None
+            ):
                 raw_owned.append(taken)
         operands = [f"ptr {callee_globals}", "ptr %numeric.error"]
         if closure is not None:

@@ -372,7 +372,9 @@ CLASS_DELETE = defknown("%class_delete", "unsafe", result=False)
 IMPORT = defknown("%import", "call", "unsafe")
 # ``from module import *``: bind the module's public names in the globals.
 IMPORT_STAR = defknown("%import_star", "unsafe", result=False)
-HAS_BINDING = defknown("%has_binding", derive_type=lambda node: BOOLEAN)
+HAS_BINDING = defknown(
+    "%has_binding", derive_type=lambda node: BOOLEAN, borrowed_args=frozenset({0})
+)
 # The globals namespace of the function being compiled: every native entry
 # receives it, and ``globals()`` returns it (converted where it is called).
 CURRENT_GLOBALS = defknown("%current_globals", "flushable")

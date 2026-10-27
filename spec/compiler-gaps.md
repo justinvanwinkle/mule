@@ -554,13 +554,19 @@ suite failure or performance measurement.
 
 ---
 
-## 3. Escape analysis and allocation elimination (`envanal.lisp` / `ltn.lisp`)
+## 3. Escape analysis and allocation elimination (`envanal.lisp` / `ltn.lisp`) (implemented)
 
 - **SBCL reference**: `src/compiler/envanal.lisp` and `dynamic-extent` handling
   in `src/compiler/ltn.lisp` and `src/compiler/ir2tran.lisp`.
 - **Implemented**:
   - `escape.py` extends the existing variable/parameter escape solver with
-    allocation-result and alias facts and implicit environment containment.
+    allocation-result and alias facts, implicit environment containment,
+    keyword and default-parameter call mapping (`call_order`), cross-unit
+    `ForeignFunction.borrowed_parameters` summaries in `BuiltinsInterface` and
+    `ModuleInterface`, and non-escaping consumer classifications for builtin
+    container truthiness, disjoint identity comparisons, reflexive containment,
+    non-user-code value comparisons and `math.sqrt`, exact builtin subscript
+    keys, and exact builtin `str`/`list`/`bytearray`/`dict` methods.
   - Stable direct-only local functions use a compiler-owned environment ABI.
     Mutable captures reference home-frame slots when every retaining closure
     has local extent. Escaping siblings keep the authoritative heap cell.
@@ -569,23 +575,25 @@ suite failure or performance measurement.
     aliases, native scalar entries, and existing unpacked returns retain their
     respective semantics.
   - `scalar.py` consumes allocation escape proofs for fixed lists and tuples,
-    including interprocedural non-escaping calls to local and proven guarded
-    functions. Constant-index reads, fixed-index list writes, length,
-    structural unpack, and aliases become scalar operations within a block or
-    across multiple blocks for a single local with inert children, and scalar
-    child slots participate in unboxed representation selection (`DOUBLE_REG`)
-    and frame slot packing. Normal and error cleanup preserve child ownership
-    and reverse destruction order.
+    including interprocedural non-escaping calls (positional, keyword, and
+    defaulted) to local and proven guarded functions. Constant-index reads,
+    bounded runtime-index reads, fixed-index list writes, length, truthiness
+    (`unary-not` and `branch`), disjoint-type identity comparisons (`is` / `is
+    not`), reflexive-equality containment (`in` / `not in` via
+    `scalar-contains`), structural unpack, and aliases become scalar operations
+    within a block or across multiple blocks (including multiple aliases,
+    conditional expression temporaries, and non-inert child teardown across
+    branches when forward dataflow proves consistent live owners and a single
+    cleanup anchor), and scalar child slots participate in unboxed
+    representation selection (`DOUBLE_REG`) and frame slot packing. Normal and
+    error cleanup preserve child ownership and reverse destruction order.
 - **Conservative allocation boundaries**: Observable functions and cells,
   defaults/decorators, suspended owning activations, unknown uses, resizing,
   overlapping aggregate lifetimes, pending element checks, and unrepresentable
   cleanup order retain ordinary allocations. This is not arbitrary heap-object
   scalar replacement or stack allocation of materialized Python containers.
-- **Remaining extensions**: Broader inter-block aggregate lifetime proofs,
-  escape summaries across additional call boundaries, and more container
-  consumers can extend the existing analysis and lowering. Existing tuple
-  projection and unpacked-return mechanisms remain in use. The precise
-  [local allocation extent contract](native-lowering.md#local-allocation-extent)
+  Existing tuple projection and unpacked-return mechanisms remain in use. The
+  precise [local allocation extent contract](native-lowering.md#local-allocation-extent)
   documents the SBCL adaptation and lifetime restrictions.
 
 ---

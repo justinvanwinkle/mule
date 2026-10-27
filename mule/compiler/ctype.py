@@ -154,6 +154,9 @@ class ValueType:
     def may_run_user_code(self):
         return True
 
+    def has_reflexive_equality(self) -> bool:
+        return False
+
     def accept(self, visitor):
         return visitor.visit_ValueType(self)
 
@@ -842,6 +845,9 @@ class IntegerType(PrimitiveType):
         return other.fits_integer(INTEGER)
 
     def fits_real(self, expected):
+        return not self.may_be_unbound
+
+    def has_reflexive_equality(self) -> bool:
         return not self.may_be_unbound
 
     def join_real(self, left):
@@ -1559,6 +1565,9 @@ class ImmortalType(ValueType):
     def may_run_user_code(self):
         return False
 
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
+
     def accept(self, visitor):
         return visitor.visit_ImmortalType(self)
 
@@ -1619,6 +1628,9 @@ class NoneType(PrimitiveType):
     @property
     def needs_release(self):
         return False
+
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
 
     def dispatch_rank(self) -> int:
         return 2**64 if self.may_be_unbound else 0
@@ -1693,6 +1705,9 @@ class TextType(PrimitiveType):
 
     @property
     def is_heap_object(self):
+        return not self.may_be_unbound
+
+    def has_reflexive_equality(self) -> bool:
         return not self.may_be_unbound
 
     @property
@@ -2041,6 +2056,9 @@ class BytesType(PrimitiveType):
     def same_runtime_class(self, other) -> bool:
         return other.fits_bytes(BYTES_TYPE)
 
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
+
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
@@ -2153,6 +2171,9 @@ class ByteArrayType(PrimitiveType):
 
     def same_runtime_class(self, other) -> bool:
         return other.fits_bytearray(BYTEARRAY_TYPE)
+
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound
 
     @property
     def is_heap_object(self):
@@ -3758,6 +3779,11 @@ class UnionType(ValueType):
     @property
     def may_run_user_code(self):
         return self.may_be_unbound or any(m.may_run_user_code for m in self.members)
+
+    def has_reflexive_equality(self) -> bool:
+        return not self.may_be_unbound and all(
+            m.has_reflexive_equality() for m in self.members
+        )
 
     def fits(self, expected):
         return (not self.may_be_unbound or expected.may_be_unbound) and all(

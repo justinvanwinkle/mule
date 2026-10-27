@@ -963,6 +963,21 @@ class Lambda(Functional):
     def as_function(self) -> Lambda:
         return self
 
+    def supports_escape_summary(self) -> bool:
+        return (
+            self.kind is FunctionalKind.NORMAL
+            and not self.signature.variadic
+            and not (self.code is not None and self.code.flags & 0x2A0)
+        )
+
+    def classify_call_escape(
+        self, solver, source, param_index: int, *, direct_positional: bool = True
+    ) -> None:
+        if param_index >= len(self.vars):
+            solver.escape(source)
+            return
+        solver.escapes_with(source, self.vars[param_index])
+
     def to_interface_entry(self) -> dict:
         return {"kind": "function", "name": self.name}
 
@@ -1126,6 +1141,9 @@ class ClassConstructorTarget:
     def as_function(self) -> None:
         return None
 
+    def supports_escape_summary(self) -> bool:
+        return False
+
     def call_order(self, keywords, count, *, receiver=False):
         return None
 
@@ -1240,6 +1258,9 @@ class ForeignCallTarget:
 
     def as_function(self) -> None:
         return None
+
+    def supports_escape_summary(self) -> bool:
+        return False
 
     def call_order(self, keywords, count, *, receiver=False):
         return None

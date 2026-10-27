@@ -2151,6 +2151,7 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                     else None
                 )
                 mod_res = UNKNOWN
+                node.predicted = mod_target
                 if mod_target is not None:
                     mod_res = mod_target.propagate_call(
                         node, visitor, args[1:], arg_types, call_info.keywords

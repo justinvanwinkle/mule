@@ -196,7 +196,11 @@ cleanup rather than adding CPython's traceback-local lifetimes.
 Fixed tuple/list allocations instead become scalar locals when every use,
 alias, and lifetime is representable. The consumer supports constant-index
 reads, bounded runtime-index reads, fixed-index list replacement, length,
-structural unpack, and local aliases. Runtime projections require a builtin
+truthiness (`bool`, `not`, and conditional branches), disjoint-type identity
+comparisons (`is` and `is not` against `None`, `bool`, `int`, `float`, `str`,
+`bytes`, `bytearray`, `dict`, or `range`), reflexive-equality containment
+(`in` and `not in` for arity 1–8), structural unpack, and local aliases.
+Runtime projections require a builtin
 fixnum index whose complete inferred range lies within the aggregate's positive
 and negative index bounds. Negative indices normalize before selecting an
 existing scalar child. The projection preserves the child's object identity and
@@ -204,9 +208,11 @@ acquires its own reference before the aggregate's final owner releases the
 scalar slots. Unproved indices and dynamic replacement retain ordinary container
 allocation and indexing behavior.
 
-Aliasing families close within one IR2 block, while a single named
-local with inert children and no local exception handlers may also span multiple
-blocks (`if/else` joins and loop-carried state). Element evaluation order and
+Aliasing families may close within one IR2 block or span multiple blocks
+(`if/else` joins, conditional expression temporaries, multi-alias lifetimes,
+explicit `del` across branches, and loop-carried state) when forward dataflow
+proves consistent incoming live owners at every control-flow join and no local
+exception handlers intervene. Element evaluation order and
 fixed-index list replacement remain observable. Deleting or replacing the last
 aggregate alias releases its children at the original destruction point. When
 all children are inert (`int`, `float`, `bool`, `None`, `str`, `bytes`), the
@@ -221,10 +227,11 @@ For potentially observable children, a raising operation requires only unhidden
 named owners and no local exception handler. Every such operation must share
 the same last live owner in the backend's cleanup order. Scalar child slots
 occupy that owner's cleanup position, in reverse element order. Normal last-owner
-destruction clears the slots earlier. Temporary owners, changing cleanup owners,
-cross-block lifetimes, and projections with pending element-contract checks
-retain the ordinary allocation path. Child releases for materialized sequences
-also follow reverse order, which weak-reference callbacks can observe.
+destruction clears the slots earlier. Temporary owners across fallible
+operations, changing cleanup owners, and projections with pending
+element-contract checks retain the ordinary allocation path. Child releases for
+materialized sequences also follow reverse order, which weak-reference
+callbacks can observe.
 
 SBCL `find-lvar-dynamic-extents` starts from dynamic-extent declarations and
 trusted downward-function-argument information, then proves compatible uses and
@@ -707,16 +714,21 @@ to reference-counted parameter lifetimes. Foreign, generator, native, numeric,
 and protocol entry paths remain owning until their contracts explicitly support
 ownership specialization. Generic container drop fusion remains separate.
 
-The initial call-site support is explicit positional same-unit calls with
-matching arity and stable, noncaptured parameter locals. Default, variadic,
-method, closure, unpacked-return, and exported cross-unit entry contracts do
-not select borrowed bodies. Initial function-database noncapture declarations
-cover identity comparisons (`is` and `is not`); unused parameters and safe local
-assignment dependencies can also qualify. Other operations conservatively
-escape until their effects are declared. In particular, truth and callable
-operations may publish their receivers through user callbacks. Guarded recursive
-forwarding remains escaping; the local dependency solver is not a claim of
-general interprocedural borrowing for dynamic calls.
+Call-site support covers same-unit calls (positional, keyword, and
+default-parameter calls mapped through `call_order`) with stable, noncaptured
+parameter locals. Variadic, method, non-local closure, unpacked-return, and
+exported cross-unit entry contracts do not select borrowed bodies directly,
+though cross-unit `ForeignFunction` interfaces (`BuiltinsInterface` and
+`ModuleInterface`) export `borrowed_parameters` summaries so callers' escape
+analyses can prove that arguments passed to non-capturing imported functions do
+not escape. Escape analysis also classifies non-user-code truthiness, value
+comparisons, `math.sqrt`, exact builtin container subscript keys, and exact
+builtin method calls (`str`, `list`, `bytearray`, `dict`) as non-escaping.
+Other operations conservatively escape until their effects are declared. In
+particular, unknown truth and callable operations may publish their receivers
+through user callbacks. Guarded recursive forwarding remains escaping; the local
+dependency solver is not a claim of general interprocedural borrowing for
+dynamic calls.
 
 Exact-dictionary protocol calls transfer operands they already own and acquire
 references only for borrowed operands. The consuming compiled protocol releases
