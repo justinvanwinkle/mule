@@ -5,7 +5,7 @@
 <g font-family="system-ui,sans-serif" fill="#202b2b" font-size="14">
 <text x="36" y="35" font-size="11" font-weight="700" letter-spacing="2" fill="#c14c32">MULE / PERFORMANCE</text>
 <text x="36" y="76" font-size="30" font-weight="650">Whole-process elapsed time</text>
-<text x="36" y="105" fill="#596564">20261027T035152.487929Z · 3 samples per runtime and scenario</text>
+<text x="36" y="105" fill="#596564">20261027T164013.488070Z · 3 samples per runtime and scenario</text>
 <text x="36" y="135" font-weight="600">Shorter bars are faster · Linear axes start at zero · Each panel has its own scale</text>
 <g data-case="account_ledger" data-typed-case="account_ledger_typed">
 <rect x="28" y="170" width="658" height="330" fill="#fffdf8" stroke="#dedfd8"/>
@@ -18,33 +18,33 @@
 <line x1="98" y1="435.00" x2="662" y2="435.00" stroke="#e2e3dc"/>
 <text x="88" y="439.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="394.00" x2="662" y2="394.00" stroke="#e2e3dc"/>
-<text x="88" y="398.00" font-size="11" fill="#596564" text-anchor="end">2.71e+03</text>
+<text x="88" y="398.00" font-size="11" fill="#596564" text-anchor="end">2.68e+03</text>
 <line x1="98" y1="353.00" x2="662" y2="353.00" stroke="#e2e3dc"/>
-<text x="88" y="357.00" font-size="11" fill="#596564" text-anchor="end">5.42e+03</text>
+<text x="88" y="357.00" font-size="11" fill="#596564" text-anchor="end">5.36e+03</text>
 <line x1="98" y1="312.00" x2="662" y2="312.00" stroke="#e2e3dc"/>
-<text x="88" y="316.00" font-size="11" fill="#596564" text-anchor="end">8.13e+03</text>
+<text x="88" y="316.00" font-size="11" fill="#596564" text-anchor="end">8.04e+03</text>
 <line x1="98" y1="271.00" x2="662" y2="271.00" stroke="#e2e3dc"/>
-<text x="88" y="275.00" font-size="11" fill="#596564" text-anchor="end">1.08e+04</text>
+<text x="88" y="275.00" font-size="11" fill="#596564" text-anchor="end">1.07e+04</text>
 <line data-zero-y="435" x1="98" y1="435" x2="662" y2="435" stroke="#788582"/>
-<rect data-runtime="cpython" data-variant="untyped" data-case="account_ledger" data-ms="8931.8595500080846" x="140.36" y="299.88" width="46.00" height="135.12" fill="#788582"><title>cpython (untyped): 8931.86 ms</title></rect>
-<text x="163.36" y="291.88" text-anchor="middle" font-size="11" font-weight="650">8931.86 ms</text>
+<rect data-runtime="cpython" data-variant="untyped" data-case="account_ledger" data-ms="8849.8411640175618" x="140.36" y="299.64" width="46.00" height="135.36" fill="#788582"><title>cpython (untyped): 8849.84 ms</title></rect>
+<text x="163.36" y="291.64" text-anchor="middle" font-size="11" font-weight="650">8849.84 ms</text>
 <text x="163.36" y="450" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="cpython" data-variant="typed" data-case="account_ledger_typed" data-ms="9033.9197859866545" x="197.64" y="298.33" width="46.00" height="136.67" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 9033.92 ms</title></rect>
-<text x="220.64" y="290.33" text-anchor="middle" font-size="11" font-weight="650">9033.92 ms</text>
+<rect data-runtime="cpython" data-variant="typed" data-case="account_ledger_typed" data-ms="8935.2873350144364" x="197.64" y="298.33" width="46.00" height="136.67" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 8935.29 ms</title></rect>
+<text x="220.64" y="290.33" text-anchor="middle" font-size="11" font-weight="650">8935.29 ms</text>
 <text x="220.64" y="450" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="cpython" x="192.00" y="469" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-variant="untyped" data-case="account_ledger" data-ms="4120.8940030192025" x="328.36" y="372.66" width="46.00" height="62.34" fill="#c14c32"><title>mule-o2 (untyped): 4120.89 ms</title></rect>
-<text x="351.36" y="364.66" text-anchor="middle" font-size="11" font-weight="650">4120.89 ms</text>
+<rect data-runtime="mule-o2" data-variant="untyped" data-case="account_ledger" data-ms="3679.4918500236236" x="328.36" y="378.72" width="46.00" height="56.28" fill="#c14c32"><title>mule-o2 (untyped): 3679.49 ms</title></rect>
+<text x="351.36" y="370.72" text-anchor="middle" font-size="11" font-weight="650">3679.49 ms</text>
 <text x="351.36" y="450" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="mule-o2" data-variant="typed" data-case="account_ledger_typed" data-ms="4146.3826690451242" x="385.64" y="372.27" width="46.00" height="62.73" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 4146.38 ms</title></rect>
-<text x="408.64" y="364.27" text-anchor="middle" font-size="11" font-weight="650">4146.38 ms</text>
+<rect data-runtime="mule-o2" data-variant="typed" data-case="account_ledger_typed" data-ms="3727.5407139677554" x="385.64" y="377.99" width="46.00" height="57.01" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 3727.54 ms</title></rect>
+<text x="408.64" y="369.99" text-anchor="middle" font-size="11" font-weight="650">3727.54 ms</text>
 <text x="408.64" y="450" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="mule-o2" x="380.00" y="469" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-variant="untyped" data-case="account_ledger" data-ms="1471.3726459885947" x="516.36" y="412.74" width="46.00" height="22.26" fill="#267a77"><title>sbcl (untyped): 1471.37 ms</title></rect>
-<text x="539.36" y="404.74" text-anchor="middle" font-size="11" font-weight="650">1471.37 ms</text>
+<rect data-runtime="sbcl" data-variant="untyped" data-case="account_ledger" data-ms="1534.6347150043584" x="516.36" y="411.53" width="46.00" height="23.47" fill="#267a77"><title>sbcl (untyped): 1534.63 ms</title></rect>
+<text x="539.36" y="403.53" text-anchor="middle" font-size="11" font-weight="650">1534.63 ms</text>
 <text x="539.36" y="450" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="sbcl" data-variant="typed" data-case="account_ledger_typed" data-ms="1320.6983230193146" x="573.64" y="415.02" width="46.00" height="19.98" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 1320.7 ms</title></rect>
-<text x="596.64" y="407.02" text-anchor="middle" font-size="11" font-weight="650">1320.7 ms</text>
+<rect data-runtime="sbcl" data-variant="typed" data-case="account_ledger_typed" data-ms="1381.3830179860815" x="573.64" y="413.87" width="46.00" height="21.13" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 1381.38 ms</title></rect>
+<text x="596.64" y="405.87" text-anchor="middle" font-size="11" font-weight="650">1381.38 ms</text>
 <text x="596.64" y="450" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="sbcl" x="568.00" y="469" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
@@ -55,22 +55,22 @@
 <line x1="780" y1="435.00" x2="1344" y2="435.00" stroke="#e2e3dc"/>
 <text x="770" y="439.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="394.00" x2="1344" y2="394.00" stroke="#e2e3dc"/>
-<text x="770" y="398.00" font-size="11" fill="#596564" text-anchor="end">67</text>
+<text x="770" y="398.00" font-size="11" fill="#596564" text-anchor="end">67.3</text>
 <line x1="780" y1="353.00" x2="1344" y2="353.00" stroke="#e2e3dc"/>
-<text x="770" y="357.00" font-size="11" fill="#596564" text-anchor="end">134</text>
+<text x="770" y="357.00" font-size="11" fill="#596564" text-anchor="end">135</text>
 <line x1="780" y1="312.00" x2="1344" y2="312.00" stroke="#e2e3dc"/>
-<text x="770" y="316.00" font-size="11" fill="#596564" text-anchor="end">201</text>
+<text x="770" y="316.00" font-size="11" fill="#596564" text-anchor="end">202</text>
 <line x1="780" y1="271.00" x2="1344" y2="271.00" stroke="#e2e3dc"/>
-<text x="770" y="275.00" font-size="11" fill="#596564" text-anchor="end">268</text>
+<text x="770" y="275.00" font-size="11" fill="#596564" text-anchor="end">269</text>
 <line data-zero-y="435" x1="780" y1="435" x2="1344" y2="435" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="223.36758999153972" x="839.00" y="298.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 223.368 ms</title></rect>
-<text x="874.00" y="288.33" text-anchor="middle" font-size="13" font-weight="650">223.368 ms</text>
+<rect data-runtime="cpython" data-ms="224.29546399507672" x="839.00" y="298.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 224.295 ms</title></rect>
+<text x="874.00" y="288.33" text-anchor="middle" font-size="13" font-weight="650">224.295 ms</text>
 <text data-runtime="cpython" x="874.00" y="461" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="95.900070969946682" x="1027.00" y="376.32" width="70.00" height="58.68" fill="#c14c32"><title>mule-o2: 95.9001 ms</title></rect>
-<text x="1062.00" y="366.32" text-anchor="middle" font-size="13" font-weight="650">95.9001 ms</text>
+<rect data-runtime="mule-o2" data-ms="98.341250035446137" x="1027.00" y="375.08" width="70.00" height="59.92" fill="#c14c32"><title>mule-o2: 98.3413 ms</title></rect>
+<text x="1062.00" y="365.08" text-anchor="middle" font-size="13" font-weight="650">98.3413 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="461" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="18.094708037097007" x="1215.00" y="423.93" width="70.00" height="11.07" fill="#267a77"><title>sbcl: 18.0947 ms</title></rect>
-<text x="1250.00" y="413.93" text-anchor="middle" font-size="13" font-weight="650">18.0947 ms</text>
+<rect data-runtime="sbcl" data-ms="28.116436034906656" x="1215.00" y="417.87" width="70.00" height="17.13" fill="#267a77"><title>sbcl: 28.1164 ms</title></rect>
+<text x="1250.00" y="407.87" text-anchor="middle" font-size="13" font-weight="650">28.1164 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="461" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="bytes_codec">
@@ -80,22 +80,22 @@
 <line x1="98" y1="789.00" x2="662" y2="789.00" stroke="#e2e3dc"/>
 <text x="88" y="793.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="748.00" x2="662" y2="748.00" stroke="#e2e3dc"/>
-<text x="88" y="752.00" font-size="11" fill="#596564" text-anchor="end">95.5</text>
+<text x="88" y="752.00" font-size="11" fill="#596564" text-anchor="end">96.4</text>
 <line x1="98" y1="707.00" x2="662" y2="707.00" stroke="#e2e3dc"/>
-<text x="88" y="711.00" font-size="11" fill="#596564" text-anchor="end">191</text>
+<text x="88" y="711.00" font-size="11" fill="#596564" text-anchor="end">193</text>
 <line x1="98" y1="666.00" x2="662" y2="666.00" stroke="#e2e3dc"/>
-<text x="88" y="670.00" font-size="11" fill="#596564" text-anchor="end">286</text>
+<text x="88" y="670.00" font-size="11" fill="#596564" text-anchor="end">289</text>
 <line x1="98" y1="625.00" x2="662" y2="625.00" stroke="#e2e3dc"/>
-<text x="88" y="629.00" font-size="11" fill="#596564" text-anchor="end">382</text>
+<text x="88" y="629.00" font-size="11" fill="#596564" text-anchor="end">386</text>
 <line data-zero-y="789" x1="98" y1="789" x2="662" y2="789" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="318.19377094507217" x="157.00" y="652.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 318.194 ms</title></rect>
-<text x="192.00" y="642.33" text-anchor="middle" font-size="13" font-weight="650">318.194 ms</text>
+<rect data-runtime="cpython" data-ms="321.2566000293009" x="157.00" y="652.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 321.257 ms</title></rect>
+<text x="192.00" y="642.33" text-anchor="middle" font-size="13" font-weight="650">321.257 ms</text>
 <text data-runtime="cpython" x="192.00" y="815" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="79.720217036083341" x="345.00" y="754.76" width="70.00" height="34.24" fill="#c14c32"><title>mule-o2: 79.7202 ms</title></rect>
-<text x="380.00" y="744.76" text-anchor="middle" font-size="13" font-weight="650">79.7202 ms</text>
+<rect data-runtime="mule-o2" data-ms="76.825266995001584" x="345.00" y="756.32" width="70.00" height="32.68" fill="#c14c32"><title>mule-o2: 76.8253 ms</title></rect>
+<text x="380.00" y="746.32" text-anchor="middle" font-size="13" font-weight="650">76.8253 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="815" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="14.548351988196373" x="533.00" y="782.75" width="70.00" height="6.25" fill="#267a77"><title>sbcl: 14.5484 ms</title></rect>
-<text x="568.00" y="772.75" text-anchor="middle" font-size="13" font-weight="650">14.5484 ms</text>
+<rect data-runtime="sbcl" data-ms="16.030919039621949" x="533.00" y="782.18" width="70.00" height="6.82" fill="#267a77"><title>sbcl: 16.0309 ms</title></rect>
+<text x="568.00" y="772.18" text-anchor="middle" font-size="13" font-weight="650">16.0309 ms</text>
 <text data-runtime="sbcl" x="568.00" y="815" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="closure_pipeline">
@@ -105,22 +105,22 @@
 <line x1="780" y1="789.00" x2="1344" y2="789.00" stroke="#e2e3dc"/>
 <text x="770" y="793.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="748.00" x2="1344" y2="748.00" stroke="#e2e3dc"/>
-<text x="770" y="752.00" font-size="11" fill="#596564" text-anchor="end">2.48e+03</text>
+<text x="770" y="752.00" font-size="11" fill="#596564" text-anchor="end">2.47e+03</text>
 <line x1="780" y1="707.00" x2="1344" y2="707.00" stroke="#e2e3dc"/>
-<text x="770" y="711.00" font-size="11" fill="#596564" text-anchor="end">4.97e+03</text>
+<text x="770" y="711.00" font-size="11" fill="#596564" text-anchor="end">4.93e+03</text>
 <line x1="780" y1="666.00" x2="1344" y2="666.00" stroke="#e2e3dc"/>
-<text x="770" y="670.00" font-size="11" fill="#596564" text-anchor="end">7.45e+03</text>
+<text x="770" y="670.00" font-size="11" fill="#596564" text-anchor="end">7.4e+03</text>
 <line x1="780" y1="625.00" x2="1344" y2="625.00" stroke="#e2e3dc"/>
-<text x="770" y="629.00" font-size="11" fill="#596564" text-anchor="end">9.94e+03</text>
+<text x="770" y="629.00" font-size="11" fill="#596564" text-anchor="end">9.87e+03</text>
 <line data-zero-y="789" x1="780" y1="789" x2="1344" y2="789" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8279.4930199743249" x="839.00" y="652.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8279.49 ms</title></rect>
-<text x="874.00" y="642.33" text-anchor="middle" font-size="13" font-weight="650">8279.49 ms</text>
+<rect data-runtime="cpython" data-ms="8222.3331589484587" x="839.00" y="652.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8222.33 ms</title></rect>
+<text x="874.00" y="642.33" text-anchor="middle" font-size="13" font-weight="650">8222.33 ms</text>
 <text data-runtime="cpython" x="874.00" y="815" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="3214.4598389859311" x="1027.00" y="735.94" width="70.00" height="53.06" fill="#c14c32"><title>mule-o2: 3214.46 ms</title></rect>
-<text x="1062.00" y="725.94" text-anchor="middle" font-size="13" font-weight="650">3214.46 ms</text>
+<rect data-runtime="mule-o2" data-ms="3193.1472549913451" x="1027.00" y="735.93" width="70.00" height="53.07" fill="#c14c32"><title>mule-o2: 3193.15 ms</title></rect>
+<text x="1062.00" y="725.93" text-anchor="middle" font-size="13" font-weight="650">3193.15 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="815" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="508.17146903136745" x="1215.00" y="780.61" width="70.00" height="8.39" fill="#267a77"><title>sbcl: 508.171 ms</title></rect>
-<text x="1250.00" y="770.61" text-anchor="middle" font-size="13" font-weight="650">508.171 ms</text>
+<rect data-runtime="sbcl" data-ms="533.82658201735467" x="1215.00" y="780.13" width="70.00" height="8.87" fill="#267a77"><title>sbcl: 533.827 ms</title></rect>
+<text x="1250.00" y="770.13" text-anchor="middle" font-size="13" font-weight="650">533.827 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="815" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="dataclass_ast">
@@ -130,22 +130,22 @@
 <line x1="98" y1="1143.00" x2="662" y2="1143.00" stroke="#e2e3dc"/>
 <text x="88" y="1147.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="1102.00" x2="662" y2="1102.00" stroke="#e2e3dc"/>
-<text x="88" y="1106.00" font-size="11" fill="#596564" text-anchor="end">37.9</text>
+<text x="88" y="1106.00" font-size="11" fill="#596564" text-anchor="end">38.5</text>
 <line x1="98" y1="1061.00" x2="662" y2="1061.00" stroke="#e2e3dc"/>
-<text x="88" y="1065.00" font-size="11" fill="#596564" text-anchor="end">75.9</text>
+<text x="88" y="1065.00" font-size="11" fill="#596564" text-anchor="end">77.1</text>
 <line x1="98" y1="1020.00" x2="662" y2="1020.00" stroke="#e2e3dc"/>
-<text x="88" y="1024.00" font-size="11" fill="#596564" text-anchor="end">114</text>
+<text x="88" y="1024.00" font-size="11" fill="#596564" text-anchor="end">116</text>
 <line x1="98" y1="979.00" x2="662" y2="979.00" stroke="#e2e3dc"/>
-<text x="88" y="983.00" font-size="11" fill="#596564" text-anchor="end">152</text>
+<text x="88" y="983.00" font-size="11" fill="#596564" text-anchor="end">154</text>
 <line data-zero-y="1143" x1="98" y1="1143" x2="662" y2="1143" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="126.47752603515983" x="157.00" y="1006.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 126.478 ms</title></rect>
-<text x="192.00" y="996.33" text-anchor="middle" font-size="13" font-weight="650">126.478 ms</text>
+<rect data-runtime="cpython" data-ms="128.48279101308435" x="157.00" y="1006.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 128.483 ms</title></rect>
+<text x="192.00" y="996.33" text-anchor="middle" font-size="13" font-weight="650">128.483 ms</text>
 <text data-runtime="cpython" x="192.00" y="1169" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="59.535879001487046" x="345.00" y="1078.67" width="70.00" height="64.33" fill="#c14c32"><title>mule-o2: 59.5359 ms</title></rect>
-<text x="380.00" y="1068.67" text-anchor="middle" font-size="13" font-weight="650">59.5359 ms</text>
+<rect data-runtime="mule-o2" data-ms="60.222105996217579" x="345.00" y="1078.94" width="70.00" height="64.06" fill="#c14c32"><title>mule-o2: 60.2221 ms</title></rect>
+<text x="380.00" y="1068.94" text-anchor="middle" font-size="13" font-weight="650">60.2221 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="1169" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="8.0335520324297249" x="533.00" y="1134.32" width="70.00" height="8.68" fill="#267a77"><title>sbcl: 8.03355 ms</title></rect>
-<text x="568.00" y="1124.32" text-anchor="middle" font-size="13" font-weight="650">8.03355 ms</text>
+<rect data-runtime="sbcl" data-ms="9.2122359783388674" x="533.00" y="1133.20" width="70.00" height="9.80" fill="#267a77"><title>sbcl: 9.21224 ms</title></rect>
+<text x="568.00" y="1123.20" text-anchor="middle" font-size="13" font-weight="650">9.21224 ms</text>
 <text data-runtime="sbcl" x="568.00" y="1169" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="exception_validation">
@@ -155,22 +155,22 @@
 <line x1="780" y1="1143.00" x2="1344" y2="1143.00" stroke="#e2e3dc"/>
 <text x="770" y="1147.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="1102.00" x2="1344" y2="1102.00" stroke="#e2e3dc"/>
-<text x="770" y="1106.00" font-size="11" fill="#596564" text-anchor="end">2.42e+03</text>
+<text x="770" y="1106.00" font-size="11" fill="#596564" text-anchor="end">2.38e+03</text>
 <line x1="780" y1="1061.00" x2="1344" y2="1061.00" stroke="#e2e3dc"/>
-<text x="770" y="1065.00" font-size="11" fill="#596564" text-anchor="end">4.85e+03</text>
+<text x="770" y="1065.00" font-size="11" fill="#596564" text-anchor="end">4.76e+03</text>
 <line x1="780" y1="1020.00" x2="1344" y2="1020.00" stroke="#e2e3dc"/>
-<text x="770" y="1024.00" font-size="11" fill="#596564" text-anchor="end">7.27e+03</text>
+<text x="770" y="1024.00" font-size="11" fill="#596564" text-anchor="end">7.14e+03</text>
 <line x1="780" y1="979.00" x2="1344" y2="979.00" stroke="#e2e3dc"/>
-<text x="770" y="983.00" font-size="11" fill="#596564" text-anchor="end">9.69e+03</text>
+<text x="770" y="983.00" font-size="11" fill="#596564" text-anchor="end">9.52e+03</text>
 <line data-zero-y="1143" x1="780" y1="1143" x2="1344" y2="1143" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8077.0147469593212" x="839.00" y="1006.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8077.01 ms</title></rect>
-<text x="874.00" y="996.33" text-anchor="middle" font-size="13" font-weight="650">8077.01 ms</text>
+<rect data-runtime="cpython" data-ms="7935.5772080016322" x="839.00" y="1006.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 7935.58 ms</title></rect>
+<text x="874.00" y="996.33" text-anchor="middle" font-size="13" font-weight="650">7935.58 ms</text>
 <text data-runtime="cpython" x="874.00" y="1169" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="6145.9003770141862" x="1027.00" y="1039.01" width="70.00" height="103.99" fill="#c14c32"><title>mule-o2: 6145.9 ms</title></rect>
-<text x="1062.00" y="1029.01" text-anchor="middle" font-size="13" font-weight="650">6145.9 ms</text>
+<rect data-runtime="mule-o2" data-ms="5746.3470789953135" x="1027.00" y="1044.04" width="70.00" height="98.96" fill="#c14c32"><title>mule-o2: 5746.35 ms</title></rect>
+<text x="1062.00" y="1034.04" text-anchor="middle" font-size="13" font-weight="650">5746.35 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="1169" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="1197.1335239941254" x="1215.00" y="1122.74" width="70.00" height="20.26" fill="#267a77"><title>sbcl: 1197.13 ms</title></rect>
-<text x="1250.00" y="1112.74" text-anchor="middle" font-size="13" font-weight="650">1197.13 ms</text>
+<rect data-runtime="sbcl" data-ms="1202.3474099696614" x="1215.00" y="1122.29" width="70.00" height="20.71" fill="#267a77"><title>sbcl: 1202.35 ms</title></rect>
+<text x="1250.00" y="1112.29" text-anchor="middle" font-size="13" font-weight="650">1202.35 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="1169" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="expression_tree">
@@ -180,22 +180,22 @@
 <line x1="98" y1="1497.00" x2="662" y2="1497.00" stroke="#e2e3dc"/>
 <text x="88" y="1501.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="1456.00" x2="662" y2="1456.00" stroke="#e2e3dc"/>
-<text x="88" y="1460.00" font-size="11" fill="#596564" text-anchor="end">2.64e+03</text>
+<text x="88" y="1460.00" font-size="11" fill="#596564" text-anchor="end">3.27e+03</text>
 <line x1="98" y1="1415.00" x2="662" y2="1415.00" stroke="#e2e3dc"/>
-<text x="88" y="1419.00" font-size="11" fill="#596564" text-anchor="end">5.28e+03</text>
+<text x="88" y="1419.00" font-size="11" fill="#596564" text-anchor="end">6.54e+03</text>
 <line x1="98" y1="1374.00" x2="662" y2="1374.00" stroke="#e2e3dc"/>
-<text x="88" y="1378.00" font-size="11" fill="#596564" text-anchor="end">7.92e+03</text>
+<text x="88" y="1378.00" font-size="11" fill="#596564" text-anchor="end">9.8e+03</text>
 <line x1="98" y1="1333.00" x2="662" y2="1333.00" stroke="#e2e3dc"/>
-<text x="88" y="1337.00" font-size="11" fill="#596564" text-anchor="end">1.06e+04</text>
+<text x="88" y="1337.00" font-size="11" fill="#596564" text-anchor="end">1.31e+04</text>
 <line data-zero-y="1497" x1="98" y1="1497" x2="662" y2="1497" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8605.1619109930471" x="157.00" y="1363.41" width="70.00" height="133.59" fill="#788582"><title>cpython: 8605.16 ms</title></rect>
-<text x="192.00" y="1353.41" text-anchor="middle" font-size="13" font-weight="650">8605.16 ms</text>
+<rect data-runtime="cpython" data-ms="8034.2264649807476" x="157.00" y="1396.19" width="70.00" height="100.81" fill="#788582"><title>cpython: 8034.23 ms</title></rect>
+<text x="192.00" y="1386.19" text-anchor="middle" font-size="13" font-weight="650">8034.23 ms</text>
 <text data-runtime="cpython" x="192.00" y="1523" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="8803.538283042144" x="345.00" y="1360.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 8803.54 ms</title></rect>
-<text x="380.00" y="1350.33" text-anchor="middle" font-size="13" font-weight="650">8803.54 ms</text>
+<rect data-runtime="mule-o2" data-ms="10892.4249910051" x="345.00" y="1360.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 10892.4 ms</title></rect>
+<text x="380.00" y="1350.33" text-anchor="middle" font-size="13" font-weight="650">10892.4 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="1523" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="2802.0796139608137" x="533.00" y="1453.50" width="70.00" height="43.50" fill="#267a77"><title>sbcl: 2802.08 ms</title></rect>
-<text x="568.00" y="1443.50" text-anchor="middle" font-size="13" font-weight="650">2802.08 ms</text>
+<rect data-runtime="sbcl" data-ms="2586.7105530342087" x="533.00" y="1464.54" width="70.00" height="32.46" fill="#267a77"><title>sbcl: 2586.71 ms</title></rect>
+<text x="568.00" y="1454.54" text-anchor="middle" font-size="13" font-weight="650">2586.71 ms</text>
 <text data-runtime="sbcl" x="568.00" y="1523" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="float_nbody" data-typed-case="float_nbody_typed">
@@ -209,33 +209,33 @@
 <line x1="780" y1="1497.00" x2="1344" y2="1497.00" stroke="#e2e3dc"/>
 <text x="770" y="1501.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="1456.00" x2="1344" y2="1456.00" stroke="#e2e3dc"/>
-<text x="770" y="1460.00" font-size="11" fill="#596564" text-anchor="end">378</text>
+<text x="770" y="1460.00" font-size="11" fill="#596564" text-anchor="end">325</text>
 <line x1="780" y1="1415.00" x2="1344" y2="1415.00" stroke="#e2e3dc"/>
-<text x="770" y="1419.00" font-size="11" fill="#596564" text-anchor="end">756</text>
+<text x="770" y="1419.00" font-size="11" fill="#596564" text-anchor="end">650</text>
 <line x1="780" y1="1374.00" x2="1344" y2="1374.00" stroke="#e2e3dc"/>
-<text x="770" y="1378.00" font-size="11" fill="#596564" text-anchor="end">1.13e+03</text>
+<text x="770" y="1378.00" font-size="11" fill="#596564" text-anchor="end">975</text>
 <line x1="780" y1="1333.00" x2="1344" y2="1333.00" stroke="#e2e3dc"/>
-<text x="770" y="1337.00" font-size="11" fill="#596564" text-anchor="end">1.51e+03</text>
+<text x="770" y="1337.00" font-size="11" fill="#596564" text-anchor="end">1.3e+03</text>
 <line data-zero-y="1497" x1="780" y1="1497" x2="1344" y2="1497" stroke="#788582"/>
-<rect data-runtime="cpython" data-variant="untyped" data-case="float_nbody" data-ms="1260.5966129922308" x="822.36" y="1360.33" width="46.00" height="136.67" fill="#788582"><title>cpython (untyped): 1260.6 ms</title></rect>
-<text x="845.36" y="1352.33" text-anchor="middle" font-size="11" font-weight="650">1260.6 ms</text>
+<rect data-runtime="cpython" data-variant="untyped" data-case="float_nbody" data-ms="1082.9602109733969" x="822.36" y="1360.33" width="46.00" height="136.67" fill="#788582"><title>cpython (untyped): 1082.96 ms</title></rect>
+<text x="845.36" y="1352.33" text-anchor="middle" font-size="11" font-weight="650">1082.96 ms</text>
 <text x="845.36" y="1512" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="cpython" data-variant="typed" data-case="float_nbody_typed" data-ms="1214.8874319973402" x="879.64" y="1365.29" width="46.00" height="131.71" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 1214.89 ms</title></rect>
-<text x="902.64" y="1357.29" text-anchor="middle" font-size="11" font-weight="650">1214.89 ms</text>
+<rect data-runtime="cpython" data-variant="typed" data-case="float_nbody_typed" data-ms="1082.4858929845504" x="879.64" y="1360.39" width="46.00" height="136.61" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 1082.49 ms</title></rect>
+<text x="902.64" y="1352.39" text-anchor="middle" font-size="11" font-weight="650">1082.49 ms</text>
 <text x="902.64" y="1512" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="cpython" x="874.00" y="1531" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-variant="untyped" data-case="float_nbody" data-ms="67.177994002122432" x="1010.36" y="1489.72" width="46.00" height="7.28" fill="#c14c32"><title>mule-o2 (untyped): 67.178 ms</title></rect>
-<text x="1033.36" y="1481.72" text-anchor="middle" font-size="11" font-weight="650">67.178 ms</text>
+<rect data-runtime="mule-o2" data-variant="untyped" data-case="float_nbody" data-ms="60.873155947774649" x="1010.36" y="1489.32" width="46.00" height="7.68" fill="#c14c32"><title>mule-o2 (untyped): 60.8732 ms</title></rect>
+<text x="1033.36" y="1481.32" text-anchor="middle" font-size="11" font-weight="650">60.8732 ms</text>
 <text x="1033.36" y="1512" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="mule-o2" data-variant="typed" data-case="float_nbody_typed" data-ms="159.46201700717211" x="1067.64" y="1479.71" width="46.00" height="17.29" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 159.462 ms</title></rect>
-<text x="1090.64" y="1471.71" text-anchor="middle" font-size="11" font-weight="650">159.462 ms</text>
+<rect data-runtime="mule-o2" data-variant="typed" data-case="float_nbody_typed" data-ms="64.586642023641616" x="1067.64" y="1488.85" width="46.00" height="8.15" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 64.5866 ms</title></rect>
+<text x="1090.64" y="1480.85" text-anchor="middle" font-size="11" font-weight="650">64.5866 ms</text>
 <text x="1090.64" y="1512" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="mule-o2" x="1062.00" y="1531" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-variant="untyped" data-case="float_nbody" data-ms="484.5733160036616" x="1198.36" y="1444.47" width="46.00" height="52.53" fill="#267a77"><title>sbcl (untyped): 484.573 ms</title></rect>
-<text x="1221.36" y="1436.47" text-anchor="middle" font-size="11" font-weight="650">484.573 ms</text>
+<rect data-runtime="sbcl" data-variant="untyped" data-case="float_nbody" data-ms="354.47674995521083" x="1198.36" y="1452.27" width="46.00" height="44.73" fill="#267a77"><title>sbcl (untyped): 354.477 ms</title></rect>
+<text x="1221.36" y="1444.27" text-anchor="middle" font-size="11" font-weight="650">354.477 ms</text>
 <text x="1221.36" y="1512" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="sbcl" data-variant="typed" data-case="float_nbody_typed" data-ms="56.873152032494545" x="1255.64" y="1490.83" width="46.00" height="6.17" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 56.8732 ms</title></rect>
-<text x="1278.64" y="1482.83" text-anchor="middle" font-size="11" font-weight="650">56.8732 ms</text>
+<rect data-runtime="sbcl" data-variant="typed" data-case="float_nbody_typed" data-ms="44.150582980364561" x="1255.64" y="1491.43" width="46.00" height="5.57" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 44.1506 ms</title></rect>
+<text x="1278.64" y="1483.43" text-anchor="middle" font-size="11" font-weight="650">44.1506 ms</text>
 <text x="1278.64" y="1512" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="sbcl" x="1250.00" y="1531" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
@@ -246,22 +246,22 @@
 <line x1="98" y1="1851.00" x2="662" y2="1851.00" stroke="#e2e3dc"/>
 <text x="88" y="1855.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="1810.00" x2="662" y2="1810.00" stroke="#e2e3dc"/>
-<text x="88" y="1814.00" font-size="11" fill="#596564" text-anchor="end">218</text>
+<text x="88" y="1814.00" font-size="11" fill="#596564" text-anchor="end">166</text>
 <line x1="98" y1="1769.00" x2="662" y2="1769.00" stroke="#e2e3dc"/>
-<text x="88" y="1773.00" font-size="11" fill="#596564" text-anchor="end">435</text>
+<text x="88" y="1773.00" font-size="11" fill="#596564" text-anchor="end">332</text>
 <line x1="98" y1="1728.00" x2="662" y2="1728.00" stroke="#e2e3dc"/>
-<text x="88" y="1732.00" font-size="11" fill="#596564" text-anchor="end">653</text>
+<text x="88" y="1732.00" font-size="11" fill="#596564" text-anchor="end">498</text>
 <line x1="98" y1="1687.00" x2="662" y2="1687.00" stroke="#e2e3dc"/>
-<text x="88" y="1691.00" font-size="11" fill="#596564" text-anchor="end">871</text>
+<text x="88" y="1691.00" font-size="11" fill="#596564" text-anchor="end">664</text>
 <line data-zero-y="1851" x1="98" y1="1851" x2="662" y2="1851" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="245.59328600298613" x="157.00" y="1804.74" width="70.00" height="46.26" fill="#788582"><title>cpython: 245.593 ms</title></rect>
-<text x="192.00" y="1794.74" text-anchor="middle" font-size="13" font-weight="650">245.593 ms</text>
+<rect data-runtime="cpython" data-ms="198.96636001067236" x="157.00" y="1801.84" width="70.00" height="49.16" fill="#788582"><title>cpython: 198.966 ms</title></rect>
+<text x="192.00" y="1791.84" text-anchor="middle" font-size="13" font-weight="650">198.966 ms</text>
 <text data-runtime="cpython" x="192.00" y="1877" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="725.51736299647018" x="345.00" y="1714.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 725.517 ms</title></rect>
-<text x="380.00" y="1704.33" text-anchor="middle" font-size="13" font-weight="650">725.517 ms</text>
+<rect data-runtime="mule-o2" data-ms="553.08939696988091" x="345.00" y="1714.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 553.089 ms</title></rect>
+<text x="380.00" y="1704.33" text-anchor="middle" font-size="13" font-weight="650">553.089 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="1877" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="15.683737001381814" x="533.00" y="1848.05" width="70.00" height="2.95" fill="#267a77"><title>sbcl: 15.6837 ms</title></rect>
-<text x="568.00" y="1838.05" text-anchor="middle" font-size="13" font-weight="650">15.6837 ms</text>
+<rect data-runtime="sbcl" data-ms="15.427928999997675" x="533.00" y="1847.19" width="70.00" height="3.81" fill="#267a77"><title>sbcl: 15.4279 ms</title></rect>
+<text x="568.00" y="1837.19" text-anchor="middle" font-size="13" font-weight="650">15.4279 ms</text>
 <text data-runtime="sbcl" x="568.00" y="1877" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="graph_paths">
@@ -271,22 +271,22 @@
 <line x1="780" y1="1851.00" x2="1344" y2="1851.00" stroke="#e2e3dc"/>
 <text x="770" y="1855.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="1810.00" x2="1344" y2="1810.00" stroke="#e2e3dc"/>
-<text x="770" y="1814.00" font-size="11" fill="#596564" text-anchor="end">44.3</text>
+<text x="770" y="1814.00" font-size="11" fill="#596564" text-anchor="end">32.2</text>
 <line x1="780" y1="1769.00" x2="1344" y2="1769.00" stroke="#e2e3dc"/>
-<text x="770" y="1773.00" font-size="11" fill="#596564" text-anchor="end">88.7</text>
+<text x="770" y="1773.00" font-size="11" fill="#596564" text-anchor="end">64.4</text>
 <line x1="780" y1="1728.00" x2="1344" y2="1728.00" stroke="#e2e3dc"/>
-<text x="770" y="1732.00" font-size="11" fill="#596564" text-anchor="end">133</text>
+<text x="770" y="1732.00" font-size="11" fill="#596564" text-anchor="end">96.6</text>
 <line x1="780" y1="1687.00" x2="1344" y2="1687.00" stroke="#e2e3dc"/>
-<text x="770" y="1691.00" font-size="11" fill="#596564" text-anchor="end">177</text>
+<text x="770" y="1691.00" font-size="11" fill="#596564" text-anchor="end">129</text>
 <line data-zero-y="1851" x1="780" y1="1851" x2="1344" y2="1851" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="147.80392101965845" x="839.00" y="1714.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 147.804 ms</title></rect>
-<text x="874.00" y="1704.33" text-anchor="middle" font-size="13" font-weight="650">147.804 ms</text>
+<rect data-runtime="cpython" data-ms="107.34750202391297" x="839.00" y="1714.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 107.348 ms</title></rect>
+<text x="874.00" y="1704.33" text-anchor="middle" font-size="13" font-weight="650">107.348 ms</text>
 <text data-runtime="cpython" x="874.00" y="1877" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="130.38188096834347" x="1027.00" y="1730.44" width="70.00" height="120.56" fill="#c14c32"><title>mule-o2: 130.382 ms</title></rect>
-<text x="1062.00" y="1720.44" text-anchor="middle" font-size="13" font-weight="650">130.382 ms</text>
+<rect data-runtime="mule-o2" data-ms="103.21848699823022" x="1027.00" y="1719.59" width="70.00" height="131.41" fill="#c14c32"><title>mule-o2: 103.218 ms</title></rect>
+<text x="1062.00" y="1709.59" text-anchor="middle" font-size="13" font-weight="650">103.218 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="1877" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="30.806655995547771" x="1215.00" y="1822.51" width="70.00" height="28.49" fill="#267a77"><title>sbcl: 30.8067 ms</title></rect>
-<text x="1250.00" y="1812.51" text-anchor="middle" font-size="13" font-weight="650">30.8067 ms</text>
+<rect data-runtime="sbcl" data-ms="37.127766001503915" x="1215.00" y="1803.73" width="70.00" height="47.27" fill="#267a77"><title>sbcl: 37.1278 ms</title></rect>
+<text x="1250.00" y="1793.73" text-anchor="middle" font-size="13" font-weight="650">37.1278 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="1877" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="http_routing">
@@ -296,22 +296,22 @@
 <line x1="98" y1="2205.00" x2="662" y2="2205.00" stroke="#e2e3dc"/>
 <text x="88" y="2209.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="2164.00" x2="662" y2="2164.00" stroke="#e2e3dc"/>
-<text x="88" y="2168.00" font-size="11" fill="#596564" text-anchor="end">64.5</text>
+<text x="88" y="2168.00" font-size="11" fill="#596564" text-anchor="end">47.5</text>
 <line x1="98" y1="2123.00" x2="662" y2="2123.00" stroke="#e2e3dc"/>
-<text x="88" y="2127.00" font-size="11" fill="#596564" text-anchor="end">129</text>
+<text x="88" y="2127.00" font-size="11" fill="#596564" text-anchor="end">94.9</text>
 <line x1="98" y1="2082.00" x2="662" y2="2082.00" stroke="#e2e3dc"/>
-<text x="88" y="2086.00" font-size="11" fill="#596564" text-anchor="end">193</text>
+<text x="88" y="2086.00" font-size="11" fill="#596564" text-anchor="end">142</text>
 <line x1="98" y1="2041.00" x2="662" y2="2041.00" stroke="#e2e3dc"/>
-<text x="88" y="2045.00" font-size="11" fill="#596564" text-anchor="end">258</text>
+<text x="88" y="2045.00" font-size="11" fill="#596564" text-anchor="end">190</text>
 <line data-zero-y="2205" x1="98" y1="2205" x2="662" y2="2205" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="212.12998899864033" x="157.00" y="2070.11" width="70.00" height="134.89" fill="#788582"><title>cpython: 212.13 ms</title></rect>
-<text x="192.00" y="2060.11" text-anchor="middle" font-size="13" font-weight="650">212.13 ms</text>
+<rect data-runtime="cpython" data-ms="116.84038396924734" x="157.00" y="2104.06" width="70.00" height="100.94" fill="#788582"><title>cpython: 116.84 ms</title></rect>
+<text x="192.00" y="2094.06" text-anchor="middle" font-size="13" font-weight="650">116.84 ms</text>
 <text data-runtime="cpython" x="192.00" y="2231" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="214.91977997357026" x="345.00" y="2068.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 214.92 ms</title></rect>
-<text x="380.00" y="2058.33" text-anchor="middle" font-size="13" font-weight="650">214.92 ms</text>
+<rect data-runtime="mule-o2" data-ms="158.19584898417816" x="345.00" y="2068.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 158.196 ms</title></rect>
+<text x="380.00" y="2058.33" text-anchor="middle" font-size="13" font-weight="650">158.196 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="2231" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="153.80856802221388" x="533.00" y="2107.19" width="70.00" height="97.81" fill="#267a77"><title>sbcl: 153.809 ms</title></rect>
-<text x="568.00" y="2097.19" text-anchor="middle" font-size="13" font-weight="650">153.809 ms</text>
+<rect data-runtime="sbcl" data-ms="127.01613403623924" x="533.00" y="2095.27" width="70.00" height="109.73" fill="#267a77"><title>sbcl: 127.016 ms</title></rect>
+<text x="568.00" y="2085.27" text-anchor="middle" font-size="13" font-weight="650">127.016 ms</text>
 <text data-runtime="sbcl" x="568.00" y="2231" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="integer_accumulation" data-typed-case="integer_accumulation_typed">
@@ -325,33 +325,33 @@
 <line x1="780" y1="2205.00" x2="1344" y2="2205.00" stroke="#e2e3dc"/>
 <text x="770" y="2209.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="2164.00" x2="1344" y2="2164.00" stroke="#e2e3dc"/>
-<text x="770" y="2168.00" font-size="11" fill="#596564" text-anchor="end">78.5</text>
+<text x="770" y="2168.00" font-size="11" fill="#596564" text-anchor="end">51.6</text>
 <line x1="780" y1="2123.00" x2="1344" y2="2123.00" stroke="#e2e3dc"/>
-<text x="770" y="2127.00" font-size="11" fill="#596564" text-anchor="end">157</text>
+<text x="770" y="2127.00" font-size="11" fill="#596564" text-anchor="end">103</text>
 <line x1="780" y1="2082.00" x2="1344" y2="2082.00" stroke="#e2e3dc"/>
-<text x="770" y="2086.00" font-size="11" fill="#596564" text-anchor="end">235</text>
+<text x="770" y="2086.00" font-size="11" fill="#596564" text-anchor="end">155</text>
 <line x1="780" y1="2041.00" x2="1344" y2="2041.00" stroke="#e2e3dc"/>
-<text x="770" y="2045.00" font-size="11" fill="#596564" text-anchor="end">314</text>
+<text x="770" y="2045.00" font-size="11" fill="#596564" text-anchor="end">207</text>
 <line data-zero-y="2205" x1="780" y1="2205" x2="1344" y2="2205" stroke="#788582"/>
-<rect data-runtime="cpython" data-variant="untyped" data-case="integer_accumulation" data-ms="261.66659203590825" x="822.36" y="2068.33" width="46.00" height="136.67" fill="#788582"><title>cpython (untyped): 261.667 ms</title></rect>
-<text x="845.36" y="2060.33" text-anchor="middle" font-size="11" font-weight="650">261.667 ms</text>
+<rect data-runtime="cpython" data-variant="untyped" data-case="integer_accumulation" data-ms="172.12071298854426" x="822.36" y="2068.33" width="46.00" height="136.67" fill="#788582"><title>cpython (untyped): 172.121 ms</title></rect>
+<text x="845.36" y="2060.33" text-anchor="middle" font-size="11" font-weight="650">172.121 ms</text>
 <text x="845.36" y="2220" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="cpython" data-variant="typed" data-case="integer_accumulation_typed" data-ms="203.85047799209133" x="879.64" y="2098.53" width="46.00" height="106.47" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 203.85 ms</title></rect>
-<text x="902.64" y="2090.53" text-anchor="middle" font-size="11" font-weight="650">203.85 ms</text>
+<rect data-runtime="cpython" data-variant="typed" data-case="integer_accumulation_typed" data-ms="169.06649299198762" x="879.64" y="2070.76" width="46.00" height="134.24" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 169.066 ms</title></rect>
+<text x="902.64" y="2062.76" text-anchor="middle" font-size="11" font-weight="650">169.066 ms</text>
 <text x="902.64" y="2220" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="cpython" x="874.00" y="2239" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-variant="untyped" data-case="integer_accumulation" data-ms="46.513837005477399" x="1010.36" y="2180.71" width="46.00" height="24.29" fill="#c14c32"><title>mule-o2 (untyped): 46.5138 ms</title></rect>
-<text x="1033.36" y="2172.71" text-anchor="middle" font-size="11" font-weight="650">46.5138 ms</text>
+<rect data-runtime="mule-o2" data-variant="untyped" data-case="integer_accumulation" data-ms="32.87581296171993" x="1010.36" y="2178.90" width="46.00" height="26.10" fill="#c14c32"><title>mule-o2 (untyped): 32.8758 ms</title></rect>
+<text x="1033.36" y="2170.90" text-anchor="middle" font-size="11" font-weight="650">32.8758 ms</text>
 <text x="1033.36" y="2220" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="mule-o2" data-variant="typed" data-case="integer_accumulation_typed" data-ms="37.156858015805483" x="1067.64" y="2185.59" width="46.00" height="19.41" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 37.1569 ms</title></rect>
-<text x="1090.64" y="2177.59" text-anchor="middle" font-size="11" font-weight="650">37.1569 ms</text>
+<rect data-runtime="mule-o2" data-variant="typed" data-case="integer_accumulation_typed" data-ms="31.763919978402555" x="1067.64" y="2179.78" width="46.00" height="25.22" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 31.7639 ms</title></rect>
+<text x="1090.64" y="2171.78" text-anchor="middle" font-size="11" font-weight="650">31.7639 ms</text>
 <text x="1090.64" y="2220" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="mule-o2" x="1062.00" y="2239" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-variant="untyped" data-case="integer_accumulation" data-ms="22.976854990702122" x="1198.36" y="2193.00" width="46.00" height="12.00" fill="#267a77"><title>sbcl (untyped): 22.9769 ms</title></rect>
-<text x="1221.36" y="2185.00" text-anchor="middle" font-size="11" font-weight="650">22.9769 ms</text>
+<rect data-runtime="sbcl" data-variant="untyped" data-case="integer_accumulation" data-ms="16.418884973973036" x="1198.36" y="2191.96" width="46.00" height="13.04" fill="#267a77"><title>sbcl (untyped): 16.4189 ms</title></rect>
+<text x="1221.36" y="2183.96" text-anchor="middle" font-size="11" font-weight="650">16.4189 ms</text>
 <text x="1221.36" y="2220" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="sbcl" data-variant="typed" data-case="integer_accumulation_typed" data-ms="16.355424013454467" x="1255.64" y="2196.46" width="46.00" height="8.54" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 16.3554 ms</title></rect>
-<text x="1278.64" y="2188.46" text-anchor="middle" font-size="11" font-weight="650">16.3554 ms</text>
+<rect data-runtime="sbcl" data-variant="typed" data-case="integer_accumulation_typed" data-ms="13.3924669935368" x="1255.64" y="2194.37" width="46.00" height="10.63" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 13.3925 ms</title></rect>
+<text x="1278.64" y="2186.37" text-anchor="middle" font-size="11" font-weight="650">13.3925 ms</text>
 <text x="1278.64" y="2220" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="sbcl" x="1250.00" y="2239" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
@@ -362,22 +362,22 @@
 <line x1="98" y1="2559.00" x2="662" y2="2559.00" stroke="#e2e3dc"/>
 <text x="88" y="2563.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="2518.00" x2="662" y2="2518.00" stroke="#e2e3dc"/>
-<text x="88" y="2522.00" font-size="11" fill="#596564" text-anchor="end">2.67e+03</text>
+<text x="88" y="2522.00" font-size="11" fill="#596564" text-anchor="end">2.49e+03</text>
 <line x1="98" y1="2477.00" x2="662" y2="2477.00" stroke="#e2e3dc"/>
-<text x="88" y="2481.00" font-size="11" fill="#596564" text-anchor="end">5.34e+03</text>
+<text x="88" y="2481.00" font-size="11" fill="#596564" text-anchor="end">4.97e+03</text>
 <line x1="98" y1="2436.00" x2="662" y2="2436.00" stroke="#e2e3dc"/>
-<text x="88" y="2440.00" font-size="11" fill="#596564" text-anchor="end">8.01e+03</text>
+<text x="88" y="2440.00" font-size="11" fill="#596564" text-anchor="end">7.46e+03</text>
 <line x1="98" y1="2395.00" x2="662" y2="2395.00" stroke="#e2e3dc"/>
-<text x="88" y="2399.00" font-size="11" fill="#596564" text-anchor="end">1.07e+04</text>
+<text x="88" y="2399.00" font-size="11" fill="#596564" text-anchor="end">9.95e+03</text>
 <line data-zero-y="2559" x1="98" y1="2559" x2="662" y2="2559" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8898.7213629879989" x="157.00" y="2422.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8898.72 ms</title></rect>
-<text x="192.00" y="2412.33" text-anchor="middle" font-size="13" font-weight="650">8898.72 ms</text>
+<rect data-runtime="cpython" data-ms="8291.5495729539543" x="157.00" y="2422.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8291.55 ms</title></rect>
+<text x="192.00" y="2412.33" text-anchor="middle" font-size="13" font-weight="650">8291.55 ms</text>
 <text data-runtime="cpython" x="192.00" y="2585" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="1108.5113989538513" x="345.00" y="2541.98" width="70.00" height="17.02" fill="#c14c32"><title>mule-o2: 1108.51 ms</title></rect>
-<text x="380.00" y="2531.98" text-anchor="middle" font-size="13" font-weight="650">1108.51 ms</text>
+<rect data-runtime="mule-o2" data-ms="1083.4059410262853" x="345.00" y="2541.14" width="70.00" height="17.86" fill="#c14c32"><title>mule-o2: 1083.41 ms</title></rect>
+<text x="380.00" y="2531.14" text-anchor="middle" font-size="13" font-weight="650">1083.41 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="2585" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="961.12443396123126" x="533.00" y="2544.24" width="70.00" height="14.76" fill="#267a77"><title>sbcl: 961.124 ms</title></rect>
-<text x="568.00" y="2534.24" text-anchor="middle" font-size="13" font-weight="650">961.124 ms</text>
+<rect data-runtime="sbcl" data-ms="879.33873501606286" x="533.00" y="2544.51" width="70.00" height="14.49" fill="#267a77"><title>sbcl: 879.339 ms</title></rect>
+<text x="568.00" y="2534.51" text-anchor="middle" font-size="13" font-weight="650">879.339 ms</text>
 <text data-runtime="sbcl" x="568.00" y="2585" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="json_tokenizer">
@@ -387,22 +387,22 @@
 <line x1="780" y1="2559.00" x2="1344" y2="2559.00" stroke="#e2e3dc"/>
 <text x="770" y="2563.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="2518.00" x2="1344" y2="2518.00" stroke="#e2e3dc"/>
-<text x="770" y="2522.00" font-size="11" fill="#596564" text-anchor="end">2.55e+03</text>
+<text x="770" y="2522.00" font-size="11" fill="#596564" text-anchor="end">2.39e+03</text>
 <line x1="780" y1="2477.00" x2="1344" y2="2477.00" stroke="#e2e3dc"/>
-<text x="770" y="2481.00" font-size="11" fill="#596564" text-anchor="end">5.09e+03</text>
+<text x="770" y="2481.00" font-size="11" fill="#596564" text-anchor="end">4.78e+03</text>
 <line x1="780" y1="2436.00" x2="1344" y2="2436.00" stroke="#e2e3dc"/>
-<text x="770" y="2440.00" font-size="11" fill="#596564" text-anchor="end">7.64e+03</text>
+<text x="770" y="2440.00" font-size="11" fill="#596564" text-anchor="end">7.17e+03</text>
 <line x1="780" y1="2395.00" x2="1344" y2="2395.00" stroke="#e2e3dc"/>
-<text x="770" y="2399.00" font-size="11" fill="#596564" text-anchor="end">1.02e+04</text>
+<text x="770" y="2399.00" font-size="11" fill="#596564" text-anchor="end">9.57e+03</text>
 <line data-zero-y="2559" x1="780" y1="2559" x2="1344" y2="2559" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8487.3487739823759" x="839.00" y="2422.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8487.35 ms</title></rect>
-<text x="874.00" y="2412.33" text-anchor="middle" font-size="13" font-weight="650">8487.35 ms</text>
+<rect data-runtime="cpython" data-ms="7971.7370950384066" x="839.00" y="2422.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 7971.74 ms</title></rect>
+<text x="874.00" y="2412.33" text-anchor="middle" font-size="13" font-weight="650">7971.74 ms</text>
 <text data-runtime="cpython" x="874.00" y="2585" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="1262.6725390437059" x="1027.00" y="2538.67" width="70.00" height="20.33" fill="#c14c32"><title>mule-o2: 1262.67 ms</title></rect>
-<text x="1062.00" y="2528.67" text-anchor="middle" font-size="13" font-weight="650">1262.67 ms</text>
+<rect data-runtime="mule-o2" data-ms="1053.2437030342408" x="1027.00" y="2540.94" width="70.00" height="18.06" fill="#c14c32"><title>mule-o2: 1053.24 ms</title></rect>
+<text x="1062.00" y="2530.94" text-anchor="middle" font-size="13" font-weight="650">1053.24 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="2585" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="899.2420129943639" x="1215.00" y="2544.52" width="70.00" height="14.48" fill="#267a77"><title>sbcl: 899.242 ms</title></rect>
-<text x="1250.00" y="2534.52" text-anchor="middle" font-size="13" font-weight="650">899.242 ms</text>
+<rect data-runtime="sbcl" data-ms="838.54458999121562" x="1215.00" y="2544.62" width="70.00" height="14.38" fill="#267a77"><title>sbcl: 838.545 ms</title></rect>
+<text x="1250.00" y="2534.62" text-anchor="middle" font-size="13" font-weight="650">838.545 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="2585" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="kv_record_parse">
@@ -412,22 +412,22 @@
 <line x1="98" y1="2913.00" x2="662" y2="2913.00" stroke="#e2e3dc"/>
 <text x="88" y="2917.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="2872.00" x2="662" y2="2872.00" stroke="#e2e3dc"/>
-<text x="88" y="2876.00" font-size="11" fill="#596564" text-anchor="end">2.56e+03</text>
+<text x="88" y="2876.00" font-size="11" fill="#596564" text-anchor="end">2.38e+03</text>
 <line x1="98" y1="2831.00" x2="662" y2="2831.00" stroke="#e2e3dc"/>
-<text x="88" y="2835.00" font-size="11" fill="#596564" text-anchor="end">5.13e+03</text>
+<text x="88" y="2835.00" font-size="11" fill="#596564" text-anchor="end">4.76e+03</text>
 <line x1="98" y1="2790.00" x2="662" y2="2790.00" stroke="#e2e3dc"/>
-<text x="88" y="2794.00" font-size="11" fill="#596564" text-anchor="end">7.69e+03</text>
+<text x="88" y="2794.00" font-size="11" fill="#596564" text-anchor="end">7.14e+03</text>
 <line x1="98" y1="2749.00" x2="662" y2="2749.00" stroke="#e2e3dc"/>
-<text x="88" y="2753.00" font-size="11" fill="#596564" text-anchor="end">1.03e+04</text>
+<text x="88" y="2753.00" font-size="11" fill="#596564" text-anchor="end">9.52e+03</text>
 <line data-zero-y="2913" x1="98" y1="2913" x2="662" y2="2913" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8545.1092479634099" x="157.00" y="2776.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8545.11 ms</title></rect>
-<text x="192.00" y="2766.33" text-anchor="middle" font-size="13" font-weight="650">8545.11 ms</text>
+<rect data-runtime="cpython" data-ms="7933.4446720313281" x="157.00" y="2776.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 7933.44 ms</title></rect>
+<text x="192.00" y="2766.33" text-anchor="middle" font-size="13" font-weight="650">7933.44 ms</text>
 <text data-runtime="cpython" x="192.00" y="2939" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="3386.3853819784708" x="345.00" y="2858.84" width="70.00" height="54.16" fill="#c14c32"><title>mule-o2: 3386.39 ms</title></rect>
-<text x="380.00" y="2848.84" text-anchor="middle" font-size="13" font-weight="650">3386.39 ms</text>
+<rect data-runtime="mule-o2" data-ms="2887.622662994545" x="345.00" y="2863.26" width="70.00" height="49.74" fill="#c14c32"><title>mule-o2: 2887.62 ms</title></rect>
+<text x="380.00" y="2853.26" text-anchor="middle" font-size="13" font-weight="650">2887.62 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="2939" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="5257.8737940057181" x="533.00" y="2828.91" width="70.00" height="84.09" fill="#267a77"><title>sbcl: 5257.87 ms</title></rect>
-<text x="568.00" y="2818.91" text-anchor="middle" font-size="13" font-weight="650">5257.87 ms</text>
+<rect data-runtime="sbcl" data-ms="4989.5448070019484" x="533.00" y="2827.05" width="70.00" height="85.95" fill="#267a77"><title>sbcl: 4989.54 ms</title></rect>
+<text x="568.00" y="2817.05" text-anchor="middle" font-size="13" font-weight="650">4989.54 ms</text>
 <text data-runtime="sbcl" x="568.00" y="2939" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="log_aggregation">
@@ -437,22 +437,22 @@
 <line x1="780" y1="2913.00" x2="1344" y2="2913.00" stroke="#e2e3dc"/>
 <text x="770" y="2917.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="2872.00" x2="1344" y2="2872.00" stroke="#e2e3dc"/>
-<text x="770" y="2876.00" font-size="11" fill="#596564" text-anchor="end">154</text>
+<text x="770" y="2876.00" font-size="11" fill="#596564" text-anchor="end">156</text>
 <line x1="780" y1="2831.00" x2="1344" y2="2831.00" stroke="#e2e3dc"/>
-<text x="770" y="2835.00" font-size="11" fill="#596564" text-anchor="end">307</text>
+<text x="770" y="2835.00" font-size="11" fill="#596564" text-anchor="end">313</text>
 <line x1="780" y1="2790.00" x2="1344" y2="2790.00" stroke="#e2e3dc"/>
-<text x="770" y="2794.00" font-size="11" fill="#596564" text-anchor="end">461</text>
+<text x="770" y="2794.00" font-size="11" fill="#596564" text-anchor="end">469</text>
 <line x1="780" y1="2749.00" x2="1344" y2="2749.00" stroke="#e2e3dc"/>
-<text x="770" y="2753.00" font-size="11" fill="#596564" text-anchor="end">614</text>
+<text x="770" y="2753.00" font-size="11" fill="#596564" text-anchor="end">626</text>
 <line data-zero-y="2913" x1="780" y1="2913" x2="1344" y2="2913" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="171.67274403618649" x="839.00" y="2867.16" width="70.00" height="45.84" fill="#788582"><title>cpython: 171.673 ms</title></rect>
-<text x="874.00" y="2857.16" text-anchor="middle" font-size="13" font-weight="650">171.673 ms</text>
+<rect data-runtime="cpython" data-ms="170.78224796568975" x="839.00" y="2868.23" width="70.00" height="44.77" fill="#788582"><title>cpython: 170.782 ms</title></rect>
+<text x="874.00" y="2858.23" text-anchor="middle" font-size="13" font-weight="650">170.782 ms</text>
 <text data-runtime="cpython" x="874.00" y="2939" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="511.77861000178382" x="1027.00" y="2776.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 511.779 ms</title></rect>
-<text x="1062.00" y="2766.33" text-anchor="middle" font-size="13" font-weight="650">511.779 ms</text>
+<rect data-runtime="mule-o2" data-ms="521.32411801721901" x="1027.00" y="2776.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 521.324 ms</title></rect>
+<text x="1062.00" y="2766.33" text-anchor="middle" font-size="13" font-weight="650">521.324 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="2939" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="71.159257960971445" x="1215.00" y="2894.00" width="70.00" height="19.00" fill="#267a77"><title>sbcl: 71.1593 ms</title></rect>
-<text x="1250.00" y="2884.00" text-anchor="middle" font-size="13" font-weight="650">71.1593 ms</text>
+<rect data-runtime="sbcl" data-ms="68.45296494429931" x="1215.00" y="2895.05" width="70.00" height="17.95" fill="#267a77"><title>sbcl: 68.453 ms</title></rect>
+<text x="1250.00" y="2885.05" text-anchor="middle" font-size="13" font-weight="650">68.453 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="2939" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="lru_simulation">
@@ -462,22 +462,22 @@
 <line x1="98" y1="3267.00" x2="662" y2="3267.00" stroke="#e2e3dc"/>
 <text x="88" y="3271.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="3226.00" x2="662" y2="3226.00" stroke="#e2e3dc"/>
-<text x="88" y="3230.00" font-size="11" fill="#596564" text-anchor="end">2.94e+03</text>
+<text x="88" y="3230.00" font-size="11" fill="#596564" text-anchor="end">4.04e+03</text>
 <line x1="98" y1="3185.00" x2="662" y2="3185.00" stroke="#e2e3dc"/>
-<text x="88" y="3189.00" font-size="11" fill="#596564" text-anchor="end">5.88e+03</text>
+<text x="88" y="3189.00" font-size="11" fill="#596564" text-anchor="end">8.08e+03</text>
 <line x1="98" y1="3144.00" x2="662" y2="3144.00" stroke="#e2e3dc"/>
-<text x="88" y="3148.00" font-size="11" fill="#596564" text-anchor="end">8.82e+03</text>
+<text x="88" y="3148.00" font-size="11" fill="#596564" text-anchor="end">1.21e+04</text>
 <line x1="98" y1="3103.00" x2="662" y2="3103.00" stroke="#e2e3dc"/>
-<text x="88" y="3107.00" font-size="11" fill="#596564" text-anchor="end">1.18e+04</text>
+<text x="88" y="3107.00" font-size="11" fill="#596564" text-anchor="end">1.62e+04</text>
 <line data-zero-y="3267" x1="98" y1="3267" x2="662" y2="3267" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8890.3095350251533" x="157.00" y="3142.95" width="70.00" height="124.05" fill="#788582"><title>cpython: 8890.31 ms</title></rect>
-<text x="192.00" y="3132.95" text-anchor="middle" font-size="13" font-weight="650">8890.31 ms</text>
+<rect data-runtime="cpython" data-ms="8002.9520289972425" x="157.00" y="3185.73" width="70.00" height="81.27" fill="#788582"><title>cpython: 8002.95 ms</title></rect>
+<text x="192.00" y="3175.73" text-anchor="middle" font-size="13" font-weight="650">8002.95 ms</text>
 <text data-runtime="cpython" x="192.00" y="3293" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="9794.8377089924179" x="345.00" y="3130.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 9794.84 ms</title></rect>
-<text x="380.00" y="3120.33" text-anchor="middle" font-size="13" font-weight="650">9794.84 ms</text>
+<rect data-runtime="mule-o2" data-ms="13458.531506010331" x="345.00" y="3130.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 13458.5 ms</title></rect>
+<text x="380.00" y="3120.33" text-anchor="middle" font-size="13" font-weight="650">13458.5 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="3293" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="3219.6348329889588" x="533.00" y="3222.08" width="70.00" height="44.92" fill="#267a77"><title>sbcl: 3219.63 ms</title></rect>
-<text x="568.00" y="3212.08" text-anchor="middle" font-size="13" font-weight="650">3219.63 ms</text>
+<rect data-runtime="sbcl" data-ms="3119.71772700781" x="533.00" y="3235.32" width="70.00" height="31.68" fill="#267a77"><title>sbcl: 3119.72 ms</title></rect>
+<text x="568.00" y="3225.32" text-anchor="middle" font-size="13" font-weight="650">3119.72 ms</text>
 <text data-runtime="sbcl" x="568.00" y="3293" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="matrix_multiply" data-typed-case="matrix_multiply_typed">
@@ -491,33 +491,33 @@
 <line x1="780" y1="3267.00" x2="1344" y2="3267.00" stroke="#e2e3dc"/>
 <text x="770" y="3271.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="3226.00" x2="1344" y2="3226.00" stroke="#e2e3dc"/>
-<text x="770" y="3230.00" font-size="11" fill="#596564" text-anchor="end">3.99e+03</text>
+<text x="770" y="3230.00" font-size="11" fill="#596564" text-anchor="end">2.74e+03</text>
 <line x1="780" y1="3185.00" x2="1344" y2="3185.00" stroke="#e2e3dc"/>
-<text x="770" y="3189.00" font-size="11" fill="#596564" text-anchor="end">7.99e+03</text>
+<text x="770" y="3189.00" font-size="11" fill="#596564" text-anchor="end">5.48e+03</text>
 <line x1="780" y1="3144.00" x2="1344" y2="3144.00" stroke="#e2e3dc"/>
-<text x="770" y="3148.00" font-size="11" fill="#596564" text-anchor="end">1.2e+04</text>
+<text x="770" y="3148.00" font-size="11" fill="#596564" text-anchor="end">8.22e+03</text>
 <line x1="780" y1="3103.00" x2="1344" y2="3103.00" stroke="#e2e3dc"/>
-<text x="770" y="3107.00" font-size="11" fill="#596564" text-anchor="end">1.6e+04</text>
+<text x="770" y="3107.00" font-size="11" fill="#596564" text-anchor="end">1.1e+04</text>
 <line data-zero-y="3267" x1="780" y1="3267" x2="1344" y2="3267" stroke="#788582"/>
-<rect data-runtime="cpython" data-variant="untyped" data-case="matrix_multiply" data-ms="13308.459308987949" x="822.36" y="3130.33" width="46.00" height="136.67" fill="#788582"><title>cpython (untyped): 13308.5 ms</title></rect>
-<text x="845.36" y="3122.33" text-anchor="middle" font-size="11" font-weight="650">13308.5 ms</text>
+<rect data-runtime="cpython" data-variant="untyped" data-case="matrix_multiply" data-ms="9064.5408959826455" x="822.36" y="3131.32" width="46.00" height="135.68" fill="#788582"><title>cpython (untyped): 9064.54 ms</title></rect>
+<text x="845.36" y="3123.32" text-anchor="middle" font-size="11" font-weight="650">9064.54 ms</text>
 <text x="845.36" y="3282" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="cpython" data-variant="typed" data-case="matrix_multiply_typed" data-ms="12751.263433019631" x="879.64" y="3136.06" width="46.00" height="130.94" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 12751.3 ms</title></rect>
-<text x="902.64" y="3128.06" text-anchor="middle" font-size="11" font-weight="650">12751.3 ms</text>
+<rect data-runtime="cpython" data-variant="typed" data-case="matrix_multiply_typed" data-ms="9130.752963013947" x="879.64" y="3130.33" width="46.00" height="136.67" fill="#788582" fill-opacity="0.52" stroke="#788582" stroke-width="1.5"><title>cpython (typed): 9130.75 ms</title></rect>
+<text x="902.64" y="3122.33" text-anchor="middle" font-size="11" font-weight="650">9130.75 ms</text>
 <text x="902.64" y="3282" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="cpython" x="874.00" y="3301" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-variant="untyped" data-case="matrix_multiply" data-ms="388.56892503099516" x="1010.36" y="3263.01" width="46.00" height="3.99" fill="#c14c32"><title>mule-o2 (untyped): 388.569 ms</title></rect>
-<text x="1033.36" y="3255.01" text-anchor="middle" font-size="11" font-weight="650">388.569 ms</text>
+<rect data-runtime="mule-o2" data-variant="untyped" data-case="matrix_multiply" data-ms="366.24984501395375" x="1010.36" y="3261.52" width="46.00" height="5.48" fill="#c14c32"><title>mule-o2 (untyped): 366.25 ms</title></rect>
+<text x="1033.36" y="3253.52" text-anchor="middle" font-size="11" font-weight="650">366.25 ms</text>
 <text x="1033.36" y="3282" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="mule-o2" data-variant="typed" data-case="matrix_multiply_typed" data-ms="331.31422597216442" x="1067.64" y="3263.60" width="46.00" height="3.40" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 331.314 ms</title></rect>
-<text x="1090.64" y="3255.60" text-anchor="middle" font-size="11" font-weight="650">331.314 ms</text>
+<rect data-runtime="mule-o2" data-variant="typed" data-case="matrix_multiply_typed" data-ms="324.86167899332941" x="1067.64" y="3262.14" width="46.00" height="4.86" fill="#c14c32" fill-opacity="0.52" stroke="#c14c32" stroke-width="1.5"><title>mule-o2 (typed): 324.862 ms</title></rect>
+<text x="1090.64" y="3254.14" text-anchor="middle" font-size="11" font-weight="650">324.862 ms</text>
 <text x="1090.64" y="3282" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="mule-o2" x="1062.00" y="3301" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-variant="untyped" data-case="matrix_multiply" data-ms="703.40529398526996" x="1198.36" y="3259.78" width="46.00" height="7.22" fill="#267a77"><title>sbcl (untyped): 703.405 ms</title></rect>
-<text x="1221.36" y="3251.78" text-anchor="middle" font-size="11" font-weight="650">703.405 ms</text>
+<rect data-runtime="sbcl" data-variant="untyped" data-case="matrix_multiply" data-ms="530.58803401654586" x="1198.36" y="3259.06" width="46.00" height="7.94" fill="#267a77"><title>sbcl (untyped): 530.588 ms</title></rect>
+<text x="1221.36" y="3251.06" text-anchor="middle" font-size="11" font-weight="650">530.588 ms</text>
 <text x="1221.36" y="3282" text-anchor="middle" font-size="10" fill="#596564">untyped</text>
-<rect data-runtime="sbcl" data-variant="typed" data-case="matrix_multiply_typed" data-ms="145.59864002512768" x="1255.64" y="3265.50" width="46.00" height="1.50" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 145.599 ms</title></rect>
-<text x="1278.64" y="3257.50" text-anchor="middle" font-size="11" font-weight="650">145.599 ms</text>
+<rect data-runtime="sbcl" data-variant="typed" data-case="matrix_multiply_typed" data-ms="139.27720201900229" x="1255.64" y="3264.92" width="46.00" height="2.08" fill="#267a77" fill-opacity="0.52" stroke="#267a77" stroke-width="1.5"><title>sbcl (typed): 139.277 ms</title></rect>
+<text x="1278.64" y="3256.92" text-anchor="middle" font-size="11" font-weight="650">139.277 ms</text>
 <text x="1278.64" y="3282" text-anchor="middle" font-size="10" fill="#596564">typed</text>
 <text data-runtime="sbcl" x="1250.00" y="3301" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
@@ -528,22 +528,22 @@
 <line x1="98" y1="3621.00" x2="662" y2="3621.00" stroke="#e2e3dc"/>
 <text x="88" y="3625.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="98" y1="3580.00" x2="662" y2="3580.00" stroke="#e2e3dc"/>
-<text x="88" y="3584.00" font-size="11" fill="#596564" text-anchor="end">759</text>
+<text x="88" y="3584.00" font-size="11" fill="#596564" text-anchor="end">846</text>
 <line x1="98" y1="3539.00" x2="662" y2="3539.00" stroke="#e2e3dc"/>
-<text x="88" y="3543.00" font-size="11" fill="#596564" text-anchor="end">1.52e+03</text>
+<text x="88" y="3543.00" font-size="11" fill="#596564" text-anchor="end">1.69e+03</text>
 <line x1="98" y1="3498.00" x2="662" y2="3498.00" stroke="#e2e3dc"/>
-<text x="88" y="3502.00" font-size="11" fill="#596564" text-anchor="end">2.28e+03</text>
+<text x="88" y="3502.00" font-size="11" fill="#596564" text-anchor="end">2.54e+03</text>
 <line x1="98" y1="3457.00" x2="662" y2="3457.00" stroke="#e2e3dc"/>
-<text x="88" y="3461.00" font-size="11" fill="#596564" text-anchor="end">3.04e+03</text>
+<text x="88" y="3461.00" font-size="11" fill="#596564" text-anchor="end">3.39e+03</text>
 <line data-zero-y="3621" x1="98" y1="3621" x2="662" y2="3621" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="274.74928402807564" x="157.00" y="3606.16" width="70.00" height="14.84" fill="#788582"><title>cpython: 274.749 ms</title></rect>
-<text x="192.00" y="3596.16" text-anchor="middle" font-size="13" font-weight="650">274.749 ms</text>
+<rect data-runtime="cpython" data-ms="255.56240696460009" x="157.00" y="3608.62" width="70.00" height="12.38" fill="#788582"><title>cpython: 255.562 ms</title></rect>
+<text x="192.00" y="3598.62" text-anchor="middle" font-size="13" font-weight="650">255.562 ms</text>
 <text data-runtime="cpython" x="192.00" y="3647" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="2530.5657920544036" x="345.00" y="3484.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 2530.57 ms</title></rect>
-<text x="380.00" y="3474.33" text-anchor="middle" font-size="13" font-weight="650">2530.57 ms</text>
+<rect data-runtime="mule-o2" data-ms="2821.4845500187948" x="345.00" y="3484.33" width="70.00" height="136.67" fill="#c14c32"><title>mule-o2: 2821.48 ms</title></rect>
+<text x="380.00" y="3474.33" text-anchor="middle" font-size="13" font-weight="650">2821.48 ms</text>
 <text data-runtime="mule-o2" x="380.00" y="3647" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="443.28984199091792" x="533.00" y="3597.06" width="70.00" height="23.94" fill="#267a77"><title>sbcl: 443.29 ms</title></rect>
-<text x="568.00" y="3587.06" text-anchor="middle" font-size="13" font-weight="650">443.29 ms</text>
+<rect data-runtime="sbcl" data-ms="404.48250295594335" x="533.00" y="3601.41" width="70.00" height="19.59" fill="#267a77"><title>sbcl: 404.483 ms</title></rect>
+<text x="568.00" y="3591.41" text-anchor="middle" font-size="13" font-weight="650">404.483 ms</text>
 <text data-runtime="sbcl" x="568.00" y="3647" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <g data-case="word_frequency">
@@ -553,22 +553,22 @@
 <line x1="780" y1="3621.00" x2="1344" y2="3621.00" stroke="#e2e3dc"/>
 <text x="770" y="3625.00" font-size="11" fill="#596564" text-anchor="end">0</text>
 <line x1="780" y1="3580.00" x2="1344" y2="3580.00" stroke="#e2e3dc"/>
-<text x="770" y="3584.00" font-size="11" fill="#596564" text-anchor="end">2.6e+03</text>
+<text x="770" y="3584.00" font-size="11" fill="#596564" text-anchor="end">2.44e+03</text>
 <line x1="780" y1="3539.00" x2="1344" y2="3539.00" stroke="#e2e3dc"/>
-<text x="770" y="3543.00" font-size="11" fill="#596564" text-anchor="end">5.2e+03</text>
+<text x="770" y="3543.00" font-size="11" fill="#596564" text-anchor="end">4.87e+03</text>
 <line x1="780" y1="3498.00" x2="1344" y2="3498.00" stroke="#e2e3dc"/>
-<text x="770" y="3502.00" font-size="11" fill="#596564" text-anchor="end">7.8e+03</text>
+<text x="770" y="3502.00" font-size="11" fill="#596564" text-anchor="end">7.31e+03</text>
 <line x1="780" y1="3457.00" x2="1344" y2="3457.00" stroke="#e2e3dc"/>
-<text x="770" y="3461.00" font-size="11" fill="#596564" text-anchor="end">1.04e+04</text>
+<text x="770" y="3461.00" font-size="11" fill="#596564" text-anchor="end">9.75e+03</text>
 <line data-zero-y="3621" x1="780" y1="3621" x2="1344" y2="3621" stroke="#788582"/>
-<rect data-runtime="cpython" data-ms="8667.6893439725973" x="839.00" y="3484.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8667.69 ms</title></rect>
-<text x="874.00" y="3474.33" text-anchor="middle" font-size="13" font-weight="650">8667.69 ms</text>
+<rect data-runtime="cpython" data-ms="8123.1666260282509" x="839.00" y="3484.33" width="70.00" height="136.67" fill="#788582"><title>cpython: 8123.17 ms</title></rect>
+<text x="874.00" y="3474.33" text-anchor="middle" font-size="13" font-weight="650">8123.17 ms</text>
 <text data-runtime="cpython" x="874.00" y="3647" text-anchor="middle" font-size="13" font-weight="600">CPython</text>
-<rect data-runtime="mule-o2" data-ms="6094.4378789863549" x="1027.00" y="3524.91" width="70.00" height="96.09" fill="#c14c32"><title>mule-o2: 6094.44 ms</title></rect>
-<text x="1062.00" y="3514.91" text-anchor="middle" font-size="13" font-weight="650">6094.44 ms</text>
+<rect data-runtime="mule-o2" data-ms="5628.6319539649412" x="1027.00" y="3526.30" width="70.00" height="94.70" fill="#c14c32"><title>mule-o2: 5628.63 ms</title></rect>
+<text x="1062.00" y="3516.30" text-anchor="middle" font-size="13" font-weight="650">5628.63 ms</text>
 <text data-runtime="mule-o2" x="1062.00" y="3647" text-anchor="middle" font-size="13" font-weight="600">Mule -O2</text>
-<rect data-runtime="sbcl" data-ms="6967.9048769758083" x="1215.00" y="3511.13" width="70.00" height="109.87" fill="#267a77"><title>sbcl: 6967.9 ms</title></rect>
-<text x="1250.00" y="3501.13" text-anchor="middle" font-size="13" font-weight="650">6967.9 ms</text>
+<rect data-runtime="sbcl" data-ms="6967.3694699886255" x="1215.00" y="3503.78" width="70.00" height="117.22" fill="#267a77"><title>sbcl: 6967.37 ms</title></rect>
+<text x="1250.00" y="3493.78" text-anchor="middle" font-size="13" font-weight="650">6967.37 ms</text>
 <text data-runtime="sbcl" x="1250.00" y="3647" text-anchor="middle" font-size="13" font-weight="600">SBCL</text>
 </g>
 <text x="36" y="3732" font-size="11" fill="#596564">Compare runtimes within a panel, not bar heights across panels. Failures are not timings.</text>
