@@ -30,8 +30,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from mule import ast
+
 from . import fndb
-from .ctype import ListType, TupleType, ValueType, ValueTypeVisitor
+from .ctype import (
+    BOTTOM,
+    BYTEARRAY_TYPE,
+    BYTES_TYPE,
+    DICT_TYPE,
+    TEXT_TYPE,
+    UNKNOWN,
+    ByteArrayType,
+    BytesType,
+    DictType,
+    ListType,
+    TextType,
+    TupleType,
+    ValueType,
+    ValueTypeVisitor,
+)
 from .ir1opt import lvar_type
 from .ir1util import made_lambda
 from .node import (
@@ -91,7 +108,9 @@ def _is_local_function_ref(ref: Ref, lambda_: Lambda) -> bool:
         return False
     return maker.lvar.dest.accept(
         _LOCAL_BINDING
-    ).var is not None or maker.lvar.dest.accept(_DirectFunctionUse(maker, lambda_))
+    ).var is not None or maker.lvar.dest.accept(
+        _DirectSummaryFunctionUse(maker, lambda_)
+    )
 
 
 def _expand_lambdas(lambdas) -> tuple[Lambda, ...]:
@@ -195,14 +214,13 @@ def analyze_escapes(
     if local_environments is None:
         local_environments = find_local_environments(lambdas)
     facts = EscapeFacts()
-    solver = _Solver(facts, local_environments)
+    solver = _Solver(facts, local_environments, analyzed_lambdas=frozenset(lambdas))
     for lambda_ in lambdas:
         facts._analyzed.update(lambda_.locals)
-    if local_environments.functions:
-        for lambda_ in lambdas:
-            for block in lambda_.component.blocks():
-                for node in block.nodes():
-                    solver.record_call_inputs(node)
+    for lambda_ in lambdas:
+        for block in lambda_.component.blocks():
+            for node in block.nodes():
+                solver.record_call_inputs(node)
     for lambda_ in lambdas:
         solver.add_lambda(lambda_)
     makers = []
@@ -245,29 +263,115 @@ class _Solver:
         self,
         facts: EscapeFacts,
         local_environments: LocalEnvironments | None = None,
+        analyzed_lambdas: frozenset[Lambda] = frozenset(),
     ):
         self.facts = facts
         self.local_environments = local_environments or LocalEnvironments()
+        self.analyzed_lambdas = analyzed_lambdas
         # var -> variables whose escape makes ``var`` escape
         self.depends_on: dict[LambdaVar, list[LambdaVar]] = {}
         self.dependents: dict[LambdaVar, list[LambdaVar]] = {}
         self.incoming_args: dict[LambdaVar, list[Lvar]] = {}
+        self.default_args: dict[LambdaVar, list[Lvar]] = {}
+        self.defaulted_params: set[LambdaVar] = set()
         self.pending: list[LambdaVar] = []
         self.allocation_pending: list[LambdaVar] = []
+        self._active_type_vars: set[LambdaVar] = set()
         self.uses = _UseClassifier(self)
 
-    def proven_callee(self, node: Combination) -> Lambda | None:
+    def proven_callee(self, node: Combination):
         return _proven_callee(node, self.local_environments)
 
+    def is_summary_local_function(self, function: Lambda) -> bool:
+        return self.local_environments.is_local(
+            function
+        ) or _all_uses_are_direct_summary_calls(function, self.analyzed_lambdas)
+
+    def effective_lvar_type(self, lvar: Lvar) -> ValueType:
+        direct = lvar_type(lvar)
+        if direct is not UNKNOWN or len(lvar.uses) != 1:
+            return direct
+        var = lvar.use().accept(_LOCAL_BINDING).var
+        if var is None or var in self._active_type_vars:
+            return direct
+        if var in var.home.vars:
+            if not var.sets:
+                idx = var.home.vars.index(var)
+                if idx < len(var.home.signature.annotations):
+                    ann = var.home.signature.annotations[idx]
+                    if ann is not None and ann.checked_type is not UNKNOWN:
+                        return ann.checked_type
+            if not self.is_summary_local_function(var.home):
+                return direct
+            sources = [
+                *(
+                    assignment.value
+                    for assignment in var.sets
+                    if assignment.value is not None
+                ),
+                *self.incoming_args.get(var, ()),
+                *(
+                    self.default_args.get(var, ())
+                    if var in self.defaulted_params
+                    else ()
+                ),
+            ]
+        else:
+            if any(assignment.value is None for assignment in var.sets):
+                return direct
+            sources = [
+                assignment.value
+                for assignment in var.sets
+                if assignment.value is not None
+            ]
+        if not sources:
+            return direct
+        self._active_type_vars.add(var)
+        try:
+            joined = BOTTOM
+            for source_lvar in sources:
+                stype = self.effective_lvar_type(source_lvar)
+                if stype is UNKNOWN:
+                    return UNKNOWN
+                joined = joined.join(stype)
+            return UNKNOWN if joined is BOTTOM else joined
+        finally:
+            self._active_type_vars.remove(var)
+
     def record_call_inputs(self, node) -> None:
+        maker = node.accept(_ALLOCATION)
+        if maker is not None and maker.fun_info is fndb.MAKE_FUNCTION:
+            fn = made_lambda(maker)
+            defaults = fn.signature.default_parameters
+            if len(maker.args) == 1 + len(defaults):
+                for def_arg, param_idx in zip(maker.args[1:], defaults, strict=True):
+                    if 0 <= param_idx < len(fn.vars):
+                        self.default_args.setdefault(fn.vars[param_idx], []).append(
+                            def_arg
+                        )
+            return
         callee = node.accept(_CALL_NODE)
         if callee is None:
             return
         target = self.proven_callee(callee)
-        if target is None or not self.local_environments.is_local(target):
+        if target is None:
             return
-        for var, arg in zip(target.vars, callee.args, strict=True):
-            self.incoming_args.setdefault(var, []).append(arg)
+        target_lambda = target.as_lambda()
+        if target_lambda is None or not self.is_summary_local_function(target_lambda):
+            return
+        keywords = (
+            callee.info.keywords
+            if callee.info is not None and callee.info.keywords
+            else ()
+        )
+        order = target_lambda.call_order(keywords, len(callee.args))
+        if order is None or len(order) != len(target_lambda.vars):
+            return
+        for var, arg_index in zip(target_lambda.vars, order, strict=True):
+            if arg_index is None or arg_index < 0:
+                self.defaulted_params.add(var)
+            else:
+                self.incoming_args.setdefault(var, []).append(callee.args[arg_index])
 
     def add_lambda(self, lambda_: Lambda) -> None:
         for var in lambda_.locals:
@@ -292,6 +396,14 @@ class _Solver:
             self.facts._escaping.add(var)
             self.pending.append(var)
 
+    def allocation_only_escape(self, var: LambdaVar) -> None:
+        if var in self.facts._allocations and var.fun_info is fndb.MAKE_FUNCTION:
+            self.escape(var)
+            return
+        if var not in self.facts._allocation_escaping:
+            self.facts._allocation_escaping.add(var)
+            self.allocation_pending.append(var)
+
     def escapes_with(self, var: LambdaVar, other: LambdaVar) -> None:
         """``var`` escapes whenever ``other`` does."""
         if var is other:
@@ -306,7 +418,7 @@ class _Solver:
                     if dependency in base_facts._escaping:
                         self.non_container_escape(dependency)
                     if dependency in base_facts._allocation_escaping:
-                        self.escape(dependency)
+                        self.allocation_only_escape(dependency)
                 else:
                     self.escape(dependency)
         while self.pending:
@@ -316,7 +428,7 @@ class _Solver:
         while self.allocation_pending:
             other = self.allocation_pending.pop()
             for var in self.dependents.get(other, ()):
-                self.escape(var)
+                self.allocation_only_escape(var)
 
 
 class _UseClassifier(NodeVisitor):
@@ -355,6 +467,15 @@ class _UseClassifier(NodeVisitor):
 
     def visit_If(self, node):
         # __bool__ and __len__ may publish their receiver through user code.
+        if (
+            self.source in self.solver.facts._allocations
+            or self.source.accept(self.container_origin) is not None
+        ):
+            return
+        op_type = self.solver.effective_lvar_type(self.operand)
+        if op_type.accept(_BUILTIN_CONTAINER_TYPE) or not op_type.may_run_user_code:
+            self.solver.allocation_only_escape(self.source)
+            return
         self.solver.escape(self.source)
 
     def visit_Cast(self, node):
@@ -410,6 +531,108 @@ class _UseClassifier(NodeVisitor):
             ):
                 self.solver.non_container_escape(self.source)
             return
+        if (
+            index == 1
+            and info
+            in (
+                fndb.PROTOCOLS["getitem"],
+                fndb.PROTOCOLS["setitem"],
+                fndb.PROTOCOLS["delitem"],
+            )
+            and len(node.args) >= 2
+            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
+            and _borrows_subscript_index(
+                self.solver.effective_lvar_type(node.args[0]), info
+            )
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if (
+            index == 0
+            and info is fndb.PROTOCOLS["delitem"]
+            and len(node.args) == 2
+            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
+            and self.solver.effective_lvar_type(node.args[0]).accept(
+                _BUILTIN_CONTAINER_TYPE
+            )
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if index == 0 and info is fndb.UNARY[ast.UnaryOperator.NOT]:
+            if (
+                self.source in self.solver.facts._allocations
+                or self.source.accept(self.container_origin) is not None
+            ):
+                return
+            op_type = self.solver.effective_lvar_type(self.operand)
+            if op_type.accept(_BUILTIN_CONTAINER_TYPE) or not op_type.may_run_user_code:
+                self.solver.allocation_only_escape(self.source)
+                return
+        if info in (
+            fndb.COMPARE[ast.ComparisonOperator.IN],
+            fndb.COMPARE[ast.ComparisonOperator.NOT_IN],
+        ) and self._is_reflexive_fixed_container_membership(node):
+            if index == 1 and (
+                self.source in self.solver.facts._allocations
+                or self.source.accept(self.container_origin) is not None
+            ):
+                return
+            if index == 0:
+                self.solver.allocation_only_escape(self.source)
+                return
+        if (
+            info in _VALUE_COMPARISONS
+            and len(node.args) == 2
+            and all(
+                not self.solver.effective_lvar_type(arg).may_run_user_code
+                for arg in node.args
+            )
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if (
+            info is fndb.MATH_SQRT
+            and len(node.args) == 1
+            and not self.solver.effective_lvar_type(node.args[0]).may_run_user_code
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if (
+            info is fndb.RESOLVE_METHOD
+            and index == 0
+            and _borrows_resolved_method_receiver(self.solver, node)
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if info is fndb.CALL_RESOLVED:
+            if index == 0:
+                return
+            if node.predicted is not None and node.predicted.supports_escape_summary():
+                keywords = (
+                    node.info.keywords
+                    if node.info is not None and node.info.keywords
+                    else ()
+                )
+                order = node.predicted.call_order(keywords, len(node.args) - 1)
+                if order is not None:
+                    arg_idx = index - 1
+                    for param_index, mapped in enumerate(order):
+                        if mapped == arg_idx:
+                            node.predicted.classify_call_escape(
+                                self.solver,
+                                self.source,
+                                param_index,
+                                direct_positional=False,
+                            )
+                            return
+            action = _classify_resolved_method_argument(self.solver, node, index)
+            if action == "borrow":
+                self.solver.allocation_only_escape(self.source)
+                return
+            if action == "forward":
+                self.solver.allocation_only_escape(self.source)
+                self.classify(self.source, node.lvar)
+                return
         if info is not None and info.borrows_argument(index):
             # The operation reads its argument; its result may still carry
             # the value onward when the function returns it.
@@ -418,19 +641,59 @@ class _UseClassifier(NodeVisitor):
             return
         self.solver.escape(self.source)
 
-    def local_call(self, node: Combination, index: int) -> None:
+    def _is_reflexive_fixed_container_membership(self, node: Combination) -> bool:
+        if (
+            len(node.args) != 2
+            or not self.solver.effective_lvar_type(
+                node.args[0]
+            ).has_reflexive_equality()
+        ):
+            return False
+        container_arg = node.args[1]
+        if len(container_arg.uses) != 1:
+            return False
+        origins = container_arg.use().accept(self.container_origin)
+        if not origins:
+            return False
+        for origin in origins:
+            if not (1 <= len(origin.args) <= 8) or not all(
+                self.solver.effective_lvar_type(arg).has_reflexive_equality()
+                for arg in origin.args
+            ):
+                return False
+        return True
+
+    def _classify_proven_call(self, node: Combination, index: int) -> None:
         callee = self.solver.proven_callee(node)
-        if callee is None or index >= len(callee.vars):
+        if callee is None:
             self.solver.escape(self.source)
             return
-        self.solver.escapes_with(self.source, callee.vars[index])
+        keywords = (
+            node.info.keywords if node.info is not None and node.info.keywords else ()
+        )
+        order = callee.call_order(keywords, len(node.args))
+        if order is None:
+            self.solver.escape(self.source)
+            return
+        for param_index, arg_index in enumerate(order):
+            if arg_index == index:
+                direct_positional = not keywords and all(
+                    item is not None and item >= 0 for item in order
+                )
+                callee.classify_call_escape(
+                    self.solver,
+                    self.source,
+                    param_index,
+                    direct_positional=direct_positional,
+                )
+                return
+        self.solver.escape(self.source)
+
+    def local_call(self, node: Combination, index: int) -> None:
+        self._classify_proven_call(node, index)
 
     def unknown_call(self, node: Combination, index: int) -> None:
-        callee = self.solver.proven_callee(node)
-        if callee is not None and index < len(callee.vars):
-            self.solver.escapes_with(self.source, callee.vars[index])
-            return
-        self.solver.escape(self.source)
+        self._classify_proven_call(node, index)
 
 
 # How each call kind treats an argument. Unproven GUARDED calls fall back to a
@@ -496,6 +759,26 @@ class _CallNode(NodeVisitor):
 _CALL_NODE = _CallNode()
 
 
+def _local_function_callee(node: Combination) -> Lambda | None:
+    if len(node.fun.uses) != 1:
+        return None
+    producer = node.fun.use()
+    binding = producer.accept(_LOCAL_BINDING)
+    if binding.function is not None:
+        return binding.function
+    var = binding.var
+    if var is None or var.indirect or var in var.home.vars or not var.sets:
+        return None
+    first = var.sets[0].value
+    if first is None or len(first.uses) != 1:
+        return None
+    maker = first.use().accept(_ALLOCATION)
+    if maker is None or maker.fun_info is not fndb.MAKE_FUNCTION:
+        return None
+    function = made_lambda(maker)
+    return function if var.accept(_SameFunctionDefinition(function)) else None
+
+
 class _ReachableCallee(NodeVisitor):
     def visit_Node(self, node):
         return None
@@ -505,42 +788,52 @@ class _ReachableCallee(NodeVisitor):
             return made_lambda(node)
         if node.kind is CallKind.LOCAL:
             return _callee_lambda(node)
-        if node.kind is CallKind.GUARDED and node.proven and node.predicted is not None:
-            return node.predicted.as_lambda()
+        if node.kind is CallKind.GUARDED and node.proven:
+            if node.predicted is not None:
+                lam = node.predicted.as_lambda()
+                if lam is not None:
+                    return lam
+            target = lvar_type(node.fun).callable_target()
+            if target is not None:
+                lam = target.as_lambda()
+                if lam is not None:
+                    return lam
+        if node.kind in (CallKind.FULL, CallKind.GUARDED):
+            return _local_function_callee(node)
         return None
 
 
 _REACHABLE_CALLEE = _ReachableCallee()
 
 
-def _proven_callee(
-    node: Combination, local_environments: LocalEnvironments | None
-) -> Lambda | None:
+def _proven_callee(node: Combination, local_environments: LocalEnvironments | None):
     if node.kind is CallKind.LOCAL:
-        return _callee_lambda(node)
-    if node.kind not in (CallKind.FULL, CallKind.GUARDED):
+        callee = _callee_lambda(node)
+    elif node.kind in (CallKind.FULL, CallKind.GUARDED):
+        callee = (
+            local_environments.call_target(node)
+            if local_environments is not None
+            else None
+        )
+        if callee is None:
+            callee = _local_function_callee(node)
+        if (
+            callee is None
+            and node.kind is CallKind.GUARDED
+            and node.predicted is not None
+            and (node.proven or node.predicted.as_lambda() is None)
+        ):
+            callee = node.predicted
+        if callee is None and node.proven:
+            callee = lvar_type(node.fun).callable_target()
+    else:
         return None
-    if node.info is not None and node.info.keywords:
+    if callee is None or not callee.supports_escape_summary():
         return None
-    callee = (
-        local_environments.call_target(node) if local_environments is not None else None
+    keywords = (
+        node.info.keywords if node.info is not None and node.info.keywords else ()
     )
-    if (
-        callee is None
-        and node.kind is CallKind.GUARDED
-        and node.proven
-        and node.predicted is not None
-    ):
-        callee = node.predicted.as_lambda()
-    if (
-        callee is None
-        or callee.kind is not FunctionalKind.NORMAL
-        or callee.signature.variadic
-        or callee.signature.default_parameters
-        or not callee.signature.positional_body
-        or (callee.code is not None and callee.code.flags & 0x2A0)
-        or len(node.args) != len(callee.vars)
-    ):
+    if callee.call_order(keywords, len(node.args)) is None:
         return None
     return callee
 
@@ -555,8 +848,243 @@ class _BuiltinContainerType(ValueTypeVisitor):
     def visit_ListType(self, fact: ListType) -> bool:
         return not fact.may_be_unbound
 
+    def visit_TextType(self, fact: TextType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_BytesType(self, fact: BytesType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_ByteArrayType(self, fact: ByteArrayType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_DictType(self, fact: DictType) -> bool:
+        return fact.proven and not fact.may_be_unbound
+
 
 _BUILTIN_CONTAINER_TYPE = _BuiltinContainerType()
+
+
+class _SafeDictKeyType(ValueTypeVisitor):
+    def visit_ValueType(self, fact: ValueType) -> bool:
+        return False
+
+    def visit_DictType(self, fact: DictType) -> bool:
+        return (
+            fact.proven
+            and not fact.may_be_unbound
+            and (fact.key is BOTTOM or not fact.key.may_run_user_code)
+        )
+
+
+_SAFE_DICT_KEY_TYPE = _SafeDictKeyType()
+
+
+def _borrows_subscript_index(container_type: ValueType, info) -> bool:
+    if (
+        container_type.is_exact_list
+        or container_type.is_exact_tuple
+        or container_type.fits_text(TEXT_TYPE)
+        or container_type.fits_bytes(BYTES_TYPE)
+        or container_type.fits_bytearray(BYTEARRAY_TYPE)
+    ):
+        return True
+    if info in (fndb.PROTOCOLS["getitem"], fndb.PROTOCOLS["delitem"]):
+        return container_type.accept(_SAFE_DICT_KEY_TYPE)
+    return False
+
+
+_VALUE_COMPARISONS = frozenset(
+    (
+        fndb.COMPARE[ast.ComparisonOperator.EQUAL],
+        fndb.COMPARE[ast.ComparisonOperator.NOT_EQUAL],
+        fndb.COMPARE[ast.ComparisonOperator.LESS],
+        fndb.COMPARE[ast.ComparisonOperator.LESS_EQUAL],
+        fndb.COMPARE[ast.ComparisonOperator.GREATER],
+        fndb.COMPARE[ast.ComparisonOperator.GREATER_EQUAL],
+        fndb.COMPARE[ast.ComparisonOperator.IN],
+        fndb.COMPARE[ast.ComparisonOperator.NOT_IN],
+    )
+)
+
+
+class _ResolveMethodNode(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.RESOLVE_METHOD
+            and node.info is not None
+            and len(node.args) == 1
+        ):
+            return node
+        return None
+
+
+_RESOLVE_METHOD_NODE = _ResolveMethodNode()
+
+
+class _CallResolvedNode(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.CALL_RESOLVED
+            and node.args
+            and (node.info is None or not node.info.keywords)
+        ):
+            return node
+        return None
+
+
+_CALL_RESOLVED_NODE = _CallResolvedNode()
+
+
+def _borrows_resolved_method_receiver(
+    solver: _Solver, resolve_node: Combination
+) -> bool:
+    if (
+        resolve_node.info is None
+        or len(resolve_node.args) != 1
+        or resolve_node.lvar is None
+        or len(resolve_node.lvar.uses) != 1
+        or resolve_node.lvar.dest is None
+    ):
+        return False
+    call_node = resolve_node.lvar.dest.accept(_CALL_RESOLVED_NODE)
+    if call_node is None or call_node.args[0] is not resolve_node.lvar:
+        return False
+    recv_type = solver.effective_lvar_type(resolve_node.args[0])
+    name = resolve_node.info.name
+    args = call_node.args[1:]
+    arity = len(args)
+    if recv_type.fits_text(TEXT_TYPE):
+        if name in (
+            "find",
+            "rfind",
+            "index",
+            "rindex",
+            "count",
+            "startswith",
+            "endswith",
+        ):
+            return 1 <= arity <= 3 and all(
+                not solver.effective_lvar_type(a).may_run_user_code for a in args
+            )
+        if name in ("split", "rsplit"):
+            return 0 <= arity <= 2 and all(
+                not solver.effective_lvar_type(a).may_run_user_code for a in args
+            )
+        if name in ("partition", "rpartition"):
+            return (
+                arity == 1 and not solver.effective_lvar_type(args[0]).may_run_user_code
+            )
+    if recv_type.is_exact_list:
+        if name == "append":
+            return arity == 1
+        if name == "pop":
+            return 0 <= arity <= 1 and all(
+                not solver.effective_lvar_type(a).may_run_user_code for a in args
+            )
+        if name == "clear":
+            return arity == 0
+    if recv_type.fits_bytearray(BYTEARRAY_TYPE):
+        if name == "append":
+            return (
+                arity == 1 and not solver.effective_lvar_type(args[0]).may_run_user_code
+            )
+        if name == "pop":
+            return 0 <= arity <= 1 and all(
+                not solver.effective_lvar_type(a).may_run_user_code for a in args
+            )
+        if name == "clear":
+            return arity == 0
+    if recv_type.fits_dict(DICT_TYPE):
+        if name in ("get", "pop"):
+            return (
+                1 <= arity <= 2
+                and not solver.effective_lvar_type(args[0]).may_run_user_code
+            )
+        if name == "clear":
+            return arity == 0
+    return False
+
+
+def _classify_resolved_method_argument(
+    solver: _Solver, call_node: Combination, index: int
+) -> str | None:
+    if (
+        index < 1
+        or not call_node.args
+        or (call_node.info is not None and call_node.info.keywords)
+        or len(call_node.args[0].uses) != 1
+    ):
+        return None
+    resolve_node = call_node.args[0].use().accept(_RESOLVE_METHOD_NODE)
+    if resolve_node is None or resolve_node.lvar is not call_node.args[0]:
+        return None
+    recv_type = solver.effective_lvar_type(resolve_node.args[0])
+    name = resolve_node.info.name
+    args = call_node.args[1:]
+    arity = len(args)
+    if recv_type.fits_text(TEXT_TYPE):
+        if (
+            name
+            in (
+                "find",
+                "rfind",
+                "index",
+                "rindex",
+                "count",
+                "startswith",
+                "endswith",
+            )
+            and 1 <= arity <= 3
+            and all(not solver.effective_lvar_type(a).may_run_user_code for a in args)
+        ):
+            return "borrow"
+        if (
+            name in ("split", "rsplit")
+            and 0 <= arity <= 2
+            and all(not solver.effective_lvar_type(a).may_run_user_code for a in args)
+        ):
+            return "borrow"
+        if (
+            name in ("partition", "rpartition")
+            and arity == 1
+            and not solver.effective_lvar_type(args[0]).may_run_user_code
+        ):
+            return "borrow"
+    if (
+        recv_type.is_exact_list
+        and name == "pop"
+        and arity == 1
+        and index == 1
+        and not solver.effective_lvar_type(args[0]).may_run_user_code
+    ):
+        return "borrow"
+    if (
+        recv_type.fits_bytearray(BYTEARRAY_TYPE)
+        and name in ("append", "pop")
+        and arity == 1
+        and index == 1
+        and not solver.effective_lvar_type(args[0]).may_run_user_code
+    ):
+        return "borrow"
+    if (
+        recv_type.fits_dict(DICT_TYPE)
+        and name in ("get", "pop")
+        and 1 <= arity <= 2
+        and not solver.effective_lvar_type(args[0]).may_run_user_code
+    ):
+        if index == 1 and recv_type.accept(_SAFE_DICT_KEY_TYPE):
+            return "borrow"
+        if index == 2:
+            return "forward"
+    return None
 
 
 def _is_safe_container_reader_call(node: Combination, info) -> bool:
@@ -615,7 +1143,7 @@ class _ContainerOrigin(NodeVisitor, LeafVisitor):
         if node.kind is not CallKind.KNOWN:
             return None
         if node.fun_info in (fndb.BUILD_LIST, fndb.BUILD_TUPLE):
-            return node
+            return (node,)
         if (
             node.fun_info is fndb.PROTOCOLS["unpack"]
             and node.args
@@ -628,8 +1156,10 @@ class _ContainerOrigin(NodeVisitor, LeafVisitor):
         if var in self.active:
             return None
         if var in var.home.vars:
-            if self.solver is None or not self.solver.local_environments.is_local(
-                var.home
+            if (
+                self.solver is None
+                or var in self.solver.defaulted_params
+                or not self.solver.is_summary_local_function(var.home)
             ):
                 return None
             values = [
@@ -650,8 +1180,13 @@ class _ContainerOrigin(NodeVisitor, LeafVisitor):
             return None
         self.active.add(var)
         try:
-            origins = [value.use().accept(self) for value in values]
-            return origins[0] if all(origin is not None for origin in origins) else None
+            origins = []
+            for value in values:
+                found = value.use().accept(self)
+                if not found:
+                    return None
+                origins.extend(found)
+            return tuple(origins)
         finally:
             self.active.remove(var)
 
@@ -796,6 +1331,73 @@ class _DirectFunctionUse(NodeVisitor):
             and (node.info is None or not node.info.keywords)
             and len(node.args) == len(self.function.vars)
         )
+
+
+class _DirectSummaryFunctionUse(NodeVisitor):
+    def __init__(self, ref, function):
+        self.ref = ref
+        self.function = function
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node):
+        if (
+            node.fun_info is fndb.SETATTR
+            and node.info.name == "__annotate__"
+            and node.args[0] is self.ref.lvar
+            and len(self.ref.lvar.uses) == 1
+        ):
+            return True
+        if (
+            node.fun is not self.ref.lvar
+            or len(node.fun.uses) != 1
+            or node.kind not in (CallKind.FULL, CallKind.GUARDED, CallKind.LOCAL)
+            or not self.function.supports_escape_summary()
+        ):
+            return False
+        keywords = (
+            node.info.keywords if node.info is not None and node.info.keywords else ()
+        )
+        return self.function.call_order(keywords, len(node.args)) is not None
+
+
+def _all_uses_are_direct_summary_calls(
+    function: Lambda, analyzed_lambdas: frozenset[Lambda]
+) -> bool:
+    if (
+        function not in analyzed_lambdas
+        or not function.supports_escape_summary()
+        or not function.refs
+    ):
+        return False
+    same_def = _SameFunctionDefinition(function)
+    for ref in function.refs:
+        if ref.home_lambda not in analyzed_lambdas or ref.dest is None:
+            return False
+        if ref.dest.accept(_DirectSummaryFunctionUse(ref, function)):
+            continue
+        maker = ref.dest.accept(_ALLOCATION)
+        if (
+            maker is None
+            or maker.fun_info is not fndb.MAKE_FUNCTION
+            or maker.lvar is None
+            or maker.lvar.dest is None
+        ):
+            return False
+        if maker.lvar.dest.accept(_DirectSummaryFunctionUse(maker, function)):
+            continue
+        binding = maker.lvar.dest.accept(_LOCAL_BINDING).var
+        if binding is None or not binding.accept(same_def) or not binding.refs:
+            return False
+        for bref in binding.refs:
+            if (
+                bref.home_lambda not in analyzed_lambdas
+                or bref.dest is None
+                or not bref.dest.accept(_DirectSummaryFunctionUse(bref, function))
+            ):
+                return False
+    return True
 
 
 class _SameFunctionDefinition(NodeVisitor, LeafVisitor):

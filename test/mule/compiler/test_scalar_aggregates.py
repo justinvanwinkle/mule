@@ -522,3 +522,207 @@ def target(y):
     assert target_allocs
     assert not any(facts.allocation_escapes(node) for node in target_allocs)
     assert not unrelated_allocs
+
+
+@pytest.mark.parametrize(
+    "optimize", (2, pytest.param(3, marks=pytest.mark.integration))
+)
+def test_multi_block_aliased_list_and_conditional_tuple_scalar_replacement(
+    tmp_path, optimize
+):
+    case = build_case(
+        tmp_path,
+        """\
+def kernel(size: int, seed: int) -> int:
+    total = 0
+    for step in range(size):
+        row = [seed + step, seed - step]
+        alias = row
+        if step & 1:
+            alias[0] = row[0] + 3
+        else:
+            row[1] = alias[1] + 5
+        pair = (alias[0], row[1]) if (step & 2) else (row[1], alias[0])
+        total += pair[0] - pair[1]
+        del row
+        del alias
+    return total
+
+parts = input().split()
+print(kernel(int(parts[0]), int(parts[1])))
+""",
+        optimize=optimize,
+    )
+    body = case.function_ir(
+        r"^mule_fn_kernel\.(?:body(?:\.fallback\.fixnum)?|spec\.[0-9]+)$"
+    )
+    assert "@mule_sequence_list(" not in body
+    assert "@mule_sequence_tuple" not in body
+    assert "@mule_fast_setitem" not in body
+    assert "@mule_list_getitem" not in body
+    assert "@mule_tuple_getitem" not in body
+    assert "add i64" in body or "llvm.sadd.with.overflow.i64" in body
+    for value in ("0 5\n", "1 5\n", "8 -3\n", "19 12\n"):
+        case.compare(value)
+
+
+def test_scalar_aggregate_truthiness_identity_and_reflexive_containment(tmp_path):
+    case = build_case(
+        tmp_path,
+        """\
+def kernel(size: int, needle: int) -> int:
+    total = 0
+    for index in range(size):
+        row = [index, index + 1, index + 2]
+        if index & 1:
+            row[1] = index + 5
+        if row and not (not row) and row is not None and not (None is row):
+            if needle in row:
+                total += row[0] + 10
+            if (needle + 1) not in row:
+                total += row[2]
+    return total
+
+parts = input().split()
+print(kernel(int(parts[0]), int(parts[1])))
+""",
+        optimize=2,
+    )
+    body = case.function_ir(
+        r"^mule_fn_kernel\.(?:body(?:\.fallback\.fixnum)?|spec\.[0-9]+)$"
+    )
+    assert "@mule_sequence_list(" not in body
+    assert "@mule_fast_setitem" not in body
+    assert "@mule_list_getitem" not in body
+    assert "@mule_compare(" not in body
+    for value in ("0 3\n", "1 0\n", "10 4\n", "15 7\n"):
+        case.compare(value)
+
+
+def test_multi_block_scalar_aggregate_text_containment(tmp_path):
+    case = build_case(
+        tmp_path,
+        """\
+def check_words(flag: int, word: str, alt: str) -> int:
+    if flag & 1:
+        pair = (word, "alpha")
+    else:
+        pair = ("beta", alt)
+    score = 0
+    if "alpha" in pair:
+        score += 1
+    if word not in pair:
+        score += 2
+    if pair is None:
+        score += 4
+    return score
+
+parts = input().split()
+print(check_words(int(parts[0]), parts[1], parts[2]))
+""",
+        optimize=2,
+    )
+    body = case.function_ir(r"^mule_fn_check_words\.spec\.[0-9]+$")
+    assert "@mule_sequence_tuple" not in body
+    assert "@mule_compare(" not in body
+    for value in (
+        "0 alpha beta\n",
+        "1 alpha beta\n",
+        "0 gamma alpha\n",
+        "1 beta gamma\n",
+    ):
+        case.compare(value)
+
+
+def test_multi_block_last_alias_deletion_releases_children_in_reverse_order(tmp_path):
+    case = build_case(
+        tmp_path,
+        """\
+from _weakref import ref
+
+class Watch:
+    pass
+
+def first_gone(reference):
+    print('first')
+
+def second_gone(reference):
+    print('second')
+
+def kernel(flag: int):
+    row = [Watch(), Watch()]
+    alias = row
+    first = ref(row[0], first_gone)
+    second = ref(row[1], second_gone)
+    if flag & 1:
+        del row
+        del alias
+    else:
+        del alias
+        del row
+    print('done', first() is None, second() is None, flag)
+
+kernel(int(input()))
+""",
+        optimize=2,
+    )
+    body = case.function_ir(r"^mule_fn_kernel\.(?:body|spec\.[0-9]+)$")
+    assert "@mule_sequence_list(" not in body
+    case.compare("0\n")
+    case.compare("1\n")
+
+
+def test_interprocedural_keyword_and_default_helpers_preserve_dynamic_extent(
+    tmp_path,
+):
+    source = """\
+def kernel(limit: int) -> int:
+    def weighted_sum(pair, scale=2, bias=1):
+        if not pair or pair is None:
+            return 0
+        a, b = pair
+        return a * scale + b + bias
+
+    def contains_check(row, probe=3):
+        return 1 if probe in row else 0
+
+    total = 0
+    i: int = 0
+    for i in range(limit):
+        pair = (i, i + 1)
+        row = [i, i + 2]
+        total += weighted_sum(pair=pair, scale=3) + weighted_sum(pair)
+        total += contains_check(row=row, probe=i + 2)
+    return total
+
+print(kernel(int(input())))
+"""
+    compilation = compile_source(source)
+    facts = analyze_escapes(compilation.lambdas)
+    kernel_fn = next(
+        fn
+        for fn in compilation.lambdas
+        if fn.code is not None and fn.code.name == "kernel"
+    )
+    weighted_fn = next(
+        fn
+        for fn in compilation.lambdas
+        if fn.code is not None and fn.code.name == "weighted_sum"
+    )
+    contains_fn = next(
+        fn
+        for fn in compilation.lambdas
+        if fn.code is not None and fn.code.name == "contains_check"
+    )
+    assert not facts.parameter_escapes(weighted_fn, 0)
+    assert not facts.parameter_escapes(contains_fn, 0)
+    kernel_allocs = [
+        facts.allocation_escapes(node)
+        for node in facts._allocations
+        if node.home_lambda is kernel_fn
+    ]
+    assert len(kernel_allocs) >= 2
+    assert not any(kernel_allocs)
+    case = build_case(tmp_path, source, optimize=2)
+    for value in ("0\n", "1\n", "12\n"):
+        case.compare(value)

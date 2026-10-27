@@ -15,11 +15,8 @@ from mule import ast
 from . import fndb
 from .constraint import constant_type
 from .ctype import (
-    BooleanType,
-    ByteArrayType,
     BytesType,
     IntegerType,
-    NoneType,
     PythonIntegerType,
     TextType,
     ValueType,
@@ -142,39 +139,8 @@ def _extract_build_constant_elements(
     return tuple(elements)
 
 
-class _ReflexiveEqualityType(ValueTypeVisitor):
-    """Whether a value type is a bound primitive with reflexive equality."""
-
-    def visit_ValueType(self, fact: ValueType) -> bool:
-        return False
-
-    def visit_IntegerType(self, fact: IntegerType) -> bool:
-        return not fact.may_be_unbound
-
-    def visit_BooleanType(self, fact: BooleanType) -> bool:
-        return not fact.may_be_unbound
-
-    def visit_PythonIntegerType(self, fact: PythonIntegerType) -> bool:
-        return not fact.may_be_unbound
-
-    def visit_TextType(self, fact: TextType) -> bool:
-        return not fact.may_be_unbound
-
-    def visit_BytesType(self, fact: BytesType) -> bool:
-        return not fact.may_be_unbound
-
-    def visit_ByteArrayType(self, fact: ByteArrayType) -> bool:
-        return not fact.may_be_unbound
-
-    def visit_NoneType(self, fact: NoneType) -> bool:
-        return not fact.may_be_unbound
-
-
-_REFLEXIVE_EQUALITY_TYPE = _ReflexiveEqualityType()
-
-
 def _has_reflexive_equality(fact: ValueType) -> bool:
-    return bool(fact.accept(_REFLEXIVE_EQUALITY_TYPE))
+    return fact.has_reflexive_equality()
 
 
 class _PrimitiveElementComparator(ast.Visitor):

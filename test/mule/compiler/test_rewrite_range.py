@@ -15,7 +15,7 @@ def _assert_native_induction(body):
     phis = re.findall(r"(%[-\w.]+) = phi i64 ([^\n]+)", body)
     additions = re.findall(r"(%[-\w.]+) = add(?: nuw| nsw)* i64 ([^\n]+)", body)
     comparisons = re.findall(
-        r"icmp (?:slt|sgt|sle|sge|ult|ugt|ule|uge) i64 ([^\n]+)", body
+        r"icmp (?:samesign )?(?:slt|sgt|sle|sge|ult|ugt|ule|uge) i64 ([^\n]+)", body
     )
     assert any(
         re.search(rf"{re.escape(current)}(?=[,\s])", operands)
@@ -60,7 +60,9 @@ print(forward_kernel(seed), reverse_kernel(seed))
     for seed in (0, 3, 4, 31, 1023, 1024, -1):
         case.compare(stdin=f"{seed}\n")
     for kernel in ("forward_kernel", "reverse_kernel"):
-        body = case.function_ir(rf"mule_fn_{kernel}\.body$")
+        symbol = rf"mule_fn_{kernel}\.spec\.0"
+        assert re.search(rf"\bcall\b[^\n]*@{symbol}\(", case.unit_ir("main"))
+        body = case.function_ir(rf"{symbol}$")
         _assert_native_induction(body)
 
 

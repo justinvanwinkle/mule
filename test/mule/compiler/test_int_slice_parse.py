@@ -117,3 +117,22 @@ for bad_args in (
         "ValueError",
         "ValueError",
     ]
+
+
+def test_checked_int_parsing_and_range_preserve_python_behavior(tmp_path):
+    source = """from mule_types import optimize
+
+@optimize(safety=3)
+def checked(text):
+    value = int(text)
+    return [index for index in range(value, value + 5, 2)]
+
+print(checked("-2"))
+try:
+    checked("invalid")
+except ValueError:
+    print("invalid")
+"""
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["[-2, 0, 2]", "invalid"]

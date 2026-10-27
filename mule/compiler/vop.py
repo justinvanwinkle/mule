@@ -34,6 +34,7 @@ from .boxing import IntegerPayload, ScalarPayload
 
 if TYPE_CHECKING:
     from .callconv import TupleDelivery, TupleReturnConvention
+    from .ctype import ValueType
     from .ltn import EntryContext
     from .node import Combination, Lambda
     from .policy import OptimizationPolicy
@@ -339,6 +340,8 @@ class IR2Lvar:
     kind: IR2LvarKind
     primitive_type: PrimitiveType
     locs: list[TN] = field(default_factory=list)
+    value_type: ValueType | None = None
+    ltn_token: object | None = None
 
 
 @dataclass(slots=True, eq=False)

@@ -461,12 +461,18 @@ class BranchTargets:
     alternative: str
 
 
-def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
-    """Convert ``lambda_`` under ``context`` into VOPs."""
+def ir2_convert(
+    lambda_: Lambda, context: EntryContext, *, ltn_token: object | None = None
+) -> IR2Component:
+    """Convert ``lambda_`` under ``context`` into VOPs.
+
+    A token from LTN permits reuse of its derived types only while the graph
+    and context facts remain unchanged since that analysis.
+    """
     environment = IR2Environment(lambda_, context)
     component = IR2Component(lambda_, context, environment)
     component.tuple_return = tuple_return_convention(lambda_, context)
-    converter = _Converter(component)
+    converter = _Converter(component, ltn_token=ltn_token)
     converter.prepare_environment()
     blocks = list(linked(lambda_.component, lambda_, "component").blocks())
     for index, block in enumerate(blocks):
@@ -487,8 +493,7 @@ def ir2_convert(lambda_: Lambda, context: EntryContext) -> IR2Component:
                 vop.codegen_info = replace(vop.codegen_info, reuse_local=None)
     _fuse_text_codepoint_comparisons(component)
     _mark_last_local_reads(component)
-    if _propagate_local_aliases(component):
-        _mark_last_local_reads(component)
+    _propagate_local_aliases(component)
     _fuse_text_slice_compares(component)
     _mark_boolean_comparisons(component)
     _mark_borrowed_local_reads(component)
@@ -1389,18 +1394,18 @@ def _mark_boolean_comparisons(component: IR2Component) -> None:
             res_tn.primitive_type = BOOLEAN_T
 
 
-def _propagate_local_aliases(component: IR2Component) -> bool:
+def _propagate_local_aliases(component: IR2Component) -> None:
     """Substitute stable, uncaptured local copies before ownership selection.
 
     A local copy has the same value as its source, but may keep that value
     alive independently. The lifetime proof must cover its consumers and every
     reachable owner transfer, not just the textual assignment and last read.
+    Each rewrite refreshes last-read information before the next proof.
     """
     if component.context.plan is not None:
-        return False
-    changed = False
+        return
     while True:
-        proof = _BorrowedLifetime(component)
+        proof = None
         removed = set()
         for block in component.blocks:
             for acquisition in block.vops:
@@ -1434,6 +1439,8 @@ def _propagate_local_aliases(component: IR2Component) -> bool:
                     continue
                 consumers = {assignment, *loads}
                 ends = set()
+                if proof is None:
+                    proof = _BorrowedLifetime(component)
                 for load in loads:
                     aliases, uses = proof.consumers(load.results[0].tn, source)
                     if not aliases:
@@ -1457,8 +1464,7 @@ def _propagate_local_aliases(component: IR2Component) -> bool:
             if removed:
                 break
         if not removed:
-            return changed
-        changed = True
+            return
         component.reads.clear()
         component.writes.clear()
         for block in component.blocks:
@@ -2685,11 +2691,13 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         for vop in block.vops:
             if vop.info is vops.MOVE and vop.codegen_info is DEAD_LOCAL_STORE:
                 vop.codegen_info = True
-            if vop.info is vops.LOAD_LOCAL and (
+            elif vop.info is vops.LOAD_LOCAL and (
                 vop.args[0].tn in candidates
                 or vop.args[0].tn.borrowed_from is vop.args[0].tn
             ):
-                vop.codegen_info = replace(vop.codegen_info, move=False)
+                access: LocalAccess = linked(vop.codegen_info, vop, "local access")
+                if access.move:
+                    vop.codegen_info = replace(access, move=False)
     if not candidates:
         return
     blocks = component.blocks
@@ -3292,15 +3300,22 @@ _GETSLICE_PRODUCER = _GetsliceProducer()
 
 
 class _Converter(NodeVisitor):
-    def __init__(self, component: IR2Component):
+    def __init__(self, component: IR2Component, *, ltn_token: object | None = None):
         self.component = component
+        self.ltn_token = ltn_token
         self.environment = component.environment
         self.context = component.context
         self.lambda_ = component.lambda_
         self.current: IR2Block | None = None
         self._load_leaf: _LoadLeaf | None = _LoadLeaf(self)
         self._store_var: _StoreVar | None = _StoreVar(self)
-        self._scan_int_parse: _ScanIntParse | None = _ScanIntParse(self)
+        self._scan_int_parse: _ScanIntParse | None = (
+            _ScanIntParse(self)
+            if self.context.plan is None
+            and self.lambda_.policy.safety < 3
+            and not self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
+            else None
+        )
         self._skipped_nodes: set = set()
         self._fused_int_calls: dict[Combination, Combination | None] = {}
         self._fused_range_prepares: dict[Combination, tuple] = {}
@@ -3380,9 +3395,16 @@ class _Converter(NodeVisitor):
             raise ValueError(f"{lvar!r} is a compile-time operand")
         if not info.locs:
             tn = self.component.tn(info.primitive_type)
-            value_type = BOTTOM
-            for producer in lvar.uses:
-                value_type = value_type.join(self.context.type_of(producer))
+            if (
+                self.ltn_token is not None
+                and info.ltn_token is self.ltn_token
+                and info.value_type is not None
+            ):
+                value_type = info.value_type
+            else:
+                value_type = BOTTOM
+                for producer in lvar.uses:
+                    value_type = value_type.join(self.context.type_of(producer))
             tn.type = value_type
             info.locs.append(tn)
         return info.locs[0]
@@ -3441,9 +3463,9 @@ class _Converter(NodeVisitor):
         self._fused_int_calls.clear()
         self._fused_range_prepares.clear()
         nodes = tuple(block.nodes())
-        scan = linked(self._scan_int_parse, self, "int-parse scanner")
-        for node in nodes:
-            node.accept(scan)
+        if self._scan_int_parse is not None:
+            for node in nodes:
+                node.accept(self._scan_int_parse)
         for node in nodes:
             if node not in self._skipped_nodes:
                 node.accept(self)
@@ -3476,9 +3498,6 @@ class _Converter(NodeVisitor):
     def note_int_parse(self, node: Combination) -> None:
         if (
             node.kind is not CallKind.FULL
-            or self.context.plan is not None
-            or self.lambda_.policy.safety >= 3
-            or self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
             or len(node.args) != 1
             or (node.info is not None and node.info.keywords)
             or len(node.fun.uses) != 1
@@ -3524,10 +3543,7 @@ class _Converter(NodeVisitor):
         if (
             node.kind is not CallKind.KNOWN
             or node.fun_info is not fndb.RANGE_PREPARE
-            or self.context.plan is not None
-            or self.lambda_.policy.safety >= 3
             or node.lexenv.policy.safety >= 3
-            or self.lambda_.name.startswith(_PROTOCOL_PREFIXES)
         ):
             return
         state = node.info
@@ -3945,18 +3961,29 @@ class _Converter(NodeVisitor):
             code_target is target or (node.kind is CallKind.GUARDED and node.proven)
         )
         info = node.info
+        keywords = info.keywords if info is not None else ()
+        order = (
+            target.call_order(keywords, len(node.args))
+            if target is not None and target in self.context.borrowed_callees
+            else None
+        )
+        borrowable = (
+            frozenset(
+                arg_idx
+                for param_idx, arg_idx in enumerate(order)
+                if arg_idx is not None
+                and arg_idx >= 0
+                and param_idx in self.context.borrowed_callees[target]
+            )
+            if order is not None
+            else frozenset()
+        )
         site = CallSite(
-            info.keywords if info is not None else (),
+            keywords,
             info.location if info is not None else None,
             target,
             proven,
-            self.context.borrowed_callees.get(target, frozenset())
-            if target is not None
-            and (info is None or not info.keywords)
-            and target is not None
-            and target in self.context.borrowed_callees
-            and target.call_order((), len(node.args)) == tuple(range(len(node.args)))
-            else frozenset(),
+            borrowable,
         )
         result, discard = self.result_tn(node)
         if discard and not proven:
