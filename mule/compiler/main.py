@@ -41,9 +41,15 @@ from .ir1tran import (
     _AnnotationShadows,
     _GlobalAnnotationStores,
     _ImportBindings,
+    find_constant_leaf,
 )
 from .ir1tran_lambda import convert_module, lambda_blocks
-from .ir1util import join_blocks_if_possible, substitute_lvar_uses, unlink_node
+from .ir1util import (
+    join_blocks_if_possible,
+    reoptimize_lvar,
+    substitute_lvar_uses,
+    unlink_node,
+)
 from .node import (
     Cast,
     Component,
@@ -205,8 +211,17 @@ _CONSTANT_LEAF = _ConstantLeaf()
 
 
 class _GlobalConstantScan(NodeVisitor, LeafVisitor):
-    def __init__(self, toplevel: bool):
+    def __init__(
+        self,
+        toplevel: bool,
+        imported_types: Mapping[tuple[str, str], ValueType] | None = None,
+        imported_targets: Mapping[tuple[str, str], object] | None = None,
+        constants_table: dict | None = None,
+    ):
         self.toplevel = toplevel
+        self.imported_types = imported_types
+        self.imported_targets = imported_targets
+        self.constants_table = constants_table
         self.counts: dict[str, int] = {}
         self.constants: dict[str, Constant] = {}
         self._store: Set | None = None
@@ -221,6 +236,26 @@ class _GlobalConstantScan(NodeVisitor, LeafVisitor):
         store = self._store
         if self.toplevel and store is not None and store.value is not None:
             constant = store.value.use().accept(_CONSTANT_LEAF)
+            if (
+                constant is None
+                and self.imported_types is not None
+                and self.constants_table is not None
+                and len(store.value.uses) == 1
+            ):
+                origin = store.value.uses[0].accept(ir1opt._ImportedAttrOrigin())
+                if (
+                    origin is not None
+                    and origin[1].isupper()
+                    and (
+                        self.imported_targets is None
+                        or origin not in self.imported_targets
+                    )
+                ):
+                    vtype = self.imported_types.get(origin)
+                    if vtype is not None:
+                        literal = vtype.accept(ir1opt._SINGLETON_LITERAL)
+                        if literal is not None:
+                            constant = find_constant_leaf(self.constants_table, literal)
             if constant is not None:
                 self.constants[leaf.name] = constant
 
@@ -244,7 +279,10 @@ class _ReplaceGlobalConstantRefs(NodeVisitor, LeafVisitor):
         if ref in leaf.refs:
             leaf.refs.remove(ref)
         ref.leaf = constant
+        ref.derived_type = ir1opt.constant_type(constant.value)
         constant.refs.append(ref)
+        if ref.lvar is not None:
+            reoptimize_lvar(ref.lvar)
         if (home := ref.home_lambda) is not None:
             home.ir1_revision += 1
         self.changed = True
@@ -255,10 +293,20 @@ def _fold_protocol_constants(compilation: Compilation) -> bool:
         return False
     counts: dict[str, int] = {}
     constants: dict[str, Constant] = {}
+    entry_constants = (
+        compilation.entry.component.constants
+        if compilation.entry.component is not None
+        else None
+    )
     for lambda_ in compilation.lambdas:
         if lambda_.component is None:
             continue
-        scan = _GlobalConstantScan(lambda_ is compilation.entry)
+        scan = _GlobalConstantScan(
+            lambda_ is compilation.entry,
+            imported_types=compilation.imported_function_types,
+            imported_targets=compilation.imported_targets,
+            constants_table=entry_constants,
+        )
         for block in lambda_.component.blocks():
             for node in block.nodes():
                 node.accept(scan)

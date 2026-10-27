@@ -382,6 +382,18 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         assert "@mule.heap.retain(" not in body, (
             f"{borrowed_probe_fn} retained internal _Table slot lists on probe path"
         )
+        assert "@mule.cell:$mule.protocols:_TABLE_" not in body, (
+            f"{borrowed_probe_fn} emitted runtime global lookup for protocol constants"
+        )
+
+    for no_global_probe_fn in (
+        "mule_sequences_mule_import__dict:mule_fn__table_lookup.body",
+        "mule_sequences_mule_fn_dict_get.body",
+    ):
+        body = llvm_fns[no_global_probe_fn]
+        assert "@mule.global.live(" not in body, (
+            f"{no_global_probe_fn} emitted runtime global lookup on lookup path"
+        )
 
 
 def test_table_hash_clipping_and_multiple_inheritance_slots_match_python(tmp_path):
