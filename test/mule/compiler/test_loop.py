@@ -205,6 +205,7 @@ def test_licm_llvm_codegen_hoists_invariant_multiplies_before_loop():
         "  return s\n"
         " return 0\n"
         "kernel(2, 3, 4, 5, 10)\n"
+        "kernel(3, 5, 6, 7, 12)\n"
     )
     body = ir.split('define internal ptr @"mule_fn_kernel.spec.0"(')[1].split("\n}")[0]
     # Both multiplications are hoisted into the preheader before the loop header phi/branch;

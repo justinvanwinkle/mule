@@ -797,7 +797,11 @@ class _OptimizeNode(NodeVisitor):
             info = node.fun.uses[0].accept(_PREDICTABLE_GLOBAL_FUN_INFO)
             if info is None:
                 return False
-            return self._run_transforms(node, info)
+            if not self._run_transforms(node, info):
+                return False
+            if node.prev is not None and node.kind is CallKind.KNOWN:
+                self.visit_Combination(node)
+            return True
         info = linked(node.fun_info, node, "function info")
         if node.lvar is None and info.flushable:
             flush_combination(node)
@@ -814,6 +818,8 @@ class _OptimizeNode(NodeVisitor):
         if info.optimizer is not None and info.optimizer(node):
             return True
         if self._run_transforms(node, info):
+            return True
+        if info.flushable and _fold_call_derived_to_constant(node):
             return True
         return canonicalized
 
@@ -1049,7 +1055,9 @@ class _SingletonLiteral(ValueTypeVisitor):
 
     def visit_IntegerType(self, fact: IntegerType):
         exact = fact.exact_integer()
-        return ast.IntegerLiteral(exact) if exact is not None else None
+        if exact is None or exact.bit_length() > _FOLD_LIMIT_BITS:
+            return None
+        return ast.IntegerLiteral(exact)
 
     def visit_BooleanType(self, fact: BooleanType):
         exact = fact.exact_boolean()
@@ -1108,6 +1116,29 @@ def _immutable_literal(literal):
     return literal is not None and literal.accept(_IMMUTABLE_LITERAL)
 
 
+def _constant_operand_literal(lvar: Lvar):
+    literal = constant_literal(lvar)
+    if literal is not None:
+        return literal
+    if is_pure_bound_ref(lvar):
+        return constant_lvar_value(lvar)
+    return None
+
+
+def _fold_call_derived_to_constant(node: Combination) -> bool:
+    """Fold a flushable known call whose derived type is a singleton constant
+    (``fold-call-derived-to-constant``, ``ir1opt.lisp:2450``)."""
+    if node.lvar is None or not all(is_pure_bound_ref(arg) for arg in node.args):
+        return False
+    derived = node.accept(_DERIVE_NODE_TYPE)
+    literal = derived.accept(_SINGLETON_LITERAL)
+    if literal is None:
+        return False
+    literal.span = node.source.span if node.source is not None else None
+    replace_combination_with_constant(node, literal)
+    return True
+
+
 def _constant_fold_tuple(node: Combination) -> bool:
     """Capture immutable evaluated constants, never mutable or dynamic operands."""
     if node.lvar is None:
@@ -1125,7 +1156,7 @@ def _constant_fold(node: Combination) -> bool:
     """Replace a known operation on integer/boolean literals with its value."""
     if node.lvar is None:
         return False
-    literals = [constant_literal(arg) for arg in node.args]
+    literals = [_constant_operand_literal(arg) for arg in node.args]
     if any(literal is None for literal in literals):
         return False
     domains = [literal.accept(_FOLD_DOMAIN_OF) for literal in literals]
@@ -1181,7 +1212,7 @@ def _constant_fold(node: Combination) -> bool:
 def _constant_fold_unary(node: Combination) -> bool:
     if node.lvar is None:
         return False
-    literal = constant_literal(node.args[0])
+    literal = _constant_operand_literal(node.args[0])
     if literal is None:
         return False
     operator = _UNARY_NAMES[linked(node.fun_info, node, "function info").name]

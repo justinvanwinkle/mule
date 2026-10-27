@@ -1327,7 +1327,9 @@ class _GlobalConstantStores(NodeVisitor, LeafVisitor):
             self.constants[leaf] = vtype
             return
         if home.policy.safety < 3 and (is_final or not vtype.fits_none(NONE_TYPE)):
-            self.constants[leaf] = _widen_user_constant_type(vtype)
+            self.constants[leaf] = (
+                vtype if is_final else _widen_user_constant_type(vtype)
+            )
 
 
 class _ClassBaseNames(NodeVisitor, LeafVisitor):
@@ -3917,7 +3919,9 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
         else:
             return
         if not (
-            info.transforms or (info.optimizer is not None and info is not GETITEM)
+            info.transforms
+            or info.flushable
+            or (info.optimizer is not None and info is not GETITEM)
         ):
             return
         checked_args = (
@@ -4028,6 +4032,7 @@ class _NodeHasContextTransform(NodeVisitor):
             return False
         if not (
             info.transforms
+            or info.flushable
             or (info.optimizer is not None and info is not GETITEM)
             or (
                 loop.is_hoistable_op(info)

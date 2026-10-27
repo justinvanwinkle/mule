@@ -874,6 +874,32 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
     `Final[T]` / `typing.Final` annotations, and exported proven constant
     bindings in module summaries for cross-module imports without treating
     imported function bindings as value constants.
+  - Preserved exact constant types (`IntegerType(c, c)`, `BooleanType(b, b)`,
+    `TEXT_TYPE`, `TupleType` with exact element types) on `Final`-annotated
+    top-level bindings (`locall.py`) and folded proven intra-module and
+    cross-module `Final` global references directly to `Constant` leaves in IR1
+    (`_GlobalConstantScan` / `_fold_protocol_constants` in `main.py`, matching
+    SBCL's `defconstant` reference conversion in `src/compiler/ir1tran.lisp:355`),
+    while widening unannotated module globals via `_widen_user_constant_type` so
+    external `module.attr = ...` rebinding remains valid.
+  - Implemented `fold-call-derived-to-constant` (`_fold_call_derived_to_constant`
+    in `ir1opt.py`, matching `src/compiler/ir1opt.lisp:1550, 2450`) across all
+    flushable known calls and exact container/string length derivation on
+    `_storage_length` and `_text_length` (`_derive_storage_length`,
+    `_derive_text_length`, and `"flushable"` protocol query attributes in
+    `protocols.py`, matching `vector-length-type` in
+    `src/compiler/array-tran.lisp:2233-2257`), folding `len` on constant/global
+    sequences and flow-narrowed locals to `Constant` leaves in IR1 and flushing
+    dead `Ref` operands.
+  - Extended IR1 constant folding (`_constant_fold`, `_constant_fold_unary` in
+    `ir1opt.py`, matching `%constant-fold-call` in
+    `src/compiler/ir1opt.lisp:2289-2295`), integer interval comparison folding
+    (`_integer_interval_comparison` in `typetran.py`), and integer power-of-two
+    strength reduction (`_RewriteIntConstant.visit_GlobalVar` in `srctran.py`)
+    to fold flushable pure bound references with singleton `derived_type`
+    alongside syntactic `Constant` leaves, and widened non-integer `min`/`max`
+    derivation (`derive_min2_types` / `derive_max2_types` in `fndb.py`) so
+    unordered singleton types do not claim a foldable constant result.
 
 ### 6B. Call-site argument propagation (`propagate-to-args`) vs. unannotated parameter guessing
 

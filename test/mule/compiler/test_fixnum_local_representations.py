@@ -70,6 +70,7 @@ def measure(grid: list[list[int]], n: int):
     positive = count > 5
     return row[count & 1], positive, count, len(grid)
 print(measure([[1, 2], [3, 4], [5, 6], [7, 8]], 7))
+print(measure([[1, 2], [3, 4], [5, 6], [7, 8]], 3))
 """
     body = function_body(emit_llvm(source), '"mule_fn_measure.spec.0"')
     getters = re.findall(r"call ptr @(mule_list_getitem(?:_borrow)?)\(", body)

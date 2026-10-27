@@ -432,8 +432,6 @@ def _integer_interval_comparison(
 ) -> bool | None:
     if not (left_type.fits(INTEGER) and right_type.fits(INTEGER)):
         return None
-    if left_type.exact_integer() is not None and right_type.exact_integer() is not None:
-        return None
     lmin, lmax = left_type.minimum, left_type.maximum
     rmin, rmax = right_type.minimum, right_type.maximum
     if operator is ast.ComparisonOperator.LESS:
@@ -461,11 +459,27 @@ def _integer_interval_comparison(
             lmin is not None and rmax is not None and lmin > rmax
         ):
             return False
+        if (
+            lmin is not None
+            and lmin == lmax
+            and rmin is not None
+            and rmin == rmax
+            and lmin == rmin
+        ):
+            return True
     elif operator is ast.ComparisonOperator.NOT_EQUAL:
         if (lmax is not None and rmin is not None and lmax < rmin) or (
             lmin is not None and rmax is not None and lmin > rmax
         ):
             return True
+        if (
+            lmin is not None
+            and lmin == lmax
+            and rmin is not None
+            and rmin == rmax
+            and lmin == rmin
+        ):
+            return False
     return None
 
 
