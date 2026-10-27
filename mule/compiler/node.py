@@ -1131,7 +1131,7 @@ class Lambda(Functional):
         return self.derive_return_type(arg_types, keywords)
 
     def protocol_self_type(self) -> ValueType:
-        if not self.is_protocol or not self.vars or self.vars[0].name != "self":
+        if not self.is_protocol or not self.vars or self.method_class is None:
             return UNKNOWN
         if self.code is None or "." not in self.code.qualname:
             return UNKNOWN
@@ -1247,7 +1247,7 @@ class ClassConstructorTarget:
         if (
             self.init_target is not None
             and (init_lam := self.init_target.as_lambda()) is not None
-            and not keywords
+            and not any(kw is None for kw in keywords)
             and self.base_type.instance_class() is not None
         ):
             from .constraint import CallSite, _fact
@@ -1260,6 +1260,7 @@ class ClassConstructorTarget:
                         *(visitor.fact_of(arg) for arg in args),
                     ),
                     False,
+                    (None, *keywords) if keywords else (),
                 )
             )
         return self.derive_return_type(arg_types, keywords)

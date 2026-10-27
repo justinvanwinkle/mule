@@ -9,6 +9,7 @@ from mule.compiler.ctype import (
     BOTTOM,
     FLOAT,
     INTEGER,
+    LIST_TYPE,
     PYTHON_INTEGER,
     UNBOUND,
     UNKNOWN,
@@ -904,3 +905,98 @@ def test_nested_loops_drop_invalidated_outer_accumulator_relations():
     assert fact(compilation, fn, stored_value(fn, "out_active").use()) == IntegerType(
         0, 1
     )
+
+
+def test_unannotated_sequence_indexing_does_not_guess_list_without_call_sites():
+    compilation = lower(
+        "def first_if_nonempty(seq):\n"
+        " if len(seq) > 0:\n"
+        "  return seq[0]\n"
+        " return None\n"
+    )
+    fn = function(compilation, 1)
+    assert variants(compilation, fn) == ()
+    assert compilation.facts[fn].parameters == (UNKNOWN,)
+
+
+def test_call_site_arg_propagation_specializes_chains_recursion_keywords_and_defaults():
+    compilation = lower(
+        "def leaf(items, idx=0, *, scale=2):\n"
+        " if idx < len(items):\n"
+        "  return items[idx] * scale\n"
+        " return 0\n"
+        "def middle(items, idx):\n"
+        " if idx <= 0:\n"
+        "  return leaf(items, scale=3)\n"
+        " return middle(items, idx - 1) + leaf(items, idx=idx)\n"
+        "def outer():\n"
+        " xs = [10, 20, 30]\n"
+        " a = middle(xs, 2)\n"
+        " def local_step(seq, pos=1, *, bonus=5):\n"
+        "  if pos <= 0:\n"
+        "   return seq[0] + bonus\n"
+        "  return local_step(seq, pos - 1, bonus=bonus)\n"
+        " b = local_step((4, 5), pos=1)\n"
+        " return a + b\n"
+    )
+    leaf_fn = function(compilation, 1)
+    middle_fn = function(compilation, 2)
+    outer_fn = function(compilation, 3)
+    local_step_fn = next(
+        lam for lam in compilation.lambdas if lam.name.endswith("local_step")
+    )
+    leaf_obs = observed(compilation, leaf_fn)
+    assert leaf_obs.parameters[0] == LIST_TYPE
+    assert leaf_obs.parameters[1].is_fixnum
+    assert leaf_obs.parameters[2].is_fixnum
+    middle_obs = observed(compilation, middle_fn)
+    assert middle_obs.parameters[0] == LIST_TYPE
+    assert middle_obs.parameters[1].is_fixnum
+    local_params = compilation.facts[local_step_fn].parameters
+    assert local_params[0] == TupleType(2, (IntegerType(4, 4), IntegerType(5, 5)))
+    assert local_params[1].is_fixnum
+    assert local_params[2] == IntegerType(5, 5)
+    assert fact(compilation, outer_fn, stored_value(outer_fn, "b").use()).is_fixnum
+
+
+def test_method_receiver_typing_uses_method_class_not_parameter_spelling():
+    compilation = lower(
+        "class Counter:\n"
+        " def __init__(this, start: int):\n"
+        "  this.count = start\n"
+        " def bump(recv, delta: int) -> int:\n"
+        "  recv.count = recv.count + delta\n"
+        "  return recv.count\n"
+        "def standalone(self, x):\n"
+        " return x + 1\n"
+    )
+    init_fn = next(lam for lam in compilation.lambdas if lam.name.endswith("__init__"))
+    bump_fn = next(lam for lam in compilation.lambdas if lam.name.endswith("bump"))
+    standalone_fn = next(
+        lam for lam in compilation.lambdas if lam.name.endswith("standalone")
+    )
+    init_fix = fixnum_context(compilation, init_fn)
+    bump_fix = fixnum_context(compilation, bump_fn)
+    assert init_fix.parameters[0].instance_class() == init_fn.method_class
+    assert bump_fix.parameters[0].instance_class() == bump_fn.method_class
+    assert bump_fix.return_type == PYTHON_INTEGER
+    standalone_fix = fixnum_context(compilation, standalone_fn)
+    assert standalone_fn.method_class is None
+    assert standalone_fix.parameters == (UNKNOWN, IntegerType(-(2**62), 2**62 - 1))
+    ir = emit_llvm(
+        "class Counter:\n"
+        " def __init__(this, start: int):\n"
+        "  this.count = start\n"
+        " def bump(recv, delta: int) -> int:\n"
+        "  recv.count = recv.count + delta\n"
+        "  return recv.count\n"
+    )
+    bump_spec = ir.split('define internal ptr @"mule_fn_Counter.bump.spec.0"(')[
+        1
+    ].split("\n}")[0]
+    bump_body = ir.split('define internal ptr @"mule_fn_Counter.bump.body"(')[1].split(
+        "\n}"
+    )[0]
+    assert "attr.fixed." in bump_spec
+    assert ", i64 32" in bump_spec
+    assert "attr.fixed." not in bump_body

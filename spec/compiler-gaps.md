@@ -902,32 +902,31 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
     derivation (`derive_min2_types` / `derive_max2_types` in `fndb.py`) so
     unordered singleton types do not claim a foldable constant result.
 
-### 6B. Call-site argument propagation (`propagate-to-args`) vs. unannotated parameter guessing
+### 6B. Call-site argument propagation (`propagate-to-args`) vs. unannotated parameter guessing (completed)
 
-- **Current special case**: `_ParameterUse.inferred_type`
-  (`mule/compiler/locall.py:147-234`) guesses `LIST_TYPE` whenever `len(x)` and
-  `x[i]` appear without string or dict methods, guesses `InstanceType` only when
-  the module defines a single class with matching attribute names, and
-  `_speculate_partial_parameter_types` (`mule/compiler/locall.py:2215-2228`)
-  gates partial parameter speculation on `lambda_.vars[0].name != "self"`.
-- **SBCL reference**: `propagate-to-args` and `locall-analyze-component` in
-  `src/compiler/locall.lisp`, and `generate-type-checks` in
-  `src/compiler/checkgen.lisp`. SBCL derives parameter types from declared types
-  and the union of caller argument types across known call sites
-  (`propagate-to-args`), never from syntax heuristics or parameter name strings.
-- **Required implementation**:
-  1. Implement `propagate-to-args` in `mule/compiler/locall.py` for module-level
-     and local functions: compute the union of derived `Lvar.derived_type`
-     across all known intra-module call sites and specialize a known-call entry
-     (`Lambda.specialized_entry`) from that call-site union while keeping the
-     guarded/general entry for external or unknown callers.
-  2. Replace `lambda_.vars[0].name != "self"` with the structural method
-     ownership recorded on `Lambda` (`lambda_.owner_class` / `lambda_.is_method`)
-     so receiver parameter 0 is typed to `InstanceType(owner_class)` regardless
-     of parameter spelling.
-  3. Remove `_ParameterUse`'s `len + getitem -> LIST_TYPE` and single-class
-     attribute-name guessing once `propagate-to-args` and declared annotations
-     drive entry specialization.
+- **Implemented architecture**:
+  - `CallSite` (`mule/compiler/constraint.py`) records call-site keyword names and
+    maps positional, keyword, and default arguments onto callee parameter order via
+    `target.call_order` and `target.default_types` (`CallSite.bind_argument_facts`),
+    covering direct, guarded, and predicted method calls.
+  - `locall.analyze` (`mule/compiler/locall.py`) propagates intra-module call-site
+    argument unions (`propagate-to-args`) across multi-hop call chains and
+    recursive/mutually recursive call cycles into `"general"` entries for closed
+    local functions (`_collect_closed_lambdas`, including functions with keyword
+    and default arguments) and `"observed"` specialized entries for module-level
+    and escaping functions, using per-parameter monotonic seeding so unseeded
+    recursive callers do not poison concrete caller argument unions to `UNKNOWN`.
+  - Receiver typing uses the structural class ownership recorded on `Lambda` during
+    IR1 conversion (`lambda_.method_class` in `mule/compiler/ir1tran_lambda.py` and
+    `Lambda.protocol_self_type` in `mule/compiler/node.py`), typing method parameter
+    0 to `InstanceType(method_class)` regardless of parameter spelling (`self`,
+    `this`, `recv`, etc.) while keeping non-method functions whose first parameter
+    is named `self` unconfused with methods.
+  - `_ParameterUse` (`mule/compiler/locall.py`) no longer guesses `LIST_TYPE` from
+    unannotated `len(x)` + `x[i]` body syntax or `TextStorage`/`ListStorage` from
+    method names; parameter specialization is driven by declared annotations,
+    call-site argument propagation (`propagate-to-args`), and numeric parameter
+    speculation.
 
 ### 6C. IR1 combination matching (`cmatch` / `splice-fun-args`) to replace physical IR1 adjacency and IR2 slice peepholes (completed)
 

@@ -177,13 +177,9 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         self.storage_methods = storage_methods
         self.numeric = False
         self.disqualified = False
-        self.text = False
         self.text_disqualified = False
-        self.list_seq = False
         self.list_disqualified = False
         self.sequence_disqualified = False
-        self.has_len = False
-        self.has_getitem = False
         self.current = None
 
     def analyze(self, contract, full: ValueType, declared=None) -> ValueType:
@@ -215,21 +211,6 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             and (effective is None or not effective.contradicts(full))
         ):
             return full
-        if (
-            self.text
-            and not self.text_disqualified
-            and not self.numeric
-            and (effective is None or not effective.contradicts(TEXT_TYPE))
-        ):
-            return TEXT_TYPE
-        if (
-            (self.list_seq or (self.has_len and self.has_getitem))
-            and not self.list_disqualified
-            and not self.numeric
-            and not self.text
-            and (effective is None or not effective.contradicts(LIST_TYPE))
-        ):
-            return LIST_TYPE
         return UNKNOWN
 
     def general_type(self, declared) -> ValueType:
@@ -269,7 +250,6 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if info is None:
             if is_predictable_len_call(node) and node.args and node.args[0] is lvar:
                 self.disqualified = True
-                self.has_len = True
             return
         if info is RESOLVE_METHOD and node.args and node.args[0] is lvar:
             self.disqualified = True
@@ -278,18 +258,9 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
                 ("TextStorage", method_name) in self.storage_methods
                 or ("ListStorage", method_name) in self.storage_methods
             ):
-                if ("TextStorage", method_name) in self.storage_methods:
-                    if ("TupleStorage", method_name) not in self.storage_methods:
-                        self.text = True
-                else:
+                if ("TextStorage", method_name) not in self.storage_methods:
                     self.text_disqualified = True
-                if ("ListStorage", method_name) in self.storage_methods:
-                    if ("TupleStorage", method_name) not in self.storage_methods and (
-                        "dict",
-                        method_name,
-                    ) not in self.storage_methods:
-                        self.list_seq = True
-                else:
+                if ("ListStorage", method_name) not in self.storage_methods:
                     self.list_disqualified = True
             else:
                 self.text_disqualified = True
@@ -298,7 +269,6 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if node.args and node.args[0] is lvar and info in _SET_DEL_ITEM:
             self.disqualified = True
             self.text_disqualified = True
-            self.list_seq = True
             return
         if node.args and node.args[0] is lvar and info in _GET_SET_DEL_ATTR:
             self.disqualified = True
@@ -313,9 +283,7 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             )
         ):
             self.disqualified = True
-            if info in _GET_ITEM_OR_SLICE:
-                self.has_getitem = True
-            elif (
+            if (
                 info is TEXT_SLICE_COMPARE
                 and len(node.args) > 3
                 and node.args[3] is lvar
@@ -323,10 +291,6 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
                 self.text_disqualified = True
                 self.list_disqualified = True
                 self.sequence_disqualified = True
-            elif info.derive_type is not None and info.derive_type(node) == IntegerType(
-                0, FIXNUM_MAX
-            ):
-                self.has_len = True
             return
         if info is RESOLVE_SUPER_METHOD and lvar in node.args:
             self.disqualified = True
@@ -344,7 +308,6 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             self.sequence_disqualified = True
             return
         if node.args and node.args[0] is lvar and info in _GET_ITEM_OR_SLICE:
-            self.has_getitem = True
             return
         if info.numeric:
             self.numeric = True
@@ -2351,7 +2314,7 @@ class _ClosedMakeFunctionCall(NodeVisitor, LeafVisitor):
         if (
             node.kind is not CallKind.KNOWN
             or node.fun_info is not MAKE_FUNCTION
-            or len(node.args) != 1
+            or len(node.args) != 1 + len(self.target.signature.default_parameters)
             or node.args[0] is not self.ref.lvar
             or node.lvar is None
             or len(node.lvar.uses) != 1
@@ -2420,21 +2383,23 @@ class _IsClosedPositionalCall(NodeVisitor):
         return (
             node.fun is self.fun_lvar
             and node.kind in (CallKind.FULL, CallKind.GUARDED)
-            and (node.info is None or not node.info.keywords)
-            and len(node.args) == len(self.target.vars)
+            and self.target.call_order(
+                node.info.keywords if node.info is not None else (),
+                len(node.args),
+            )
+            is not None
         )
 
 
 def _collect_closed_lambdas(lambdas) -> dict[Lambda, tuple[Ref, ...]]:
     """Return nested functions whose function object never escapes and whose
-    every reference is the callee of a direct positional call."""
+    every reference is the callee of a direct static call."""
     closed: dict[Lambda, tuple[Ref, ...]] = {}
     for lambda_ in lambdas:
         if (
             lambda_.kind is not FunctionalKind.NORMAL
             or not lambda_.vars
-            or not lambda_.signature.positional_body
-            or lambda_.signature.default_parameters
+            or lambda_.signature.variadic
             or len(lambda_.refs) != 1
         ):
             continue
@@ -2788,23 +2753,27 @@ def analyze(
         and (target := target_obj.as_lambda()) is not None
         and target.source_name == name
     }
+    can_reach: dict[Lambda, frozenset[Lambda]] = {}
+    for lam in lambdas:
+        seen_r: set[Lambda] = set()
+        stack_r: list[Lambda] = list(static_callees.get(lam, ()))
+        while stack_r:
+            cur_r = stack_r.pop()
+            if cur_r in seen_r:
+                continue
+            seen_r.add(cur_r)
+            stack_r.extend(static_callees.get(cur_r, ()))
+        can_reach[lam] = frozenset(seen_r)
     recursive_targets_by_caller: dict[Lambda, frozenset[Lambda]] = {}
     for lam in lambdas:
         rec_set: set[Lambda] = {lam} if lam in unique_global_lambdas else set()
         for target in static_callees.get(lam, ()):
-            if target is lam or target not in unique_global_lambdas:
-                continue
-            seen: set[Lambda] = set()
-            stack_r: list[Lambda] = [target]
-            while stack_r:
-                cur_r = stack_r.pop()
-                if cur_r is lam:
-                    rec_set.add(target)
-                    break
-                if cur_r in seen:
-                    continue
-                seen.add(cur_r)
-                stack_r.extend(static_callees.get(cur_r, ()))
+            if (
+                target is not lam
+                and target in unique_global_lambdas
+                and lam in can_reach.get(target, ())
+            ):
+                rec_set.add(target)
         recursive_targets_by_caller[lam] = frozenset(rec_set)
     imported_returns_by_ns: dict[str, dict[str, ValueType]] = defaultdict(dict)
     imported_targets_by_ns: dict[
@@ -2898,14 +2867,14 @@ def analyze(
     )
     if not defaults_mutated:
         for lambda_ in lambdas:
-            if (
-                lambda_.signature.default_parameters
-                and len(lambda_.refs) == 1
-                and lambda_.refs[0].dest is not None
-            ):
-                default_lvars = lambda_.refs[0].dest.accept(
-                    _MakeFunctionDefaults(lambda_, lambda_.refs[0])
-                )
+            if lambda_.signature.default_parameters:
+                make_defaults = [
+                    d
+                    for ref in lambda_.refs
+                    if ref.dest is not None
+                    and (d := ref.dest.accept(_MakeFunctionDefaults(lambda_, ref)))
+                ]
+                default_lvars = make_defaults[0] if len(make_defaults) == 1 else ()
                 if default_lvars:
                     ns_consts = global_constants_by_ns.get(lambda_.namespace, {})
                     def_types: list[ValueType] = []
@@ -2961,6 +2930,21 @@ def analyze(
         ast.ParameterKind.VAR_POSITIONAL: TupleType(),
         ast.ParameterKind.VAR_KEYWORD: DICT_TYPE,
     }
+    physical_targets = {
+        target
+        for target in lambdas
+        if any(
+            True
+            for operation in (
+                "_instance_field",
+                "_set_instance_field",
+                "%physical_field_ref",
+                "%physical_field_set",
+            )
+            for _ in known_calls(target, operation)
+        )
+    }
+    declared_entry_lambdas: set[Lambda] = set()
     for lambda_ in lambdas:
         signature = lambda_.signature
         if lambda_.vars and not signature.variadic:
@@ -2986,12 +2970,23 @@ def analyze(
                 lambda_.method_class is not None
                 and lambda_.method_class in class_facts
                 and lambda_ in class_facts[lambda_.method_class].methods.values()
+                and lambda_
+                is not class_facts[lambda_.method_class].methods.get("__new__")
                 and signature.kinds[0]
                 in (
                     ast.ParameterKind.POSITIONAL_ONLY,
                     ast.ParameterKind.POSITIONAL_OR_KEYWORD,
                 )
-                and signature.annotations[0] is None
+                and (
+                    signature.annotations[0] is None
+                    or (
+                        signature.annotations[0].speculative_parameter_type(full)
+                        is UNKNOWN
+                        and not signature.annotations[0].contradicts(
+                            InstanceType(lambda_.method_class)
+                        )
+                    )
+                )
                 and lambda_.vars[0].name not in lambda_.local_annotations
             )
             if lambda_.entry_parameter_types is not None:
@@ -3000,12 +2995,14 @@ def analyze(
                         f"entry parameter arity mismatch for {lambda_.name}"
                     )
                 parameters[lambda_, "fixnum"] = lambda_.entry_parameter_types
+                declared_entry_lambdas.add(lambda_)
             elif is_typed_method:
+                recv_type = InstanceType(
+                    lambda_.method_class,
+                    fixed_slots=class_facts[lambda_.method_class].fixed_slots,
+                )
                 spec_params = (
-                    InstanceType(
-                        lambda_.method_class,
-                        fixed_slots=class_facts[lambda_.method_class].fixed_slots,
-                    ),
+                    recv_type,
                     *(
                         _ParameterUse(var, storage_methods).analyze(
                             contract,
@@ -3022,6 +3019,7 @@ def analyze(
                     ),
                 )
                 parameters[lambda_, "fixnum"] = spec_params
+                declared_entry_lambdas.add(lambda_)
             else:
                 spec_params = tuple(
                     _ParameterUse(var, storage_methods).analyze(
@@ -3035,6 +3033,26 @@ def analyze(
                         lambda_.vars, signature.annotations, strict=True
                     )
                 )
+                decl_params = tuple(
+                    param
+                    if param is not UNKNOWN
+                    and (
+                        contract is not None
+                        or (
+                            var.name in lambda_.local_annotations
+                            and ("local", lambda_, var.name) not in annotations.ignored
+                        )
+                    )
+                    else UNKNOWN
+                    for var, param, contract in zip(
+                        lambda_.vars,
+                        spec_params,
+                        signature.annotations,
+                        strict=True,
+                    )
+                )
+                if any(param is not UNKNOWN for param in decl_params):
+                    declared_entry_lambdas.add(lambda_)
                 if all(param is not UNKNOWN for param in spec_params):
                     parameters[lambda_, "fixnum"] = spec_params
                 else:
@@ -3048,7 +3066,10 @@ def analyze(
                                 and ("local", lambda_, var.name)
                                 not in annotations.ignored
                             )
-                            or lambda_.vars[0].name != "self"
+                            or (
+                                lambda_.method_class is None
+                                and lambda_ not in physical_targets
+                            )
                         )
                         else UNKNOWN
                         for var, param, contract in zip(
@@ -3069,10 +3090,14 @@ def analyze(
                         _ProtocolSelfPrediction(class_facts.get(lambda_.method_class))
                     )
             parameters[lambda_, "general"] = tuple(gen_params)
+    initial_general_parameters: dict[Lambda, tuple[ValueType, ...]] = {
+        lam: parameters[lam, "general"] for lam in lambdas
+    }
     summaries: dict[tuple[Lambda, str], ValueType] = dict.fromkeys(parameters, BOTTOM)
     return_changes = defaultdict(int)
     argument_changes = defaultdict(int)
     closed_seeded: set[Lambda] = set()
+    closed_propagated: set[Lambda] = set()
     bodies: dict[tuple[Lambda, str], Body] = {}
     # What each body's last propagation read: its parameters and, for every
     # Each entry records ``(expected_parameters, consulted_calls, closure_types,
@@ -3081,20 +3106,6 @@ def analyze(
     # identically.
     inputs: dict[tuple[Lambda, str], tuple] = {}
     deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
-    physical_targets = {
-        target
-        for target in lambdas
-        if any(
-            True
-            for operation in (
-                "_instance_field",
-                "_set_instance_field",
-                "%physical_field_ref",
-                "%physical_field_set",
-            )
-            for _ in known_calls(target, operation)
-        )
-    }
     setattr_sites: list[tuple[Lambda, Combination]] = []
     setitem_sites: list[tuple[Lambda, Combination]] = []
     list_mutation_sites: list[tuple[Lambda, Combination]] = []
@@ -3495,6 +3506,7 @@ def analyze(
     # during the current propagation.
     consulted: dict[tuple[Lambda, tuple], ValueType] = {}
     pending_reset: set[tuple[Lambda, str]] = set(initial_pending_reset)
+    seeded_params: set[tuple[Lambda, str, int]] = set()
 
     while True:
         changed = False
@@ -3557,8 +3569,16 @@ def analyze(
                         consulted[target, gen] = result
                         return result
                 return UNKNOWN
+            default_types = target.default_types
             arguments = tuple(
-                arguments[index] if index >= 0 else UNKNOWN for index in order
+                arguments[index]
+                if index >= 0
+                else (
+                    default_types[def_idx]
+                    if 0 <= (def_idx := -2 - index) < len(default_types)
+                    else UNKNOWN
+                )
+                for index in order
             )
             if not callee.proven:
                 if any(
@@ -3686,6 +3706,8 @@ def analyze(
                             is_specialized_context=(ctx_name != "general"),
                         )
                     bodies[key] = body
+                    if ctx_name == "general" and lambda_ in closed_seeded:
+                        closed_propagated.add(lambda_)
                     inputs[key] = (
                         expected,
                         dict(consulted),
@@ -3762,48 +3784,59 @@ def analyze(
         # that broad interval. Propagate observations through general/observed
         # entries, including recursive calls, independently of that context.
         seeds: dict[Lambda, tuple] = {}
+        recursive_seeds: dict[Lambda, tuple] = {}
         for target, call_refs in closed_lambdas.items():
-            external_calls = []
-            all_calls = []
+            target_reach = can_reach.get(target, frozenset())
+            external_args: list[tuple[ValueType, ...]] = []
+            seeded_all_args: list[tuple[ValueType, ...]] = []
             missing_external = False
             for ref in call_refs:
                 caller = ref.home_lambda
+                is_recursive_caller = caller is target or caller in target_reach
                 caller_body = bodies.get((caller, "general"))
                 if caller_body is None:
-                    if caller is not target:
+                    if not is_recursive_caller:
                         missing_external = True
                     continue
-                matching = [
-                    call
-                    for call in caller_body.calls
-                    if call.target is target
-                    and call.proven
-                    and len(call.arguments) == len(target.vars)
-                    and all(arg is not BOTTOM for arg in call.arguments)
-                ]
-                if not matching:
-                    if caller is not target:
+                matching_args = []
+                for call in caller_body.calls:
+                    if call.target is not target or not call.proven:
+                        continue
+                    bound_facts = call.bind_argument_facts(target)
+                    if bound_facts is None:
+                        continue
+                    bound_types = tuple(f.type for f in bound_facts)
+                    if all(arg is not BOTTOM for arg in bound_types):
+                        matching_args.append(bound_types)
+                if not matching_args:
+                    if not is_recursive_caller:
                         missing_external = True
                     continue
-                all_calls.extend(matching)
-                if caller is not target:
-                    external_calls.extend(matching)
-            if missing_external or not external_calls:
+                if not is_recursive_caller:
+                    external_args.extend(matching_args)
+                    seeded_all_args.extend(matching_args)
+                elif caller in closed_propagated:
+                    seeded_all_args.extend(matching_args)
+            if missing_external or not external_args:
                 continue
-            source_calls = external_calls if target not in closed_seeded else all_calls
-            joined_args = source_calls[0].arguments
-            for call in source_calls[1:]:
+            source_args = (
+                external_args if target not in closed_propagated else seeded_all_args
+            )
+            joined_args = source_args[0]
+            for call_args in source_args[1:]:
                 joined_args = tuple(
                     old.join(new)
-                    for old, new in zip(joined_args, call.arguments, strict=True)
+                    for old, new in zip(joined_args, call_args, strict=True)
                 )
             gen_key = target, "general"
             old_gen = parameters[gen_key]
+            init_gen = initial_general_parameters[target]
             candidate_gen = []
-            for arg_type, contract, var in zip(
+            for arg_type, contract, var, init_p in zip(
                 joined_args,
                 target.signature.annotations,
                 target.vars,
+                init_gen,
                 strict=True,
             ):
                 if arg_type is BOTTOM or arg_type is UNBOUND or arg_type.may_be_unbound:
@@ -3818,23 +3851,40 @@ def analyze(
                 )
                 if declared is not None and declared.contradicts(arg_type):
                     arg_type = UNKNOWN
+                if arg_type is UNKNOWN and init_p is not UNKNOWN:
+                    arg_type = init_p
+                elif init_p is not UNKNOWN and not arg_type.fits(init_p):
+                    arg_type = init_p.join(arg_type)
                 candidate_gen.append(arg_type)
             new_gen = tuple(candidate_gen)
-            if target not in closed_seeded:
+            if any(p is not UNKNOWN for p in new_gen):
                 closed_seeded.add(target)
-                merged_gen = tuple(
-                    b if a is UNKNOWN or b.fits(a) else a.join(b)
-                    for a, b in zip(old_gen, new_gen, strict=True)
-                )
+            if target not in closed_propagated:
+                merged_gen = new_gen
+                for idx, p in enumerate(merged_gen):
+                    if p is not UNKNOWN:
+                        seeded_params.add((target, "general", idx))
             else:
                 merged_gen = tuple(
-                    a.join(b) for a, b in zip(old_gen, new_gen, strict=True)
+                    b
+                    if a is UNKNOWN
+                    and b is not UNKNOWN
+                    and (target, "general", idx) not in seeded_params
+                    else a.join(b)
+                    for idx, (a, b) in enumerate(zip(old_gen, new_gen, strict=True))
                 )
-                if merged_gen != old_gen:
+                widened_seeded = any(
+                    (target, "general", idx) in seeded_params and not b.fits(a)
+                    for idx, (a, b) in enumerate(zip(old_gen, merged_gen, strict=True))
+                )
+                for idx, p in enumerate(merged_gen):
+                    if p is not UNKNOWN:
+                        seeded_params.add((target, "general", idx))
+                if widened_seeded:
                     argument_changes[gen_key] += 1
                     if argument_changes[gen_key] > 3:
                         merged_gen = tuple(
-                            widen_fact(Fact(a), Fact(b)).type
+                            b if a is UNKNOWN else widen_fact(Fact(a), Fact(b)).type
                             for a, b in zip(old_gen, merged_gen, strict=True)
                         )
             if merged_gen != old_gen:
@@ -3843,33 +3893,27 @@ def analyze(
                 parameters[gen_key] = merged_gen
                 changed = True
         for key, body in bodies.items():
-            if (key[0], "observed") in bodies and key[1] in ("fixnum", "general"):
-                continue
-            if key[1] == "fixnum" and any(param.is_fixnum for param in parameters[key]):
-                continue
-            if (
-                key[1] == "general"
-                and (key[0], "fixnum") in bodies
-                and not any(param.is_fixnum for param in parameters[key[0], "fixnum"])
-            ):
+            caller, ctx_name = key
+            if (caller, "observed") in bodies:
+                if ctx_name != "observed":
+                    continue
+            elif (caller, "fixnum") in bodies and caller in declared_entry_lambdas:
+                if ctx_name != "fixnum":
+                    continue
+            elif ctx_name != "general":
                 continue
             for call in body.calls:
-                if any(arg is BOTTOM for arg in call.arguments):
-                    continue
                 target = call.target.as_lambda() if call.target is not None else None
-                if (
-                    target is None
-                    or target not in graphs
-                    or not target.signature.positional_body
-                    or not target.vars
-                    or len(call.arguments) != len(target.vars)
-                ):
+                if target is None or target not in graphs or not target.vars:
                     # Imported targets still predict guarded calls, but their
                     # defining analysis owns their argument and entry contexts.
                     continue
-                for index, (actual, contract, var) in enumerate(
+                bound_facts = call.bind_argument_facts(target)
+                if bound_facts is None or any(f.type is BOTTOM for f in bound_facts):
+                    continue
+                for index, (actual_fact, contract, var) in enumerate(
                     zip(
-                        call.arguments,
+                        bound_facts,
                         target.signature.annotations,
                         target.vars,
                         strict=True,
@@ -3877,7 +3921,9 @@ def analyze(
                 ):
                     if contract is None:
                         declared = target.local_annotations.get(var.name)
-                        if declared is not None and declared.contradicts(actual):
+                        if declared is not None and declared.contradicts(
+                            actual_fact.type
+                        ):
                             annotations.ignored.add(("local", target, var.name))
                             gen = parameters.get((target, "general"))
                             if gen is not None and gen[index] is not UNKNOWN:
@@ -3893,7 +3939,7 @@ def analyze(
                     and (contract is None or not contract.contradicts(domain))
                     else UNKNOWN
                     for argument, contract in zip(
-                        call.argument_facts,
+                        bound_facts,
                         target.signature.annotations,
                         strict=True,
                     )
@@ -3916,29 +3962,55 @@ def analyze(
                     )
                     for idx, domain in enumerate(raw_domains)
                 )
-                if target not in seeds:
-                    seeds[target] = domains
+                is_unseeded_recursive = (
+                    (caller is target or caller in can_reach.get(target, ()))
+                    and (caller, "observed") not in bodies
+                    and caller not in closed_propagated
+                )
+                dest_seeds = recursive_seeds if is_unseeded_recursive else seeds
+                if target not in dest_seeds:
+                    dest_seeds[target] = domains
                 else:
-                    seeds[target] = tuple(
+                    dest_seeds[target] = tuple(
                         old.join(new).dispatch_domain() or UNKNOWN
-                        for old, new in zip(seeds[target], domains, strict=True)
+                        for old, new in zip(dest_seeds[target], domains, strict=True)
                     )
+        for target, rec_seed in recursive_seeds.items():
+            if target not in seeds and (target, "observed") not in parameters:
+                seeds[target] = rec_seed
         for target, seed in seeds.items():
             key = target, "observed"
             old = parameters.get(key)
-            if old is not None:
+            if old is None:
+                for idx, p in enumerate(seed):
+                    if p is not UNKNOWN:
+                        seeded_params.add((target, "observed", idx))
+            else:
                 seed = tuple(
                     b
-                    if a is UNKNOWN and b is not UNKNOWN and argument_changes[key] == 0
+                    if a is UNKNOWN
+                    and b is not UNKNOWN
+                    and (target, "observed", idx) not in seeded_params
                     else (a.join(b).dispatch_domain() or UNKNOWN)
-                    for a, b in zip(old, seed, strict=True)
+                    for idx, (a, b) in enumerate(zip(old, seed, strict=True))
                 )
-                if old != seed:
+                widened_seeded = any(
+                    (target, "observed", idx) in seeded_params and not b.fits(a)
+                    for idx, (a, b) in enumerate(zip(old, seed, strict=True))
+                )
+                for idx, p in enumerate(seed):
+                    if p is not UNKNOWN:
+                        seeded_params.add((target, "observed", idx))
+                if widened_seeded:
                     argument_changes[key] += 1
                     if argument_changes[key] > 3:
                         seed = tuple(
-                            widen_fact(Fact(a), Fact(b)).type.dispatch_domain()
-                            or UNKNOWN
+                            b
+                            if a is UNKNOWN
+                            else (
+                                widen_fact(Fact(a), Fact(b)).type.dispatch_domain()
+                                or UNKNOWN
+                            )
                             for a, b in zip(old, seed, strict=True)
                         )
             if old != seed:
@@ -4098,7 +4170,8 @@ def analyze(
             if (
                 identifier == "observed"
                 and not any(
-                    param.is_fixnum and not gen_p.is_fixnum
+                    (param.is_fixnum and not gen_p.is_fixnum)
+                    or (param.fits_float(FLOAT) and not gen_p.fits_float(FLOAT))
                     for param, gen_p in zip(
                         parameters[key], facts.parameters, strict=True
                     )
@@ -4147,7 +4220,8 @@ def analyze(
                             )
                         )
                         and not any(
-                            obs_p.is_fixnum and not fix_p.is_fixnum
+                            (obs_p.is_fixnum and not fix_p.is_fixnum)
+                            or (obs_p.fits_float(FLOAT) and not fix_p.fits_float(FLOAT))
                             for obs_p, fix_p in zip(
                                 parameters[key],
                                 parameters[lambda_, "fixnum"],

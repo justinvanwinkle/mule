@@ -252,10 +252,38 @@ class CallSite:
     target: Lambda | ClassConstructorTarget | ForeignCallTarget | None
     argument_facts: tuple[Fact, ...]
     proven: bool = False
+    keywords: tuple[str | None, ...] = ()
 
     @property
     def arguments(self) -> tuple[ValueType, ...]:
         return tuple(fact.type for fact in self.argument_facts)
+
+    def bind_argument_facts(self, target: Lambda) -> tuple[Fact, ...] | None:
+        if not self.keywords and len(self.argument_facts) == len(target.vars):
+            if target.signature.variadic or not target.signature.positional_body:
+                order = target.call_order((), len(self.argument_facts))
+                if order is None:
+                    return None
+            else:
+                return self.argument_facts
+        else:
+            order = target.call_order(self.keywords, len(self.argument_facts))
+            if order is None:
+                return None
+        default_types = target.default_types
+        bound: list[Fact] = []
+        for index in order:
+            if index >= 0:
+                bound.append(self.argument_facts[index])
+            else:
+                def_idx = -2 - index
+                def_type = (
+                    default_types[def_idx]
+                    if 0 <= def_idx < len(default_types)
+                    else UNKNOWN
+                )
+                bound.append(_fact(def_type))
+        return tuple(bound)
 
 
 @dataclass(slots=True)
@@ -2285,7 +2313,7 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             # method's body directly, as it guards predicted global calls;
             # like those, the prediction seeds the callee's guarded entry
             # contexts but publishes no return type.
-            if not has_keywords:
+            if not any(kw is None for kw in call_info.keywords):
                 receiver_class = receiver_type.instance_class()
                 seeded_receiver = (
                     InstanceType(
@@ -2305,6 +2333,7 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                             *(visitor.fact_of(arg) for arg in args[1:]),
                         ),
                         False,
+                        (None, *call_info.keywords) if call_info.keywords else (),
                     )
                 )
             visitor.walk.method_targets[node] = method
@@ -2696,7 +2725,9 @@ class _GraphScan(NodeVisitor, LeafVisitor):
         self.global_names.add(leaf.name)
 
     def visit_Combination(self, node):
-        if node.kind in (CallKind.FULL, CallKind.GUARDED) and not node.info.keywords:
+        if node.kind in (CallKind.FULL, CallKind.GUARDED) and not any(
+            kw in ("*", "**") for kw in node.info.keywords
+        ):
             self.call_nodes.append((self.block, node))
         if node.kind is CallKind.KNOWN and node.args:
             for arg in node.args:
@@ -3123,6 +3154,9 @@ class _Walk:
                 (callee := facts.get(node.fun.use(), NO_FACT)).target,
                 tuple(facts.get(arg.use(), NO_FACT) for arg in node.args),
                 callee.proven,
+                node.info.keywords
+                if node.info is not None and node.info.keywords
+                else (),
             )
             for block, node in self.graph.call_nodes
             if block in incoming
