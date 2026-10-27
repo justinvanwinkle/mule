@@ -25,9 +25,9 @@ def inner():
 outer()
 print(faulthandler.disable(), faulthandler.is_enabled(), faulthandler.disable())
 os.close(fd)
-with open({str(path)!r}) as stream:
+with open({str(path)!r}, 'rb') as stream:
     text = stream.read()
-print('most recent call first' in text, 'in inner' in text, 'in outer' in text)
+print(b'most recent call first' in text, b'in inner' in text, b'in outer' in text)
 """,
     )
 

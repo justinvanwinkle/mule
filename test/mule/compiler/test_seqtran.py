@@ -282,21 +282,21 @@ def test_unpacking_length_mismatch_preserved():
         check_ir1_consistency(compilation.components)
 
 
-def test_unpacking_non_lambda_var_or_nested_targets_preserved():
-    # Subscript target may raise and requires temporary slot cleanup on unwind.
+def test_unpacking_non_lambda_var_or_nested_targets_elided():
+    # The element Lvars retain cleanup ownership if a target raises.
     comp_sub = compile_source("def f(target):\n target[0], b = (1, 2)\n return b\n")
     fn_sub = comp_sub.lambdas[1]
-    assert len(list(known_calls(fn_sub, "%unpack"))) == 1
-    assert len(list(known_calls(fn_sub, "%unpack_ref"))) == 2
+    assert not list(known_calls(fn_sub, "%unpack"))
+    assert not list(known_calls(fn_sub, "%unpack_ref"))
     check_ir1_consistency(comp_sub.components)
 
-    # Outer unpack has nested target (b, c), so outer unpack is preserved,
-    # while inner unpack (b, c) is not fed directly by %build_tuple.
+    # Forwarding the inner tuple value exposes its own display destructuring.
     comp_nested = compile_source(
         "def f():\n a, (b, c) = (1, (2, 3))\n return a, b, c\n"
     )
     fn_nested = comp_nested.lambdas[1]
-    assert len(list(known_calls(fn_nested, "%unpack"))) == 2
+    assert not list(known_calls(fn_nested, "%unpack"))
+    assert not list(known_calls(fn_nested, "%unpack_ref"))
     check_ir1_consistency(comp_nested.components)
 
 

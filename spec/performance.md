@@ -672,3 +672,63 @@ callgrind_annotate --inclusive=no /tmp/attributes.callgrind
 Keep profiling separate from timing: instrumentation substantially changes
 runtime. Check generated LLVM and native code alongside measurements when
 claiming that a compiler transformation removed dispatch or allocation.
+
+## General tuple delivery and per-store liveness (2026-10-27)
+
+Section 6G in `compiler-gaps.md` moves tuple convention selection and unpack
+delivery out of code-generation sequence recognition. Correctness checks cover
+non-local targets, target effects and failures, weak-reference ownership
+observers, alias returns, and dead assignments across control flow. Optimized
+LLVM checks follow the actual direct-call fast path and tuple field loads,
+allowing required cold fallbacks. They establish the general lowering mechanism,
+not a speedup for every workload.
+
+The comparison used `perf/runtimes.example.toml`: Mule `-O2`, no LTO, Rust `-O3`,
+CPython 3.15.0, and SBCL 2.6.4.debian. Each workload used size 50,000, seed 42,
+one kernel loop, one separate warmup, and three measured samples. The harness
+used `--jobs 4` and the unchanged CPU affinity, logical CPUs 0 through 31.
+Compilation and preparation were outside the kernel timer. Each runtime's
+result matched CPython on every accepted sample.
+
+Accepted Mule kernel medians, in milliseconds:
+
+| Workload | Baseline | Candidate | Repeat baseline | Repeat candidate |
+| --- | --- | --- | --- | --- |
+| HTTP routing | 60.357 | 56.458 | 61.281 | 56.023 |
+| Key-value parsing | 1426.272 | 1405.368 | 1455.359 | 1399.340 |
+| Interval merging | 526.100 | 536.125 | 525.594 | 537.858 |
+
+The candidate consistently measured lower for HTTP routing and key-value parsing.
+Interval merging measured about 2% higher. Its binary-search and outer query
+loops have the same logical machine instructions before and after the change,
+apart from addresses, stack offsets, and alignment. In particular, the borrowed
+tuple path still performs direct field reads without new output-slot copies or
+ownership operations. The initial hypothesis that slot delivery replaced that
+borrowed path was wrong: its existing borrowed-capture metadata excludes it.
+The measured interval-merging slowdown remains unattributed. These results do
+not establish a universal performance improvement.
+
+The baseline was `0af7761ea462b3a9e1154fe819a2cf35f97d7984`. The candidate was
+the 6G worktree based on that revision; the accepted report records tracked-diff
+SHA-256 `fe6281711d2512b68c71ab43c5962c609597677c66f0a8f710b12505cb21c847`.
+The compiler sources remained unchanged between the accepted candidate runs.
+Documentation and test-observation updates are included in the final commit.
+
+Run from the respective baseline or candidate checkout:
+
+```sh
+uv run python -m perf.suite.perfutils run \
+  --config perf/runtimes.example.toml --jobs 4 --samples 3 --no-history \
+  --output /tmp/mule-6g-before-clean \
+  http_routing kv_record_parse interval_merging
+```
+
+The candidate command substituted `/tmp/mule-6g-after-clean` for the output
+directory. Repeats used `/tmp/mule-6g-before-repeat` and
+`/tmp/mule-6g-after-repeat`. Each directory contains raw samples, commands,
+binary hashes, source identity, CPU observations, and `results.json`.
+Accepted external CPU utilization was respectively 0.471, 1.690, 0.745, and
+0.868 cores, below the unchanged 2.0-core limit. `vmstat` monitoring showed no
+swap-out activity during those accepted comparisons and no I/O-wait saturation.
+An earlier run in `/tmp/mule-6g-before` exceeded the CPU-noise limit and included
+active swapping; none of its timings contributed to this table.
