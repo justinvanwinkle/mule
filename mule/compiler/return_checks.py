@@ -7,7 +7,15 @@ from .annotation_types import DeclaredReturnContract, InferredReturnContract
 from .ctype import BOTTOM, UNKNOWN, InstanceType, ValueType, ValueTypeVisitor
 from .ir1util import insert_cast_after
 from .locall import global_bindings, made_function
-from .node import CallKind, Cast, Combination, Lambda, LeafVisitor, NodeVisitor
+from .node import (
+    CallKind,
+    Cast,
+    Combination,
+    FunctionalKind,
+    Lambda,
+    LeafVisitor,
+    NodeVisitor,
+)
 
 
 def assert_inferred_results(compilation) -> bool:
@@ -154,13 +162,15 @@ def _target_return_contract(
     target_facts,
     arguments: tuple[ValueType, ...],
     keywords: tuple[str | None, ...],
+    *,
+    widen_constant: bool = True,
 ):
     annotation = target.signature.implementation_return_annotation
     declared = None if annotation is None else annotation.definition_contract()
     inferred = _target_inferred_return_type(target, target_facts, arguments, keywords)
     if inferred is BOTTOM or inferred.may_be_unbound:
         inferred = UNKNOWN
-    else:
+    elif widen_constant or declared is not None:
         inferred = inferred.widen_constant()
     if declared is not None:
         return DeclaredReturnContract(target.name, declared, inferred)
@@ -262,7 +272,10 @@ class _AssertResult(NodeVisitor):
             ):
                 return None
             return _target_return_contract(
-                target_lam, self.all_facts.get(target_lam), arguments, keywords
+                target_lam,
+                self.all_facts.get(target_lam),
+                arguments,
+                keywords,
             )
         method_key = (self.function.namespace, method_name)
         if method_key in self.shadowed:
@@ -323,9 +336,9 @@ class _AssertResult(NodeVisitor):
         if not call.lexenv.policy.infers_return_contracts:
             return
         result = call.lvar
-        if result is None or result.dest is None or len(result.uses) != 1:
+        if result is None or result.dest is None:
             return
-        if result.dest.accept(_AssertionDestination(call)):
+        if len(result.uses) != 1 or result.dest.accept(_AssertionDestination(call)):
             return
         if (
             call.kind is CallKind.KNOWN
@@ -348,14 +361,18 @@ class _AssertResult(NodeVisitor):
             location = call.info.location
             if target.code is None or location is None:
                 return
-            if (
-                target.code.filename != location[0]
-                or target.code.firstlineno > location[1]
+            if target.code.filename != location[0] or (
+                self.function.kind is FunctionalKind.TOPLEVEL
+                and target.code.firstlineno > location[1]
             ):
                 return
             arguments = tuple(self.lvar_type(arg).widen_constant() for arg in call.args)
             contract = _target_return_contract(
-                target, self.all_facts.get(target), arguments, call.info.keywords
+                target,
+                self.all_facts.get(target),
+                arguments,
+                call.info.keywords,
+                widen_constant=False,
             )
             if contract is None:
                 return

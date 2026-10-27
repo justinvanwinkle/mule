@@ -606,9 +606,9 @@ per-value type lattice and applies it to representation-specific VOP emission.
 
 ### Numeric conventions in mixed bodies
 
-Same-unit proven positional calls can select a numeric internal entry without
-requiring a whole-function native plan. The selected semantic context must fit
-the caller's proven argument facts without guards. A numeric-use float result
+Same-unit proven and guarded positional calls can select a numeric internal entry
+without requiring a whole-function native plan. The selected semantic context must
+fit the caller's proven argument facts without guards. A numeric-use float result
 returns as `double`; a non-boolean integer proven within the fixnum range returns
 as `i64`. A numeric entry can still execute object operations and retains the
 ordinary frame, traceback, handler, and descriptor cleanup paths.
@@ -623,8 +623,10 @@ before delivering the result; zero and NaN are not failure sentinels.
 Object and unknown callers retain the ordinary object entry. In particular,
 numeric float entries are selected only when every assignment-connected caller
 consumer admits doubles, not for identity comparisons or escaping objects.
-Keywords, default/reordered arguments, foreign units, and direct self-recursive
-edges retain the existing object convention in this increment. See
+Self-recursive, mutually recursive, closure, and guarded same-unit calls use
+numeric conventions when their argument and return representations qualify;
+keywords, default/reordered arguments, and foreign units retain the object
+convention. See
 [numeric calling conventions](compiler-gaps.md#numeric-internal-calling-conventions-implemented).
 
 ## Borrowed local lifetimes

@@ -597,13 +597,6 @@ class _ContractAssertion(ContractVisitor):
         )
         self.gen.check_status(status)
 
-    def visit_PythonFloatContract(self, contract):
-        name = self.gen.module.text(contract.display_name)
-        status = self.gen.operation(
-            f"call i32 @mule_assert_real(ptr {self.value}, ptr {name})"
-        )
-        self.gen.check_status(status)
-
     def visit_PythonIntegerContract(self, contract):
         gen = self.gen
         bits = gen.operation(f"ptrtoint ptr {self.value} to i64")

@@ -87,44 +87,55 @@ def masked_step(x: int) -> int:
         total = (total + x + i) & 0xFFFF
     return total
 
-def outer(n: int) -> float:
-    def rec_countdown(k, acc):
-        if k <= 0:
-            return acc & 0xFFFF
-        return rec_countdown((k - 1) & 0xFFFF, (acc + masked_step(k)) & 0xFFFF) & 0xFFFF
+def rec_countdown(k: int, acc: int) -> int:
+    if k <= 0:
+        return acc & 0xFFFF
+    return rec_countdown(k - 1, (acc + masked_step(k)) & 0xFFFF)
 
-    def rec_scale(k, x):
+def rec_scale(k: int, x: float) -> float:
+    if k <= 0:
+        return x * 1.5
+    return rec_scale(k - 1, x) + 0.25
+
+def use_rec(n: int) -> float:
+    def local_rec(k: int, x: float) -> float:
         if k <= 0:
             return x * 1.5
-        return rec_scale((k - 1) & 0xFFFF, x) + 0.25
-
-    c = rec_countdown(n & 0xFF, 0) & 0xFFFF
-    return rec_scale(c, 2.5) + 1.0
+        return local_rec(k - 1, x) + 0.25
+    c = rec_countdown(n & 0xFF, 0)
+    return rec_scale(c, 2.5) + local_rec(c, 1.5)
 """
     )
-    assert "define internal i64 @mule_fn_masked_step.numeric." in llvm
+    assert 'define internal i64 @"mule_fn_masked_step.numeric.' in llvm
     assert (
-        'define internal i64 @"mule_fn_outer.<locals>.rec_countdown.numeric.observed"('
-        "ptr %globals, ptr %error.flag, ptr %closure, i64 %parameter.0, i64 %parameter.1)"
+        'define internal i64 @"mule_fn_rec_countdown.numeric.observed"('
+        "ptr %globals, ptr %error.flag, i64 %parameter.0, i64 %parameter.1)"
     ) in llvm
     assert (
-        'define internal double @"mule_fn_outer.<locals>.rec_scale.numeric.general"('
-        "ptr %globals, ptr %error.flag, ptr %closure, ptr %parameter.0, double %parameter.1)"
+        'define internal double @"mule_fn_rec_scale.numeric.fixnum"('
+        "ptr %globals, ptr %error.flag, i64 %parameter.0, double %parameter.1)"
+    ) in llvm
+    assert (
+        'define internal double @"mule_fn_use_rec.<locals>.local_rec.numeric.general"('
+        "ptr %globals, ptr %error.flag, ptr %closure, i64 %parameter.0, double %parameter.1)"
     ) in llvm
     rec_numeric = llvm.split(
-        'define internal i64 @"mule_fn_outer.<locals>.rec_countdown.numeric.observed"'
+        'define internal i64 @"mule_fn_rec_countdown.numeric.observed"'
     )[1].split("\n}")[0]
     assert 'call i64 @"mule.numeric.mule_fn_masked_step.' in rec_numeric
-    assert (
-        'call i64 @"mule_fn_outer.<locals>.rec_countdown.numeric.observed"('
-        in rec_numeric
-    )
+    assert 'call i64 @"mule.numeric.mule_fn_rec_countdown.' in rec_numeric
+    assert 'call i64 @"mule_fn_rec_countdown.numeric.observed"(' in llvm
     scale_numeric = llvm.split(
-        'define internal double @"mule_fn_outer.<locals>.rec_scale.numeric.general"'
+        'define internal double @"mule_fn_rec_scale.numeric.fixnum"'
+    )[1].split("\n}")[0]
+    assert 'call double @"mule.numeric.mule_fn_rec_scale.' in scale_numeric
+    assert 'call double @"mule_fn_rec_scale.numeric.fixnum"(' in llvm
+    local_numeric = llvm.split(
+        'define internal double @"mule_fn_use_rec.<locals>.local_rec.numeric.general"'
     )[1].split("\n}")[0]
     assert (
-        'call double @"mule_fn_outer.<locals>.rec_scale.numeric.general"('
-        in scale_numeric
+        'call double @"mule_fn_use_rec.<locals>.local_rec.numeric.general"('
+        in local_numeric
     )
 
 
@@ -229,18 +240,18 @@ def masked_step(x: int) -> int:
         total = (total + x + i) & 0xFFFF
     return total
 
-def outer(n: int) -> float:
-    def rec_countdown(k, acc):
-        if k <= 0:
-            return acc & 0xFFFF
-        return rec_countdown((k - 1) & 0xFFFF, (acc + masked_step(k)) & 0xFFFF) & 0xFFFF
+def rec_countdown(k: int, acc: int) -> int:
+    if k <= 0:
+        return acc & 0xFFFF
+    return rec_countdown(k - 1, (acc + masked_step(k)) & 0xFFFF)
 
-    def rec_scale(k, x):
-        if k <= 0:
-            return x * 1.5
-        return rec_scale((k - 1) & 0xFFFF, x) + 0.25
+def rec_scale(k: int, x: float) -> float:
+    if k <= 0:
+        return x * 1.5
+    return rec_scale(k - 1, x) + 0.25
 
-    c = rec_countdown(n & 0xFF, 0) & 0xFFFF
+def use_rec(n: int) -> float:
+    c = rec_countdown(n & 0xFF, 0)
     return rec_scale(c, 2.5) + 1.0
 
 def check_str_eq(a: str, b: str):
@@ -254,7 +265,7 @@ def check_str_eq(a: str, b: str):
         a != b,
     )
 
-print(outer(0), outer(3))
+print(use_rec(0), use_rec(3))
 for s in ('', 'x', 'y', 'alpha_beta', 'alpha_beta_gamma_delta_epsilon', 'λ'):
     print(check_str_eq(s, 'alpha_beta'), check_str_eq(s, s))
 """,

@@ -936,13 +936,12 @@ class _AssertionContract(_Contract):
     def visit_PythonIntegerContract(self, contract):
         return self.representation.python_integer()
 
-    def visit_PythonFloatContract(self, contract):
-        return self.representation.python_real()
-
     def visit_FloatContract(self, contract):
         if contract.bits != 64:
             raise NotNative
         return self.representation.python_float()
+
+    visit_PythonFloatContract = visit_FloatContract
 
 
 class _Literal(ast.Visitor):

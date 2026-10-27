@@ -494,6 +494,20 @@ class _IsUnpackNode(NodeVisitor):
 _IS_UNPACK_NODE = _IsUnpackNode()
 
 
+class _InferredReturnDestination(NodeVisitor):
+    def __init__(self, call: Combination):
+        self.call = call
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Return(self, node):
+        return True
+
+    def visit_Cast(self, node: Cast):
+        return node.declaration == ("inferred-return", self.call)
+
+
 class _LinearUpdate(NodeVisitor):
     """Extract ``(src_var, d_min, d_max)`` from ``src_var`` or ``src_var +/- d``."""
 
@@ -1062,6 +1076,38 @@ class _Propagation(NodeVisitor, LeafVisitor):
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
+        if value is BOTTOM:
+            return NO_FACT
+        if (
+            node.declaration is not None
+            and node.declaration[0] == "inferred-return"
+            and node.contract.fact is PYTHON_INTEGER
+        ):
+            call = node.declaration[1]
+            if call.kind in (CallKind.FULL, CallKind.GUARDED) and call.info is not None:
+                callee_fact = self.fact_of(call.fun)
+                if (
+                    callee_fact.target is not None
+                    and (target_lam := callee_fact.target.as_lambda()) is not None
+                    and (
+                        target_lam in self.walk.recursive_targets
+                        or self.walk.is_specialized_context
+                    )
+                ):
+                    arg_types = tuple(self.type_of(arg) for arg in call.args)
+                    if any(t is BOTTOM for t in arg_types):
+                        return NO_FACT
+                    resolved = self.walk.resolve_call(
+                        callee_fact,
+                        tuple(t.widen_constant() for t in arg_types),
+                        call.info.location,
+                        call.info.keywords,
+                        True,
+                    )
+                    if resolved is BOTTOM:
+                        return NO_FACT
+                    if resolved.is_fixnum:
+                        return _fact(resolved.widen_constant())
         if self.walk.annotations.check(
             node.contract, value, node.location, node.declaration
         ):
@@ -1086,6 +1132,49 @@ class _Propagation(NodeVisitor, LeafVisitor):
             )
             if resolved is BOTTOM:
                 return NO_FACT
+            if (
+                resolved is UNKNOWN
+                and not callee_fact.proven
+                and callee_fact.target is not None
+                and (target_lam := callee_fact.target.as_lambda()) is not None
+                and (
+                    target_lam in self.walk.recursive_targets
+                    or self.walk.is_specialized_context
+                )
+                and self.walk.lambda_.policy.infers_return_contracts
+                and node.lexenv.policy.infers_return_contracts
+                and target_lam.policy.infers_return_contracts
+                and target_lam.namespace == self.walk.lambda_.namespace
+                and node.lvar is not None
+                and len(node.lvar.uses) == 1
+                and node.lvar.dest is not None
+                and not node.lvar.dest.accept(_InferredReturnDestination(node))
+                and len(node.fun.uses) == 1
+                and (callee_name := node.fun.use().accept(_GLOBAL_CALLEE_NAME))
+                is not None
+                and self.walk.global_targets.get(callee_name) is target_lam
+                and target_lam.source_name == callee_name
+                and target_lam.code is not None
+                and info.location is not None
+                and target_lam.code.filename == info.location[0]
+                and not (
+                    self.walk.lambda_.kind is FunctionalKind.TOPLEVEL
+                    and target_lam.code.firstlineno > info.location[1]
+                )
+            ):
+                inferred_res = self.walk.resolve_call(
+                    callee_fact,
+                    tuple(t.widen_constant() for t in arg_types),
+                    info.location,
+                    info.keywords,
+                    True,
+                )
+                if inferred_res is BOTTOM:
+                    return NO_FACT
+                if inferred_res is not UNKNOWN:
+                    resolved = InferredReturnContract(
+                        target_lam.name, inferred_res.widen_constant()
+                    ).fact
             if resolved is UNKNOWN and target is not None:
                 resolved = target.propagate_call(
                     node, self, node.args, arg_types, info.keywords
@@ -2658,6 +2747,8 @@ class _Walk:
         builtin_return_types: Mapping[str, ValueType] | None = None,
         builtin_targets: (Mapping[str, object] | None) = None,
         class_facts: Mapping | None = None,
+        recursive_targets: frozenset[Lambda] = frozenset(),
+        is_specialized_context: bool = False,
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
@@ -2673,6 +2764,8 @@ class _Walk:
         self.builtin_return_types = builtin_return_types
         self.builtin_targets = builtin_targets
         self.class_facts = class_facts or {}
+        self.recursive_targets = recursive_targets
+        self.is_specialized_context = is_specialized_context
         # Calls this walk resolved to methods of typed classes.
         self.method_calls: list[CallSite] = []
         self.method_targets: dict[object, Lambda] = {}
@@ -3573,6 +3666,8 @@ def propagate(
     builtin_return_types: Mapping[str, ValueType] | None = None,
     builtin_targets: (Mapping[str, object] | None) = None,
     class_facts: Mapping | None = None,
+    recursive_targets: frozenset[Lambda] = frozenset(),
+    is_specialized_context: bool = False,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -3600,6 +3695,8 @@ def propagate(
         builtin_return_types=builtin_return_types,
         builtin_targets=builtin_targets,
         class_facts=class_facts,
+        recursive_targets=recursive_targets,
+        is_specialized_context=is_specialized_context,
     ).run()
 
 

@@ -2429,7 +2429,7 @@ class TupleType(ValueType):
                 and len(self.elements) == len(left.elements)
             ):
                 joined_elems = tuple(
-                    l_el.join(r_el).limit_container_depth(2)
+                    l_el.join(r_el).limit_container_depth(1)
                     for l_el, r_el in zip(left.elements, self.elements)
                 )
                 elements = (
@@ -2467,7 +2467,7 @@ class TupleType(ValueType):
             and len(self.elements) == len(old.elements)
         ):
             widened_elems = tuple(
-                widen_fact(o_el, n_el, thresholds).limit_container_depth(2)
+                widen_fact(o_el, n_el, thresholds).limit_container_depth(1)
                 for o_el, n_el in zip(old.elements, self.elements)
             )
             elements = (

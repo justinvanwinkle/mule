@@ -9,13 +9,13 @@ object convention; a numeric entry can still use ordinary object operations.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from mule import ast
 
 from . import vops
+from .annotation_types import InferredReturnContract
 from .ctype import UNKNOWN, ValueTypeVisitor
 from .ltn import primitive_type_of
 from .node import CallKind, FunctionalKind, Lambda, LeafVisitor, NodeVisitor, linked
@@ -38,9 +38,7 @@ OBJECT = (DESCRIPTOR, IMMEDIATE)
 
 
 def _symbol(name: str) -> str:
-    if re.fullmatch(r"[A-Za-z_.$][A-Za-z0-9_.$]*", name):
-        return f"@{name}"
-    return f'@"{name.replace(chr(34), "")}"'
+    return '@"' + name + '"'
 
 
 class _TupleArity(ValueTypeVisitor):
@@ -231,13 +229,21 @@ def numeric_entry(
         # Signature probing does not select calls or retain cloned IR1 nodes.
         # Object-sensitive parameter uses must keep the incoming object itself.
         component = probe_component(function, numeric_probe)
-        self_calls = tuple(
-            vop
-            for block in component.blocks
-            for vop in block.vops
-            if vop.info in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
-            and vop.codegen_info.target is function
-        )
+        self_calls = []
+        for block in component.blocks:
+            for idx, vop in enumerate(block.vops):
+                if (
+                    vop.info in (vops.FULL_CALL, vops.LOCAL_EXTENT_CALL)
+                    and vop.codegen_info.target is function
+                ):
+                    self_calls.append(vop)
+                    if (
+                        idx + 1 < len(block.vops)
+                        and block.vops[idx + 1].info is vops.TYPE_CHECK
+                        and block.vops[idx + 1].args[0].tn is vop.results[0].tn
+                    ):
+                        self_calls.append(block.vops[idx + 1])
+        self_calls = tuple(self_calls)
         parameters = tuple(
             DESCRIPTOR
             if sc is DOUBLE
@@ -325,32 +331,54 @@ def select_numeric_calls(module, component) -> bool:
             if site.proven:
                 result = vop.results[0].tn
             else:
-                if module.closure_of(target):
-                    continue
                 block = block_by_vop.get(vop)
                 if block is None or vop not in block.vops:
                     continue
                 idx = block.vops.index(vop)
                 if (
-                    idx + 1 >= len(block.vops)
-                    or block.vops[idx + 1].info is not vops.TYPE_CHECK
+                    idx + 1 < len(block.vops)
+                    and block.vops[idx + 1].info is vops.TYPE_CHECK
                 ):
-                    continue
-                assertion_vop = block.vops[idx + 1]
-                delivered = vop.results[0].tn
-                if (
-                    assertion_vop.args[0].tn is not delivered
-                    or len(component.writes.get(delivered, ())) != 1
-                    or len(component.reads.get(delivered, ())) != 1
+                    candidate_assertion = block.vops[idx + 1]
+                    delivered = vop.results[0].tn
+                    if (
+                        candidate_assertion.args[0].tn is delivered
+                        and len(component.writes.get(delivered, ())) == 1
+                        and len(component.reads.get(delivered, ())) == 1
+                    ):
+                        assertion_vop = candidate_assertion
+                        result = assertion_vop.results[0].tn
+                        if assertion_vop.codegen_info.safety:
+                            result_contract = assertion_vop.codegen_info.contract
+                    else:
+                        continue
+                elif (
+                    component.lambda_.policy.infers_return_contracts
+                    and target.policy.infers_return_contracts
                 ):
+                    result = vop.results[0].tn
+                else:
                     continue
-                result = assertion_vop.results[0].tn
-                if assertion_vop.codegen_info.safety:
-                    result_contract = assertion_vop.codegen_info.contract
             fact = result.type or UNKNOWN
-            ignore_vops = (vop, assertion_vop) if assertion_vop is not None else (vop,)
+            ignore_vops = [vop]
+            if assertion_vop is not None:
+                ignore_vops.append(assertion_vop)
+            for other_vop in pending:
+                if other_vop is vop:
+                    continue
+                ignore_vops.append(other_vop)
+                other_block = block_by_vop.get(other_vop)
+                if other_block is not None and other_vop in other_block.vops:
+                    other_idx = other_block.vops.index(other_vop)
+                    if (
+                        other_idx + 1 < len(other_block.vops)
+                        and other_block.vops[other_idx + 1].info is vops.TYPE_CHECK
+                        and other_block.vops[other_idx + 1].args[0].tn
+                        is other_vop.results[0].tn
+                    ):
+                        ignore_vops.append(other_block.vops[other_idx + 1])
             if primitive_type_of(fact) is BOXED_FLOAT:
-                if not can_use_double(component, result, ignore=ignore_vops):
+                if not can_use_double(component, result, ignore=tuple(ignore_vops)):
                     remaining.append(vop)
                     continue
             elif not fact.is_fixnum:
@@ -378,12 +406,22 @@ def select_numeric_calls(module, component) -> bool:
             )
             if context is None:
                 continue
-            entry = module.numeric_entry(target, context, borrowed_args)
-            convention = linked(entry.context.convention, entry, "convention")
-            if not site.proven and any(
-                sc not in (DOUBLE, SIGNED) for sc in convention.parameters
+            if (
+                not site.proven
+                and target is not component.lambda_
+                and fact.is_fixnum
+                and not any(
+                    param.is_fixnum or primitive_type_of(param) is BOXED_FLOAT
+                    for param in context.parameters
+                )
             ):
                 continue
+            if not site.proven and result_contract is None and assertion_vop is None:
+                result_contract = InferredReturnContract(
+                    target.name, context.return_type
+                )
+            entry = module.numeric_entry(target, context, borrowed_args)
+            convention = linked(entry.context.convention, entry, "convention")
             if assertion_vop is not None:
                 delivered = vop.results[0].tn
                 block = block_by_vop[vop]
@@ -391,7 +429,10 @@ def select_numeric_calls(module, component) -> bool:
                 component.reads.pop(delivered, None)
                 component.writes.pop(delivered, None)
                 vop.results[0] = TNRef(result, True)
-                component.writes[result] = [(vop, vop.results[0])]
+                component.writes[result] = [
+                    (vop, vop.results[0]) if writer is assertion_vop else (writer, ref)
+                    for writer, ref in component.writes.get(result, ())
+                ]
             restrictions = tuple(
                 (DESCRIPTOR, DOUBLE)
                 if sc is DOUBLE

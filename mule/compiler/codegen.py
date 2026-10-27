@@ -2751,6 +2751,8 @@ class ModuleGenerator:
         zero = "0.0" if convention.returned is DOUBLE else "0"
         fallback_helper = self.positional_call_helper(arity)
         builder = _HelperBuilder(self)
+        has_descriptors = any(sc is DESCRIPTOR for sc in convention.parameters)
+        frame_fail_label = "frame.failed" if has_descriptors else "failed"
         builder.lines = [
             f"define internal {ret_type} {symbol}({', '.join(params)}) {{",
             "entry:",
@@ -2761,13 +2763,32 @@ class ModuleGenerator:
             "direct:",
             "  %frame = call i32 @mule_enter_frame()",
             "  %frame.bad = icmp slt i32 %frame, 0",
-            "  br i1 %frame.bad, label %failed, label %entered",
-            "entered:",
-            "  %callee.globals = load ptr, ptr %fn.globals.slot",
+            f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered",
         ]
+        if has_descriptors:
+            builder.lines.append("frame.failed:")
+            for i, sc in enumerate(convention.parameters):
+                if sc is DESCRIPTOR:
+                    builder.lines.append(
+                        f"  call void @mule.fast.release(ptr %arg.{i})"
+                    )
+            builder.lines.append("  br label %failed")
+        builder.lines.extend(
+            [
+                "entered:",
+                "  %callee.globals = load ptr, ptr %fn.globals.slot",
+            ]
+        )
+        closure_args = []
+        if self.closure_of(entry.function):
+            builder.lines.append(
+                "  %closure = call ptr @mule_function_closure_of(ptr %callee)"
+            )
+            closure_args.append("ptr %closure")
         direct_args = [
             "ptr %callee.globals",
             "ptr %numeric.error",
+            *closure_args,
             *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
         ]
         builder.lines.extend(
@@ -2785,11 +2806,13 @@ class ModuleGenerator:
                     f"  %box.{i} = call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double %arg.{i})"
                 )
                 boxed_args.append(f"ptr %box.{i}")
-            else:
+            elif sc is SIGNED:
                 builder.line(f"  %shl.{i} = shl i64 %arg.{i}, 1")
                 builder.line(f"  %tag.{i} = or disjoint i64 %shl.{i}, 1")
                 builder.line(f"  %box.{i} = inttoptr i64 %tag.{i} to ptr")
                 boxed_args.append(f"ptr %box.{i}")
+            else:
+                boxed_args.append(f"ptr %arg.{i}")
         fallback_call_args = ", ".join(["ptr %callee", *boxed_args])
         builder.lines.extend(
             [

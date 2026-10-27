@@ -95,12 +95,13 @@ print(classify_word('"none"', 0, 5))
 print(classify_word('"other"', 0, 6))
 """
     llvm = emit_llvm(source)
-    body = _function_llvm_body(
-        llvm, 'define internal ptr @"mule_fn_classify_word.spec.0"'
-    )
-    assert body.count("@mule_text_slice_eq(") == 3
-    assert "@mule.fast.getslice(" not in body
-    assert "@mule.heap.retain(" not in body
+    entries = numeric_entries(llvm, "mule_fn_classify_word", "i64")
+    assert entries
+    for symbol, _parameters, body in entries:
+        assert f"call i64 {symbol}(" in llvm
+        assert body.count("@mule_text_slice_eq(") == 3
+        assert "@mule.fast.getslice(" not in body
+        assert "@mule.heap.retain(" not in body
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "5\n6\n0\n1\n"

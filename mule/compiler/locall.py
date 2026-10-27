@@ -2550,6 +2550,32 @@ def analyze(
                 if callee not in visited_order:
                     stack.append((callee, False))
     lambda_order = {lam: idx for idx, lam in enumerate(ordered_lambdas)}
+    unique_global_lambdas = {
+        target
+        for ns, ns_targets in global_targets.items()
+        for name, target_obj in ns_targets.items()
+        if global_counts[ns].get(name, 0) == 1
+        and (target := target_obj.as_lambda()) is not None
+        and target.source_name == name
+    }
+    recursive_targets_by_caller: dict[Lambda, frozenset[Lambda]] = {}
+    for lam in lambdas:
+        rec_set: set[Lambda] = {lam} if lam in unique_global_lambdas else set()
+        for target in static_callees.get(lam, ()):
+            if target is lam or target not in unique_global_lambdas:
+                continue
+            seen: set[Lambda] = set()
+            stack_r: list[Lambda] = [target]
+            while stack_r:
+                cur_r = stack_r.pop()
+                if cur_r is lam:
+                    rec_set.add(target)
+                    break
+                if cur_r in seen:
+                    continue
+                seen.add(cur_r)
+                stack_r.extend(static_callees.get(cur_r, ()))
+        recursive_targets_by_caller[lam] = frozenset(rec_set)
     imported_returns_by_ns: dict[str, dict[str, ValueType]] = defaultdict(dict)
     imported_targets_by_ns: dict[
         str, dict[str, Lambda | ClassConstructorTarget | ForeignCallTarget]
@@ -3011,10 +3037,22 @@ def analyze(
         return cached_graph
 
     def _resolve_deriver_call(
-        callee: Fact, arguments, location=None, keywords=()
+        callee: Fact,
+        arguments,
+        location=None,
+        keywords=(),
+        inferred_return: bool = False,
     ) -> ValueType:
-        if not callee.proven or callee.target is None:
+        if callee.target is None:
             return UNKNOWN
+        if not callee.proven:
+            target = callee.target.as_lambda()
+            if (
+                not inferred_return
+                or target is None
+                or not target.policy.infers_return_contracts
+            ):
+                return UNKNOWN
         return callee.target.derive_return_type(arguments, keywords)
 
     def _propagate_for_deriver(
@@ -3085,6 +3123,10 @@ def analyze(
                     builtin_return_types=builtin_return_types,
                     builtin_targets=builtin_targets,
                     class_facts=class_facts,
+                    recursive_targets=recursive_targets_by_caller.get(
+                        target_lam, frozenset()
+                    ),
+                    is_specialized_context=True,
                 )
             if len(deriver_cache) > 4096:
                 deriver_cache.clear()
@@ -3114,6 +3156,11 @@ def analyze(
                     return gen_summary
             body = _propagate_for_deriver(target_lam, param_types, "ret")
             if body is None:
+                looked_up = lookup_return_type(
+                    target_lam, param_types, parameters, summaries
+                )
+                if looked_up is not UNKNOWN:
+                    return looked_up.normalized_bottom()
                 return gen_summary.normalized_bottom()
             return body.return_type.normalized_bottom()
 
@@ -3191,6 +3238,7 @@ def analyze(
             arguments,
             location=None,
             keywords=(),
+            inferred_return: bool = False,
             context_parameters=previous_parameters,
             context_summaries=summaries,
         ) -> ValueType:
@@ -3204,6 +3252,7 @@ def analyze(
                         context_summaries,
                         location,
                         keywords,
+                        inferred_return,
                     ),
                 )
             )
@@ -3215,13 +3264,21 @@ def analyze(
             context_summaries,
             location,
             keywords,
+            inferred_return: bool = False,
         ):
             # A name's predicted target is never sufficient to publish a return
             # type. Only an already-loaded value with proven identity is local.
-            if not callee.proven or callee.target is None:
+            if callee.target is None:
                 return UNKNOWN
             target = callee.target.as_lambda()
-            if target is None:
+            if not callee.proven:
+                if (
+                    not inferred_return
+                    or target is None
+                    or not target.policy.infers_return_contracts
+                ):
+                    return UNKNOWN
+            elif target is None:
                 return callee.target.derive_return_type(arguments, keywords)
             order = target.call_order(keywords, len(arguments))
             if order is None:
@@ -3235,22 +3292,36 @@ def analyze(
             arguments = tuple(
                 arguments[index] if index >= 0 else UNKNOWN for index in order
             )
-            for index, (actual, contract, var) in enumerate(
-                zip(arguments, target.signature.annotations, target.vars, strict=True)
-            ):
-                if contract is not None:
-                    annotations.check(
-                        contract, actual, location, ("local", target, var.name)
+            if not callee.proven:
+                if any(
+                    contract is not None and contract.contradicts(actual)
+                    for actual, contract in zip(
+                        arguments, target.signature.annotations, strict=True
                     )
-                else:
-                    declared = target.local_annotations.get(var.name)
-                    if declared is not None and declared.contradicts(actual):
-                        annotations.ignored.add(("local", target, var.name))
-                        gen = parameters.get((target, "general"))
-                        if gen is not None and gen[index] is not UNKNOWN:
-                            updated = list(gen)
-                            updated[index] = UNKNOWN
-                            parameters[target, "general"] = tuple(updated)
+                ):
+                    return UNKNOWN
+            else:
+                for index, (actual, contract, var) in enumerate(
+                    zip(
+                        arguments,
+                        target.signature.annotations,
+                        target.vars,
+                        strict=True,
+                    )
+                ):
+                    if contract is not None:
+                        annotations.check(
+                            contract, actual, location, ("local", target, var.name)
+                        )
+                    else:
+                        declared = target.local_annotations.get(var.name)
+                        if declared is not None and declared.contradicts(actual):
+                            annotations.ignored.add(("local", target, var.name))
+                            gen = parameters.get((target, "general"))
+                            if gen is not None and gen[index] is not UNKNOWN:
+                                updated = list(gen)
+                                updated[index] = UNKNOWN
+                                parameters[target, "general"] = tuple(updated)
             result = lookup_return_type(
                 target, arguments, context_parameters, context_summaries
             )
@@ -3339,6 +3410,10 @@ def analyze(
                             builtin_return_types=builtin_return_types,
                             builtin_targets=builtin_targets,
                             class_facts=class_facts,
+                            recursive_targets=recursive_targets_by_caller.get(
+                                lambda_, frozenset()
+                            ),
+                            is_specialized_context=(ctx_name != "general"),
                         )
                     bodies[key] = body
                     inputs[key] = (
@@ -3732,6 +3807,12 @@ def analyze(
             ret_type = summaries[key].normalized_bottom()
             if (
                 identifier == "fixnum"
+                and not any(
+                    param.fits_float(FLOAT) and not gen_p.fits_float(FLOAT)
+                    for param, gen_p in zip(
+                        parameters[key], facts.parameters, strict=True
+                    )
+                )
                 and body.element_contracts == facts.element_contracts
                 and not _specializes_body(
                     graph,
@@ -3740,11 +3821,17 @@ def analyze(
                     facts.targets,
                     body.targets(),
                 )
+                and ret_type == facts.return_type
             ):
                 continue
             if (
                 identifier == "observed"
-                and not any(param.is_fixnum for param in parameters[key])
+                and not any(
+                    param.is_fixnum and not gen_p.is_fixnum
+                    for param, gen_p in zip(
+                        parameters[key], facts.parameters, strict=True
+                    )
+                )
                 and body.element_contracts == facts.element_contracts
                 and not _specializes_body(
                     graph,

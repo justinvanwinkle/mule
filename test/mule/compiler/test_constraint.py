@@ -10,7 +10,6 @@ from mule.compiler.ctype import (
     FLOAT,
     INTEGER,
     PYTHON_INTEGER,
-    REAL,
     UNBOUND,
     UNKNOWN,
     BooleanType,
@@ -778,7 +777,7 @@ def test_python_integer_branch_narrowing_recovers_fixnum_outside_boolean_domain(
     assert narrowed.is_fixnum
 
 
-def test_real_annotation_propagates_numeric_and_float_operations():
+def test_float_annotation_propagates_float_operations():
     compilation = lower(
         "def compute(x: float, y: float):\n"
         " s = x + y\n"
@@ -789,10 +788,10 @@ def test_real_annotation_propagates_numeric_and_float_operations():
         " return s, q, f, n, c\n"
     )
     fn = function(compilation, 1)
-    assert fact(compilation, fn, stored_value(fn, "s").use()) == REAL
+    assert fact(compilation, fn, stored_value(fn, "s").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "q").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "f").use()) == FLOAT
-    assert fact(compilation, fn, stored_value(fn, "n").use()) == REAL
+    assert fact(compilation, fn, stored_value(fn, "n").use()) == FLOAT
     assert fact(compilation, fn, stored_value(fn, "c").use()) == BooleanType()
 
 

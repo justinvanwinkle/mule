@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from mule import ast
 
 from . import fndb, vops
+from .annotation_types import InferredReturnContract
 from .callconv import TupleDelivery, tuple_return_convention
 
 if TYPE_CHECKING:
@@ -3173,6 +3174,7 @@ class _Converter(NodeVisitor):
     def visit_Cast(self, node: Cast):
         operand = self.lvar_tn(node.value)
         actual = operand.type or UNKNOWN
+        target_type = self.context.type_of(node)
         checked = (
             node.type_check
             and bool(node.safety)
@@ -3181,29 +3183,48 @@ class _Converter(NodeVisitor):
         if (
             not checked
             and self.context.plan is None
-            and node.lvar is not None
-            and len(node.lvar.uses) == 1
-            and not node.lvar.info.locs
-            and operand.leaf is None
             and node not in self.context.element_contracts
         ):
-            target_type = self.context.type_of(node)
-            target_ptype = node.lvar.info.primitive_type
-            if actual.fits(target_type) and operand.primitive_type is target_ptype:
-                node.lvar.info.locs.append(operand)
-                return
-            writes = self.component.writes.get(operand, ())
             if (
-                (not target_type.is_fixnum or actual.is_fixnum)
-                and len(writes) == 1
-                and not self.component.reads.get(operand)
-                and writes[0][0].info.translate is not None
-                and template_results_ok(writes[0][0].info, target_ptype)
+                node.lvar is not None
+                and len(node.lvar.uses) == 1
+                and not node.lvar.info.locs
+                and operand.leaf is None
             ):
-                operand.type = target_type
-                operand.primitive_type = target_ptype
-                node.lvar.info.locs.append(operand)
+                target_ptype = node.lvar.info.primitive_type
+                if actual.fits(target_type) and operand.primitive_type is target_ptype:
+                    node.lvar.info.locs.append(operand)
+                    return
+                writes = self.component.writes.get(operand, ())
+                if (
+                    (not target_type.is_fixnum or actual.is_fixnum)
+                    and len(writes) == 1
+                    and not self.component.reads.get(operand)
+                    and writes[0][0].info.translate is not None
+                    and template_results_ok(writes[0][0].info, target_ptype)
+                ):
+                    operand.type = target_type
+                    operand.primitive_type = target_ptype
+                    node.lvar.info.locs.append(operand)
+                    return
+            if actual.fits(target_type):
+                result, discard = self.result_tn(node)
+                if operand is not result:
+                    self.emit(vops.MOVE, node, args=(operand,), results=(result,))
+                if discard:
+                    self.emit_discard(node, result)
                 return
+        contract = node.contract
+        if (
+            checked
+            and node.declaration is not None
+            and node.declaration[0] == "inferred-return"
+            and contract.checked_type is PYTHON_INTEGER
+            and target_type.is_fixnum
+        ):
+            contract = InferredReturnContract(
+                contract.name, target_type.widen_constant()
+            )
         result, discard = self.result_tn(node)
         self.emit(
             vops.TYPE_CHECK,
@@ -3211,7 +3232,7 @@ class _Converter(NodeVisitor):
             args=(operand,),
             results=(result,),
             info=TypeCheck(
-                node.contract, node.location, node.safety if node.type_check else 0
+                contract, node.location, node.safety if node.type_check else 0
             ),
         )
         if discard:

@@ -1156,9 +1156,9 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
     `compile_component` after `assign_variable_primitive_types(component)` and
     before `represent.py:select_representations(component)` (so representation
     selection runs once with final call operand/result restrictions).
-    `select_numeric_calls` supports self-recursive calls to `numeric_entry`
-    (`target is component.lambda_`) and guarded `-> int` return conventions
-    (`return_checks.py:visit_Combination` uses `_target_return_contract`).
+    `select_numeric_calls` supports self-recursive and mutually recursive calls
+    (both annotated with `-> int` / `-> float` and unannotated, tail and non-tail),
+    closures, and guarded mixed `(SIGNED/DOUBLE, DESCRIPTOR)` conventions.
   - `_pack_inline_latin1_words` and `_emit_inline_latin1_compare`
     (`mule/compiler/vops.py`) cover length `0..24` Latin-1 literals (comparing
      only the 16-bit `(len << 8) | kind_tag` header for `""` and the header plus
