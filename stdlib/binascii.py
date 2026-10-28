@@ -7,6 +7,8 @@ library. It supplies the helpers used by ``base64``, ``zipfile``,
 base64, quoted-printable and uuencode line codecs.
 """
 
+from _mule_native import bytes_from_values
+
 __all__ = [
     "Error",
     "Incomplete",
@@ -33,7 +35,9 @@ class Incomplete(Error):
     pass
 
 
-def _as_bytes(data):
+def _as_bytes(data) -> bytes:
+    if isinstance(data, bytes):
+        return data
     if isinstance(data, str):
         raise TypeError("a bytes-like object is required, not 'str'")
     return bytes(data)
@@ -41,7 +45,7 @@ def _as_bytes(data):
 
 # ---------------------------------------------------------------------------
 # CRC-32 (as in zip and PNG), reflected polynomial 0xEDB88320.
-def _make_crc_table():
+def _make_crc_table() -> list[int]:
     table = []
     for value in range(256):
         crc = value
@@ -54,21 +58,29 @@ def _make_crc_table():
     return table
 
 
-_CRC_TABLE = _make_crc_table()
+_CRC_TABLE: list[int] = _make_crc_table()
 
 
-def crc32(data, value=0):
-    crc = (value ^ 0xFFFFFFFF) & 0xFFFFFFFF
-    for byte in _as_bytes(data):
-        crc = _CRC_TABLE[(crc ^ byte) & 0xFF] ^ (crc >> 8)
-    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF
+def _crc32_bytes(raw: bytes, crc: int) -> int:
+    table: list[int] = _CRC_TABLE
+    c = (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF
+    n = len(raw)
+    i = 0
+    while i < n:
+        c = table[(c ^ raw[i]) & 0xFF] ^ (c >> 8)
+        i += 1
+    return (c ^ 0xFFFFFFFF) & 0xFFFFFFFF
+
+
+def crc32(data, value: int = 0) -> int:
+    return _crc32_bytes(_as_bytes(data), value)
 
 
 # ---------------------------------------------------------------------------
 # CRC-CCITT (as used by HQX), polynomial 0x1021.
 
 
-def _make_hqx_table():
+def _make_hqx_table() -> list[int]:
     table = []
     for value in range(256):
         crc = value << 8
@@ -81,100 +93,175 @@ def _make_hqx_table():
     return table
 
 
-_HQX_TABLE = _make_hqx_table()
+_HQX_TABLE: list[int] = _make_hqx_table()
 
 
-def crc_hqx(data, value):
+def _crc_hqx_bytes(raw: bytes, value: int) -> int:
+    table: list[int] = _HQX_TABLE
     crc = value & 0xFFFF
-    for byte in _as_bytes(data):
-        crc = _HQX_TABLE[((crc >> 8) ^ byte) & 0xFF] ^ ((crc << 8) & 0xFFFF)
+    n = len(raw)
+    i = 0
+    while i < n:
+        crc = table[((crc >> 8) ^ raw[i]) & 0xFF] ^ ((crc << 8) & 0xFFFF)
+        i += 1
     return crc & 0xFFFF
+
+
+def crc_hqx(data, value: int) -> int:
+    return _crc_hqx_bytes(_as_bytes(data), value)
 
 
 # ---------------------------------------------------------------------------
 # Hexadecimal conversion.
 
-_HEX_DIGITS = b"0123456789abcdef"
+_HEX_DIGITS: bytes = b"0123456789abcdef"
+
+_HEX_DECODE: bytes = bytes(
+    b - 48
+    if 48 <= b <= 57
+    else b - 87
+    if 97 <= b <= 102
+    else b - 55
+    if 65 <= b <= 70
+    else 254
+    if b in (9, 10, 13, 32)
+    else 255
+    for b in range(256)
+)
 
 
-def b2a_hex(data, sep=None, bytes_per_sep=1):
-    data = _as_bytes(data)
-    result = bytearray()
-    for byte in data:
-        result.append(_HEX_DIGITS[byte >> 4])
-        result.append(_HEX_DIGITS[byte & 0x0F])
-    if sep is not None:
-        if isinstance(sep, str):
-            if len(sep) != 1:
-                raise ValueError("sep must be length 1")
-            separator = ord(sep)
-        else:
-            sep = _as_bytes(sep)
-            if len(sep) != 1:
-                raise ValueError("sep must be length 1")
-            separator = sep[0]
-        if bytes_per_sep == 0:
-            raise ValueError("bytes_per_sep must be nonzero")
-        group = 2 * (bytes_per_sep if bytes_per_sep > 0 else -bytes_per_sep)
-        grouped = bytearray()
-        if bytes_per_sep > 0:
-            # Groups are counted from the right-hand end.
-            index = len(result) % group
-            if index:
-                grouped += result[:index]
-                if index < len(result):
-                    grouped.append(separator)
-            while index < len(result):
-                grouped += result[index : index + group]
-                index += group
-                if index < len(result):
-                    grouped.append(separator)
-        else:
-            index = 0
-            while index < len(result):
-                grouped += result[index : index + group]
-                index += group
-                if index < len(result):
-                    grouped.append(separator)
-        result = grouped
-    return bytes(result)
+def _b2a_hex_bytes(raw: bytes, sep_byte: int, bytes_per_sep: int) -> bytes:
+    n = len(raw)
+    if n == 0:
+        return b""
+    digits: bytes = _HEX_DIGITS
+    if sep_byte < 0:
+        out = [0] * (n * 2)
+        i = 0
+        w = 0
+        while i < n and w + 1 < len(out):
+            byte = raw[i]
+            out[w] = digits[byte >> 4]
+            out[w + 1] = digits[byte & 0x0F]
+            i += 1
+            w += 2
+        return bytes_from_values(out)
+
+    if bytes_per_sep == 0:
+        raise ValueError("bytes_per_sep must be nonzero")
+    step = bytes_per_sep if bytes_per_sep > 0 else -bytes_per_sep
+    num_seps = (n - 1) // step
+    out_len = n * 2 + num_seps
+    out = [0] * out_len
+    if bytes_per_sep > 0:
+        first_group = n % step
+        if first_group == 0:
+            first_group = step
+    else:
+        first_group = step
+    i = 0
+    w = 0
+    in_group = 0
+    current_limit = first_group
+    while i < n:
+        if in_group == current_limit:
+            out[w] = sep_byte
+            w += 1
+            in_group = 0
+            current_limit = step
+        byte = raw[i]
+        out[w] = digits[byte >> 4]
+        out[w + 1] = digits[byte & 0x0F]
+        i += 1
+        w += 2
+        in_group += 1
+    return bytes_from_values(out)
+
+
+def b2a_hex(data, sep=None, bytes_per_sep=1) -> bytes:
+    raw = _as_bytes(data)
+    if sep is None:
+        return _b2a_hex_bytes(raw, -1, 1)
+    if isinstance(sep, str):
+        if len(sep) != 1:
+            raise ValueError("sep must be length 1")
+        separator = ord(sep)
+        if separator > 127:
+            raise ValueError("sep must be ASCII")
+    else:
+        sep_bytes = _as_bytes(sep)
+        if len(sep_bytes) != 1:
+            raise ValueError("sep must be length 1")
+        separator = sep_bytes[0]
+        if separator > 127:
+            raise ValueError("sep must be ASCII")
+    return _b2a_hex_bytes(raw, separator, int(bytes_per_sep))
 
 
 hexlify = b2a_hex
 
 
-def _hex_value(byte):
-    if 48 <= byte <= 57:
-        return byte - 48
-    if 97 <= byte <= 102:
-        return byte - 87
-    if 65 <= byte <= 70:
-        return byte - 55
-    return -1
+def _hex_value(byte: int) -> int:
+    val = _HEX_DECODE[byte]
+    return val if val < 16 else -1
 
 
-def a2b_hex(data):
+def _a2b_hex_bytes(raw: bytes) -> bytes:
+    n = len(raw)
+    if n == 0:
+        return b""
+    table: bytes = _HEX_DECODE
+    if (n & 1) == 0:
+        out = [0] * (n >> 1)
+        i = 0
+        w = 0
+        ws_found = False
+        while i < n and w < len(out):
+            hi = table[raw[i]]
+            lo = table[raw[i + 1]]
+            if hi < 16 and lo < 16:
+                out[w] = (hi << 4) | lo
+                w += 1
+                i += 2
+            else:
+                ws_found = True
+                break
+        if not ws_found:
+            return bytes_from_values(out)
+
+    digits = [0] * n
+    d_len = 0
+    i = 0
+    while i < n:
+        val = table[raw[i]]
+        if val < 16:
+            digits[d_len] = val
+            d_len += 1
+        elif val != 254:
+            raise Error("Non-hexadecimal digit found")
+        i += 1
+    if d_len & 1:
+        raise Error("Odd-length string")
+    out_len = d_len >> 1
+    out2 = [0] * out_len
+    j = 0
+    w2 = 0
+    while w2 < out_len:
+        out2[w2] = (digits[j] << 4) | digits[j + 1]
+        j += 2
+        w2 += 1
+    return bytes_from_values(out2)
+
+
+def a2b_hex(data) -> bytes:
     if isinstance(data, str):
         try:
-            data = data.encode("ascii")
+            raw = data.encode("ascii")
         except UnicodeEncodeError:
             raise Error("Non-hexadecimal digit found") from None
-    digits = bytearray()
-    for byte in _as_bytes(data):
-        if byte in (9, 10, 13, 32):
-            continue
-        value = _hex_value(byte)
-        if value < 0:
-            raise Error("Non-hexadecimal digit found")
-        digits.append(value)
-    if len(digits) % 2:
-        raise Error("Odd-length string")
-    result = bytearray()
-    index = 0
-    while index < len(digits):
-        result.append(digits[index] * 16 + digits[index + 1])
-        index += 2
-    return bytes(result)
+    else:
+        raw = _as_bytes(data)
+    return _a2b_hex_bytes(raw)
 
 
 unhexlify = a2b_hex
@@ -182,94 +269,141 @@ unhexlify = a2b_hex
 # ---------------------------------------------------------------------------
 # Base64 line codec.
 
-_BASE64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_BASE64_ALPHABET: bytes = (
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+)
+
+_BASE64_DECODE: bytes = bytes(
+    b - 65
+    if 65 <= b <= 90
+    else b - 71
+    if 97 <= b <= 122
+    else b + 4
+    if 48 <= b <= 57
+    else 62
+    if b == 43
+    else 63
+    if b == 47
+    else 64
+    if b == 61
+    else 255
+    for b in range(256)
+)
 
 
-def b2a_base64(data, *, newline=True):
-    data = _as_bytes(data)
-    result = bytearray()
-    index = 0
-    while index + 3 <= len(data):
-        value = data[index] * 65536 + data[index + 1] * 256 + data[index + 2]
-        result.append(_BASE64_ALPHABET[(value >> 18) & 63])
-        result.append(_BASE64_ALPHABET[(value >> 12) & 63])
-        result.append(_BASE64_ALPHABET[(value >> 6) & 63])
-        result.append(_BASE64_ALPHABET[value & 63])
-        index += 3
-    remaining = len(data) - index
-    if remaining == 1:
-        value = data[index] << 16
-        result.append(_BASE64_ALPHABET[(value >> 18) & 63])
-        result.append(_BASE64_ALPHABET[(value >> 12) & 63])
-        result.append(61)
-        result.append(61)
-    elif remaining == 2:
-        value = data[index] * 65536 + data[index + 1] * 256
-        result.append(_BASE64_ALPHABET[(value >> 18) & 63])
-        result.append(_BASE64_ALPHABET[(value >> 12) & 63])
-        result.append(_BASE64_ALPHABET[(value >> 6) & 63])
-        result.append(61)
+def _b2a_base64_bytes(raw: bytes, newline: bool) -> bytes:
+    n = len(raw)
+    full = (n // 3) * 3
+    rem = n - full
+    out_len = (full // 3) * 4 + (4 if rem else 0) + (1 if newline else 0)
+    out = [0] * out_len
+    r = 0
+    w = 0
+    table: bytes = _BASE64_ALPHABET
+    while r + 2 < n and w + 3 < len(out):
+        value = (raw[r] << 16) | (raw[r + 1] << 8) | raw[r + 2]
+        out[w] = table[(value >> 18) & 63]
+        out[w + 1] = table[(value >> 12) & 63]
+        out[w + 2] = table[(value >> 6) & 63]
+        out[w + 3] = table[value & 63]
+        r += 3
+        w += 4
+    if rem == 1:
+        value = raw[r] << 16
+        out[w] = table[(value >> 18) & 63]
+        out[w + 1] = table[(value >> 12) & 63]
+        out[w + 2] = 61
+        out[w + 3] = 61
+        w += 4
+    elif rem == 2:
+        value = (raw[r] << 16) | (raw[r + 1] << 8)
+        out[w] = table[(value >> 18) & 63]
+        out[w + 1] = table[(value >> 12) & 63]
+        out[w + 2] = table[(value >> 6) & 63]
+        out[w + 3] = 61
+        w += 4
     if newline:
-        result.append(10)
-    return bytes(result)
+        out[w] = 10
+    return bytes_from_values(out)
 
 
-def _base64_value(byte):
-    if 65 <= byte <= 90:
-        return byte - 65
-    if 97 <= byte <= 122:
-        return byte - 71
-    if 48 <= byte <= 57:
-        return byte + 4
-    if byte == 43:
-        return 62
-    if byte == 47:
-        return 63
-    return -1
+def b2a_base64(data, *, newline: bool = True) -> bytes:
+    return _b2a_base64_bytes(_as_bytes(data), bool(newline))
 
 
-def a2b_base64(data, *, strict_mode=False):
-    data = _as_bytes(data)
-    digits = bytearray()
+def _base64_value(byte: int) -> int:
+    val = _BASE64_DECODE[byte]
+    return val if val < 64 else -1
+
+
+def _a2b_base64_bytes(raw: bytes, strict_mode: bool) -> bytes:
+    n = len(raw)
+    if n == 0:
+        return b""
+    table: bytes = _BASE64_DECODE
+    out = [0] * ((n // 4) * 3 + 3)
+    w = 0
     padding = 0
-    for byte in data:
-        value = _base64_value(byte)
-        if value >= 0:
+    q_count = 0
+    acc = 0
+    i = 0
+    while i < n:
+        code = table[raw[i]]
+        i += 1
+        if code < 64:
             if padding:
                 raise Error("Excess data after padding")
-            digits.append(value)
-        elif byte == 61:
+            acc = (acc << 6) | code
+            q_count += 1
+            if q_count == 4:
+                out[w] = (acc >> 16) & 0xFF
+                out[w + 1] = (acc >> 8) & 0xFF
+                out[w + 2] = acc & 0xFF
+                w += 3
+                acc = 0
+                q_count = 0
+        elif code == 64:
             padding += 1
-            digits.append(0)
+            acc <<= 6
+            q_count += 1
+            if q_count == 4:
+                out[w] = (acc >> 16) & 0xFF
+                out[w + 1] = (acc >> 8) & 0xFF
+                out[w + 2] = acc & 0xFF
+                w += 3
+                acc = 0
+                q_count = 0
         elif strict_mode:
             raise Error("Only base64 data is allowed")
     if padding > 2:
         raise Error("Excess data after padding")
-    if len(digits) % 4:
+    if q_count != 0:
         raise Error("Incorrect padding")
-    result = bytearray()
-    index = 0
-    while index < len(digits):
-        value = (
-            (digits[index] << 18)
-            + (digits[index + 1] << 12)
-            + (digits[index + 2] << 6)
-            + digits[index + 3]
-        )
-        result.append((value >> 16) & 0xFF)
-        result.append((value >> 8) & 0xFF)
-        result.append(value & 0xFF)
-        index += 4
     if padding:
-        del result[len(result) - padding :]
-    return bytes(result)
+        del out[w - padding :]
+    elif w < len(out):
+        del out[w:]
+    return bytes_from_values(out)
+
+
+def a2b_base64(data, *, strict_mode: bool = False) -> bytes:
+    if isinstance(data, str):
+        try:
+            raw = data.encode("ascii")
+        except UnicodeEncodeError:
+            raise ValueError(
+                "string argument should contain only ASCII characters"
+            ) from None
+    else:
+        raw = _as_bytes(data)
+    return _a2b_base64_bytes(raw, bool(strict_mode))
 
 
 # ---------------------------------------------------------------------------
 # Quoted-printable line codec.
 
 
-def b2a_qp(data, quotetabs=False, istext=True, header=False):
+def b2a_qp(data, quotetabs=False, istext=True, header=False) -> bytes:
     data = _as_bytes(data)
     result = bytearray()
     linelen = 0
@@ -314,11 +448,11 @@ def b2a_qp(data, quotetabs=False, istext=True, header=False):
     return bytes(result)
 
 
-def _upper_hex(byte):
+def _upper_hex(byte: int) -> int:
     return byte - 32 if 97 <= byte <= 102 else byte
 
 
-def a2b_qp(data, header=False):
+def a2b_qp(data, header=False) -> bytes:
     data = _as_bytes(data)
     result = bytearray()
     index = 0
@@ -353,7 +487,7 @@ def a2b_qp(data, header=False):
 # Uuencode line codec: at most 45 source bytes per encoded line.
 
 
-def b2a_uu(data, /, *, backtick=False):
+def b2a_uu(data, /, *, backtick=False) -> bytes:
     data = _as_bytes(data)
     if len(data) > 45:
         raise Error("At most 45 bytes can be encoded in a UU line")
@@ -377,7 +511,7 @@ def b2a_uu(data, /, *, backtick=False):
     return bytes(result)
 
 
-def a2b_uu(data):
+def a2b_uu(data) -> bytes:
     data = _as_bytes(data)
     if not data:
         raise Incomplete("Truncated input data")
