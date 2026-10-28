@@ -5131,7 +5131,7 @@ class FunctionGenerator:
                 forwarded = self.operation(f"icmp eq ptr {value}, @mule.none")
                 self.line(f"br i1 {forwarded}, label %{ready}, label %{extract}")
                 self.lines.append(extract + ":")
-                arity = self.component.tuple_return.arity
+                arity = self.module.return_tuple_arities[self.lambda_]
                 for index in range(arity):
                     child = self.operation(
                         f"call ptr @mule.fast.tuple.slot(ptr {value}, i64 {index})"
