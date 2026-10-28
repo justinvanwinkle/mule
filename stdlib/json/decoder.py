@@ -54,17 +54,58 @@ BACKSLASH = {
     'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t',
 }
 
-def _decode_uXXXX(s, pos, _m=HEXDIGITS.match):
-    esc = _m(s, pos + 1)
-    if esc is not None:
-        try:
-            return int(esc.group(), 16)
-        except ValueError:
-            pass
+def _hex_digit(code: int) -> int:
+    if 48 <= code <= 57:
+        return code - 48
+    if 97 <= code <= 102:
+        return code - 87
+    if 65 <= code <= 70:
+        return code - 55
+    return -1
+
+
+def _decode_uXXXX(s: str, pos: int, _m=HEXDIGITS.match) -> int:
+    if _m is not HEXDIGITS.match:
+        esc = _m(s, pos + 1)
+        if esc is not None:
+            try:
+                return int(esc.group(), 16)
+            except ValueError:
+                pass
+        msg = "Invalid \\uXXXX escape"
+        raise JSONDecodeError(msg, s, pos)
+    if pos + 5 <= len(s):
+        d0 = _hex_digit(ord(s[pos + 1]))
+        d1 = _hex_digit(ord(s[pos + 2]))
+        d2 = _hex_digit(ord(s[pos + 3]))
+        d3 = _hex_digit(ord(s[pos + 4]))
+        if (d0 | d1 | d2 | d3) >= 0:
+            return (d0 << 12) | (d1 << 8) | (d2 << 4) | d3
     msg = "Invalid \\uXXXX escape"
     raise JSONDecodeError(msg, s, pos)
 
-def py_scanstring(s, end, strict=True,
+
+def _scan_clean_string(s: str, i: int, n: int, strict: bool) -> int:
+    if strict:
+        while i < n:
+            ch = s[i]
+            if ch == '"':
+                return i
+            if ch == '\\' or ch < ' ':
+                return -1 - i
+            i += 1
+    else:
+        while i < n:
+            ch = s[i]
+            if ch == '"':
+                return i
+            if ch == '\\':
+                return -1 - i
+            i += 1
+    return -1 - n
+
+
+def py_scanstring(s: str, end: int, strict: bool = True,
         _b=BACKSLASH, _m=STRINGCHUNK.match):
     """Scan the string s for a JSON string. End is the index of the
     character in s after the quote that started the JSON string.
@@ -74,58 +115,70 @@ def py_scanstring(s, end, strict=True,
 
     Returns a tuple of the decoded string and the index of the character in s
     after the end quote."""
-    quote = s.find('"', end)
-    if quote >= 0 and s.find('\\', end, quote) < 0:
-        content = s[end:quote]
-        if not strict or content.isprintable():
-            return content, quote + 1
-    chunks = []
+    if end > 9223372036854775807 or end < -9223372036854775808:
+        raise OverflowError("Python int too large to convert to C ssize_t")
+    is_strict: bool = True if strict else False
+    n: int = len(s)
+    begin: int = end - 1
+    if end < 0:
+        raise JSONDecodeError("Unterminated string starting at", s, begin)
+    first_pos: int = _scan_clean_string(s, end, n, is_strict)
+    if first_pos >= 0:
+        return s[end:first_pos], first_pos + 1
+
+    chunks: list[str] = []
     _append = chunks.append
-    begin = end - 1
-    while 1:
-        chunk = _m(s, end)
-        if chunk is None:
+    stop: int = -1 - first_pos
+    while True:
+        if stop >= n:
             raise JSONDecodeError("Unterminated string starting at", s, begin)
-        end = chunk.end()
-        content, terminator = chunk.groups()
-        # Content is contains zero or more unescaped string characters
-        if content:
-            _append(content)
-        # Terminator is the end of string, a literal control character,
-        # or a backslash denoting that an escape sequence follows
-        if terminator == '"':
+        if stop > end:
+            _append(s[end:stop])
+        end = stop + 1
+        term_ch = s[stop]
+        if term_ch == '"':
             break
-        elif terminator != '\\':
-            if strict:
-                #msg = "Invalid control character %r at" % (terminator,)
-                msg = "Invalid control character {0!r} at".format(terminator)
-                raise JSONDecodeError(msg, s, end - 1)
-            else:
-                _append(terminator)
-                continue
-        try:
-            esc = s[end]
-        except IndexError:
-            raise JSONDecodeError("Unterminated string starting at",
-                                  s, begin) from None
-        # If not a unicode escape sequence, must be in the lookup table
+        if term_ch != '\\':
+            if is_strict:
+                terminator = s[stop]
+                msg = f"Invalid control character {terminator!r} at"
+                raise JSONDecodeError(msg, s, stop)
+            _append(s[stop])
+            next_pos: int = _scan_clean_string(s, end, n, is_strict)
+            if next_pos >= 0:
+                if next_pos > end:
+                    _append(s[end:next_pos])
+                end = next_pos + 1
+                break
+            stop = -1 - next_pos
+            continue
+        if end >= n:
+            raise JSONDecodeError("Unterminated string starting at", s, begin)
+        esc = s[end]
         if esc != 'u':
             try:
                 char = _b[esc]
             except KeyError:
-                msg = "Invalid \\escape: {0!r}".format(esc)
-                raise JSONDecodeError(msg, s, end)
+                msg = f"Invalid \\escape: {esc!r}"
+                raise JSONDecodeError(msg, s, end) from None
             end += 1
         else:
             uni = _decode_uXXXX(s, end)
             end += 5
-            if 0xd800 <= uni <= 0xdbff and s[end:end + 2] == '\\u':
+            if 0xd800 <= uni <= 0xdbff and end + 1 < n and s[end] == '\\' and s[end + 1] == 'u':
                 uni2 = _decode_uXXXX(s, end + 1)
                 if 0xdc00 <= uni2 <= 0xdfff:
                     uni = 0x10000 + (((uni - 0xd800) << 10) | (uni2 - 0xdc00))
                     end += 6
             char = chr(uni)
         _append(char)
+        next_pos = _scan_clean_string(s, end, n, is_strict)
+        if next_pos >= 0:
+            if next_pos > end:
+                _append(s[end:next_pos])
+            end = next_pos + 1
+            break
+        stop = -1 - next_pos
     return ''.join(chunks), end
 
 
@@ -136,111 +189,387 @@ WHITESPACE = re.compile(r'[ \t\n\r]*', FLAGS)
 WHITESPACE_STR = ' \t\n\r'
 
 
-def JSONObject(s_and_end, strict, scan_once, object_hook, object_pairs_hook,
-               memo=None, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
-    s, end = s_and_end
+def _skip_whitespace(s: str, idx: int, n: int) -> int:
+    while idx < n:
+        ch = s[idx]
+        if ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r':
+            idx += 1
+        else:
+            break
+    return idx
+
+
+def _scan_number_fast(string: str, idx: int, n: int) -> int:
+    i: int = idx
+    if i >= n:
+        return 0
+    ch = string[i]
+    if ch == '-':
+        i += 1
+        if i >= n:
+            return 0
+        ch = string[i]
+    if ch == '0':
+        i += 1
+    elif '1' <= ch <= '9':
+        i += 1
+        while i < n and '0' <= string[i] <= '9':
+            i += 1
+    else:
+        return 0
+
+    is_float: bool = False
+    if i < n and string[i] == '.':
+        frac_start: int = i + 1
+        if frac_start < n and '0' <= string[frac_start] <= '9':
+            is_float = True
+            i = frac_start + 1
+            while i < n and '0' <= string[i] <= '9':
+                i += 1
+
+    if i < n:
+        exp_ch = string[i]
+        if exp_ch == 'e' or exp_ch == 'E':
+            j: int = i + 1
+            if j < n:
+                sign_ch = string[j]
+                if sign_ch == '+' or sign_ch == '-':
+                    j += 1
+            if j < n and '0' <= string[j] <= '9':
+                is_float = True
+                i = j + 1
+                while i < n and '0' <= string[i] <= '9':
+                    i += 1
+
+    if is_float:
+        return -i
+    return i
+
+
+def _scan_once_fast(
+    string: str,
+    idx: int,
+    strict: bool,
+    object_hook,
+    object_pairs_hook,
+    memo: dict,
+):
+    if idx < 0:
+        raise StopIteration(idx)
+    n: int = len(string)
+    if idx >= n:
+        raise StopIteration(idx)
+    ch = string[idx]
+
+    if ch == '"':
+        return py_scanstring(string, idx + 1, strict)
+    if ch == '{':
+        return _json_object_fast(
+            string, idx + 1, strict, object_hook, object_pairs_hook, memo
+        )
+    if ch == '[':
+        return _json_array_fast(
+            string, idx + 1, strict, object_hook, object_pairs_hook, memo
+        )
+    if ch == 'n' and idx + 4 <= n and string[idx:idx + 4] == 'null':
+        return None, idx + 4
+    if ch == 't' and idx + 4 <= n and string[idx:idx + 4] == 'true':
+        return True, idx + 4
+    if ch == 'f' and idx + 5 <= n and string[idx:idx + 5] == 'false':
+        return False, idx + 5
+
+    if ch == '-' or ('0' <= ch <= '9'):
+        num_end: int = _scan_number_fast(string, idx, n)
+        if num_end != 0:
+            if num_end > 0:
+                return int(string[idx:num_end]), num_end
+            end_pos: int = -num_end
+            return float(string[idx:end_pos]), end_pos
+        if ch == '-' and idx + 9 <= n and string[idx:idx + 9] == '-Infinity':
+            return NegInf, idx + 9
+        raise StopIteration(idx)
+    if ch == 'N' and idx + 3 <= n and string[idx:idx + 3] == 'NaN':
+        return NaN, idx + 3
+    if ch == 'I' and idx + 8 <= n and string[idx:idx + 8] == 'Infinity':
+        return PosInf, idx + 8
+    raise StopIteration(idx)
+
+
+def _json_object_fast(
+    s: str,
+    end: int,
+    strict: bool,
+    object_hook,
+    object_pairs_hook,
+    memo: dict,
+):
     pairs = []
     pairs_append = pairs.append
-    # Backwards compatibility
+    memo_get = memo.setdefault
+    n: int = len(s)
+    if end < n:
+        ch = s[end]
+        if ch != '"':
+            if ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r':
+                end = _skip_whitespace(s, end + 1, n)
+            if end < n:
+                ch2 = s[end]
+                if ch2 == '}':
+                    if object_pairs_hook is not None:
+                        result = object_pairs_hook(pairs)
+                        return result, end + 1
+                    pairs_dict = {}
+                    if object_hook is not None:
+                        pairs_dict = object_hook(pairs_dict)
+                    return pairs_dict, end + 1
+                if ch2 != '"':
+                    raise JSONDecodeError(
+                        "Expecting property name enclosed in double quotes", s, end)
+            else:
+                raise JSONDecodeError(
+                    "Expecting property name enclosed in double quotes", s, end)
+    else:
+        raise JSONDecodeError(
+            "Expecting property name enclosed in double quotes", s, end)
+    end += 1
+    while True:
+        key, end = py_scanstring(s, end, strict)
+        key = memo_get(key, key)
+        if end >= n or s[end] != ':':
+            end = _skip_whitespace(s, end, n)
+            if end >= n or s[end] != ':':
+                raise JSONDecodeError("Expecting ':' delimiter", s, end)
+        end += 1
+
+        if end < n:
+            ws1 = s[end]
+            if ws1 == ' ' or ws1 == '\t' or ws1 == '\n' or ws1 == '\r':
+                end += 1
+                if end < n:
+                    ws2 = s[end]
+                    if ws2 == ' ' or ws2 == '\t' or ws2 == '\n' or ws2 == '\r':
+                        end = _skip_whitespace(s, end + 1, n)
+
+        try:
+            value, end = _scan_once_fast(
+                s, end, strict, object_hook, object_pairs_hook, memo
+            )
+        except StopIteration as err:
+            raise JSONDecodeError("Expecting value", s, err.value) from None
+        pairs_append((key, value))
+
+        if end < n:
+            ws3 = s[end]
+            if ws3 == ' ' or ws3 == '\t' or ws3 == '\n' or ws3 == '\r':
+                end += 1
+                if end < n:
+                    ws4 = s[end]
+                    if ws4 == ' ' or ws4 == '\t' or ws4 == '\n' or ws4 == '\r':
+                        end = _skip_whitespace(s, end + 1, n)
+        if end >= n:
+            raise JSONDecodeError("Expecting ',' delimiter", s, end)
+        delim = s[end]
+        end += 1
+        if delim == '}':
+            break
+        if delim != ',':
+            raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
+        comma_idx: int = end - 1
+
+        if end < n:
+            ws5 = s[end]
+            if ws5 == ' ' or ws5 == '\t' or ws5 == '\n' or ws5 == '\r':
+                end += 1
+                if end < n:
+                    ws6 = s[end]
+                    if ws6 == ' ' or ws6 == '\t' or ws6 == '\n' or ws6 == '\r':
+                        end = _skip_whitespace(s, end + 1, n)
+        if end >= n:
+            raise JSONDecodeError(
+                "Expecting property name enclosed in double quotes", s, end)
+        quote_ch = s[end]
+        end += 1
+        if quote_ch != '"':
+            if quote_ch == '}':
+                raise JSONDecodeError(
+                    "Illegal trailing comma before end of object", s, comma_idx)
+            raise JSONDecodeError(
+                "Expecting property name enclosed in double quotes", s, end - 1)
+    if object_pairs_hook is not None:
+        result = object_pairs_hook(pairs)
+        return result, end
+    pairs_dict = dict(pairs)
+    if object_hook is not None:
+        pairs_dict = object_hook(pairs_dict)
+    return pairs_dict, end
+
+
+def _json_array_fast(
+    s: str,
+    end: int,
+    strict: bool,
+    object_hook,
+    object_pairs_hook,
+    memo: dict,
+):
+    values = []
+    n: int = len(s)
+    if end < n:
+        ws0 = s[end]
+        if ws0 == ' ' or ws0 == '\t' or ws0 == '\n' or ws0 == '\r':
+            end = _skip_whitespace(s, end + 1, n)
+    if end < n and s[end] == ']':
+        return values, end + 1
+    _append = values.append
+    while True:
+        try:
+            value, end = _scan_once_fast(
+                s, end, strict, object_hook, object_pairs_hook, memo
+            )
+        except StopIteration as err:
+            raise JSONDecodeError("Expecting value", s, err.value) from None
+        _append(value)
+        if end < n:
+            ws1 = s[end]
+            if ws1 == ' ' or ws1 == '\t' or ws1 == '\n' or ws1 == '\r':
+                end = _skip_whitespace(s, end + 1, n)
+        if end >= n:
+            raise JSONDecodeError("Expecting ',' delimiter", s, end)
+        delim = s[end]
+        end += 1
+        if delim == ']':
+            break
+        if delim != ',':
+            raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
+        comma_idx: int = end - 1
+        if end < n:
+            ws2 = s[end]
+            if ws2 == ' ' or ws2 == '\t' or ws2 == '\n' or ws2 == '\r':
+                end = _skip_whitespace(s, end + 1, n)
+        if end < n and s[end] == ']':
+            raise JSONDecodeError(
+                "Illegal trailing comma before end of array", s, comma_idx)
+
+    return values, end
+
+
+def _json_object(s: str, end: int, strict, scan_once, object_hook,
+                 object_pairs_hook, memo):
+    pairs = []
+    pairs_append = pairs.append
     if memo is None:
         memo = {}
     memo_get = memo.setdefault
-    # Use a slice to prevent IndexError from being raised, the following
-    # check will raise a more specific ValueError if the string is empty
-    nextchar = s[end:end + 1]
-    # Normally we expect nextchar == '"'
-    if nextchar != '"':
-        if nextchar in _ws:
-            end = _w(s, end).end()
-            nextchar = s[end:end + 1]
-        # Trivial empty object
-        if nextchar == '}':
-            if object_pairs_hook is not None:
-                result = object_pairs_hook(pairs)
-                return result, end + 1
-            pairs = {}
-            if object_hook is not None:
-                pairs = object_hook(pairs)
-            return pairs, end + 1
-        elif nextchar != '"':
-            raise JSONDecodeError(
-                "Expecting property name enclosed in double quotes", s, end)
+    n: int = len(s)
+    if end < n:
+        ch = s[end]
+        if ch != '"':
+            if ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r':
+                end = _skip_whitespace(s, end + 1, n)
+            if end < n:
+                ch2 = s[end]
+                if ch2 == '}':
+                    if object_pairs_hook is not None:
+                        result = object_pairs_hook(pairs)
+                        return result, end + 1
+                    pairs_dict = {}
+                    if object_hook is not None:
+                        pairs_dict = object_hook(pairs_dict)
+                    return pairs_dict, end + 1
+                if ch2 != '"':
+                    raise JSONDecodeError(
+                        "Expecting property name enclosed in double quotes", s, end)
+            else:
+                raise JSONDecodeError(
+                    "Expecting property name enclosed in double quotes", s, end)
+    else:
+        raise JSONDecodeError(
+            "Expecting property name enclosed in double quotes", s, end)
     end += 1
     while True:
         key, end = scanstring(s, end, strict)
         key = memo_get(key, key)
-        # To skip some function call overhead we optimize the fast paths where
-        # the JSON key separator is ": " or just ":".
-        if s[end:end + 1] != ':':
-            end = _w(s, end).end()
-            if s[end:end + 1] != ':':
+        if end >= n or s[end] != ':':
+            end = _skip_whitespace(s, end, n)
+            if end >= n or s[end] != ':':
                 raise JSONDecodeError("Expecting ':' delimiter", s, end)
         end += 1
 
-        try:
-            if s[end] in _ws:
+        if end < n:
+            ws1 = s[end]
+            if ws1 == ' ' or ws1 == '\t' or ws1 == '\n' or ws1 == '\r':
                 end += 1
-                if s[end] in _ws:
-                    end = _w(s, end + 1).end()
-        except IndexError:
-            pass
+                if end < n:
+                    ws2 = s[end]
+                    if ws2 == ' ' or ws2 == '\t' or ws2 == '\n' or ws2 == '\r':
+                        end = _skip_whitespace(s, end + 1, n)
 
         try:
             value, end = scan_once(s, end)
         except StopIteration as err:
             raise JSONDecodeError("Expecting value", s, err.value) from None
         pairs_append((key, value))
-        try:
-            nextchar = s[end]
-            if nextchar in _ws:
-                end += 1
-                nextchar = s[end]
-                if nextchar in _ws:
-                    end = _w(s, end + 1).end()
-                    nextchar = s[end]
-        except IndexError:
-            nextchar = ''
-        end += 1
 
-        if nextchar == '}':
-            break
-        elif nextchar != ',':
-            raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
-        comma_idx = end - 1
-        if s[end:end + 4] == '\n  "':
-            end += 4
-            continue
-        try:
-            if s[end] in _ws:
+        if end < n:
+            ws3 = s[end]
+            if ws3 == ' ' or ws3 == '\t' or ws3 == '\n' or ws3 == '\r':
                 end += 1
-                if s[end] in _ws:
-                    end = _w(s, end + 1).end()
-        except IndexError:
-            pass
-        nextchar = s[end:end + 1]
+                if end < n:
+                    ws4 = s[end]
+                    if ws4 == ' ' or ws4 == '\t' or ws4 == '\n' or ws4 == '\r':
+                        end = _skip_whitespace(s, end + 1, n)
+        if end >= n:
+            raise JSONDecodeError("Expecting ',' delimiter", s, end)
+        delim = s[end]
         end += 1
-        if nextchar != '"':
-            if nextchar == '}':
-                raise JSONDecodeError("Illegal trailing comma before end of object", s, comma_idx)
+        if delim == '}':
+            break
+        if delim != ',':
+            raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
+        comma_idx: int = end - 1
+
+        if end < n:
+            ws5 = s[end]
+            if ws5 == ' ' or ws5 == '\t' or ws5 == '\n' or ws5 == '\r':
+                end += 1
+                if end < n:
+                    ws6 = s[end]
+                    if ws6 == ' ' or ws6 == '\t' or ws6 == '\n' or ws6 == '\r':
+                        end = _skip_whitespace(s, end + 1, n)
+        if end >= n:
+            raise JSONDecodeError(
+                "Expecting property name enclosed in double quotes", s, end)
+        quote_ch = s[end]
+        end += 1
+        if quote_ch != '"':
+            if quote_ch == '}':
+                raise JSONDecodeError(
+                    "Illegal trailing comma before end of object", s, comma_idx)
             raise JSONDecodeError(
                 "Expecting property name enclosed in double quotes", s, end - 1)
     if object_pairs_hook is not None:
         result = object_pairs_hook(pairs)
         return result, end
-    pairs = dict(pairs)
+    pairs_dict = dict(pairs)
     if object_hook is not None:
-        pairs = object_hook(pairs)
-    return pairs, end
+        pairs_dict = object_hook(pairs_dict)
+    return pairs_dict, end
 
-def JSONArray(s_and_end, scan_once, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
+
+def JSONObject(s_and_end, strict, scan_once, object_hook, object_pairs_hook,
+               memo=None, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
     s, end = s_and_end
+    return _json_object(s, end, strict, scan_once, object_hook, object_pairs_hook, memo)
+
+
+def _json_array(s: str, end: int, scan_once):
     values = []
-    nextchar = s[end:end + 1]
-    if nextchar in _ws:
-        end = _w(s, end + 1).end()
-        nextchar = s[end:end + 1]
-    # Look-ahead for trivial empty array
-    if nextchar == ']':
+    n: int = len(s)
+    if end < n:
+        ws0 = s[end]
+        if ws0 == ' ' or ws0 == '\t' or ws0 == '\n' or ws0 == '\r':
+            end = _skip_whitespace(s, end + 1, n)
+    if end < n and s[end] == ']':
         return values, end + 1
     _append = values.append
     while True:
@@ -249,35 +578,33 @@ def JSONArray(s_and_end, scan_once, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
         except StopIteration as err:
             raise JSONDecodeError("Expecting value", s, err.value) from None
         _append(value)
-        nextchar = s[end:end + 1]
-        if nextchar in _ws:
-            if s[end:end + 2] == '\n]':
-                return values, end + 2
-            end = _w(s, end + 1).end()
-            nextchar = s[end:end + 1]
+        if end < n:
+            ws1 = s[end]
+            if ws1 == ' ' or ws1 == '\t' or ws1 == '\n' or ws1 == '\r':
+                end = _skip_whitespace(s, end + 1, n)
+        if end >= n:
+            raise JSONDecodeError("Expecting ',' delimiter", s, end)
+        delim = s[end]
         end += 1
-        if nextchar == ']':
+        if delim == ']':
             break
-        elif nextchar != ',':
+        if delim != ',':
             raise JSONDecodeError("Expecting ',' delimiter", s, end - 1)
-        comma_idx = end - 1
-        if s[end:end + 3] == '\n  ':
-            end += 3
-            nextchar = s[end:end + 1]
-            if nextchar not in _ws and nextchar != ']':
-                continue
-        try:
-            if s[end] in _ws:
-                end += 1
-                if s[end] in _ws:
-                    end = _w(s, end + 1).end()
-            nextchar = s[end:end + 1]
-        except IndexError:
-            pass
-        if nextchar == ']':
-            raise JSONDecodeError("Illegal trailing comma before end of array", s, comma_idx)
+        comma_idx: int = end - 1
+        if end < n:
+            ws2 = s[end]
+            if ws2 == ' ' or ws2 == '\t' or ws2 == '\n' or ws2 == '\r':
+                end = _skip_whitespace(s, end + 1, n)
+        if end < n and s[end] == ']':
+            raise JSONDecodeError(
+                "Illegal trailing comma before end of array", s, comma_idx)
 
     return values, end
+
+
+def JSONArray(s_and_end, scan_once, _w=WHITESPACE.match, _ws=WHITESPACE_STR):
+    s, end = s_and_end
+    return _json_array(s, end, scan_once)
 
 
 class JSONDecoder(object):
@@ -356,20 +683,29 @@ class JSONDecoder(object):
         self.parse_string = scanstring
         self.memo = {}
         self.scan_once = scanner.make_scanner(self)
+        self._default_scan_once = self.scan_once
 
 
-    def decode(self, s, _w=WHITESPACE.match):
+    def decode(self, s: str, _w=WHITESPACE.match):
         """Return the Python representation of ``s`` (a ``str`` instance
         containing a JSON document).
 
         """
+        if _w is WHITESPACE.match and type(s) is str:
+            n: int = len(s)
+            idx: int = _skip_whitespace(s, 0, n)
+            obj, end = self.raw_decode(s, idx=idx)
+            end = _skip_whitespace(s, end, n)
+            if end != n:
+                raise JSONDecodeError("Extra data", s, end)
+            return obj
         obj, end = self.raw_decode(s, idx=_w(s, 0).end())
         end = _w(s, end).end()
         if end != len(s):
             raise JSONDecodeError("Extra data", s, end)
         return obj
 
-    def raw_decode(self, s, idx=0):
+    def raw_decode(self, s: str, idx: int = 0):
         """Decode a JSON document from ``s`` (a ``str`` beginning with
         a JSON document) and return a 2-tuple of the Python
         representation and the index in ``s`` where the document ended.
@@ -378,6 +714,33 @@ class JSONDecoder(object):
         have extraneous data at the end.
 
         """
+        if (
+            type(s) is str
+            and type(idx) is int
+            and self.scan_once is self._default_scan_once
+            and self.parse_object is JSONObject
+            and self.parse_array is JSONArray
+            and self.parse_string is scanstring
+            and self.parse_int is int
+            and self.parse_float is float
+            and self.parse_constant is _CONSTANTS.__getitem__
+        ):
+            memo = self.memo
+            is_strict: bool = True if self.strict else False
+            try:
+                obj, end = _scan_once_fast(
+                    s,
+                    idx,
+                    is_strict,
+                    self.object_hook,
+                    self.object_pairs_hook,
+                    memo,
+                )
+            except StopIteration as err:
+                raise JSONDecodeError("Expecting value", s, err.value) from None
+            finally:
+                memo.clear()
+            return obj, end
         try:
             obj, end = self.scan_once(s, idx)
         except StopIteration as err:

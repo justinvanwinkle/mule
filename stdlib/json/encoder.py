@@ -25,42 +25,97 @@ del i
 
 INFINITY = float('inf')
 
-def py_encode_basestring(s):
+def _find_escape(s: str, i: int, n: int) -> int:
+    while i < n:
+        ch = s[i]
+        if ch < ' ' or ch == '"' or ch == '\\':
+            return i
+        i += 1
+    return n
+
+
+def py_encode_basestring(s: str) -> str:
     """Return a JSON representation of a Python string
 
     """
-    if s.isprintable() and s.find('\\') < 0 and s.find('"') < 0:
+    n: int = len(s)
+    first: int = _find_escape(s, 0, n)
+    if first == n:
         return '"' + s + '"'
-    def replace(match):
-        return ESCAPE_DCT[match.group(0)]
-    return '"' + ESCAPE.sub(replace, s) + '"'
+    chunks: list[str] = ['"']
+    _append = chunks.append
+    start: int = 0
+    i: int = first
+    while i < n:
+        if i > start:
+            _append(s[start:i])
+        _append(ESCAPE_DCT[s[i]])
+        i += 1
+        start = i
+        i = _find_escape(s, i, n)
+    if start < n:
+        _append(s[start:n])
+    _append('"')
+    return ''.join(chunks)
 
 
 encode_basestring = (c_encode_basestring or py_encode_basestring)
 
 
-def py_encode_basestring_ascii(s):
+_HEX_BYTE = tuple(f"{i:02x}" for i in range(256))
+
+
+def _find_escape_ascii(s: str, i: int, n: int) -> int:
+    while i < n:
+        ch = s[i]
+        if ch < ' ' or ch > '~' or ch == '"' or ch == '\\':
+            return i
+        i += 1
+    return n
+
+
+def py_encode_basestring_ascii(s: str) -> str:
     """Return an ASCII-only JSON representation of a Python string
 
     """
-    if s.isascii() and s.isprintable() and s.find('\\') < 0 and s.find('"') < 0:
+    n: int = len(s)
+    first: int = _find_escape_ascii(s, 0, n)
+    if first == n:
         return '"' + s + '"'
-    def replace(match):
-        s = match.group(0)
-        try:
-            return ESCAPE_DCT[s]
-        except KeyError:
-            n = ord(s)
-            if n < 0x10000:
-                return '\\u{0:04x}'.format(n)
-                #return '\\u%04x' % (n,)
+    chunks: list[str] = ['"']
+    _append = chunks.append
+    start: int = 0
+    i: int = first
+    while i < n:
+        if i > start:
+            _append(s[start:i])
+        ch_str = s[i]
+        esc = ESCAPE_DCT.get(ch_str)
+        if esc is not None:
+            _append(esc)
+        else:
+            code: int = ord(ch_str)
+            if code < 0x10000:
+                _append('\\u' + _HEX_BYTE[code >> 8] + _HEX_BYTE[code & 0xff])
             else:
-                # surrogate pair
-                n -= 0x10000
-                s1 = 0xd800 | ((n >> 10) & 0x3ff)
-                s2 = 0xdc00 | (n & 0x3ff)
-                return '\\u{0:04x}\\u{1:04x}'.format(s1, s2)
-    return '"' + ESCAPE_ASCII.sub(replace, s) + '"'
+                code -= 0x10000
+                s1: int = 0xd800 | ((code >> 10) & 0x3ff)
+                s2: int = 0xdc00 | (code & 0x3ff)
+                _append(
+                    '\\u'
+                    + _HEX_BYTE[s1 >> 8]
+                    + _HEX_BYTE[s1 & 0xff]
+                    + '\\u'
+                    + _HEX_BYTE[s2 >> 8]
+                    + _HEX_BYTE[s2 & 0xff]
+                )
+        i += 1
+        start = i
+        i = _find_escape_ascii(s, i, n)
+    if start < n:
+        _append(s[start:n])
+    _append('"')
+    return ''.join(chunks)
 
 
 encode_basestring_ascii = (
@@ -250,12 +305,347 @@ class JSONEncoder(object):
                 markers, self.default, _encoder, indent,
                 self.key_separator, self.item_separator, self.sort_keys,
                 self.skipkeys, self.allow_nan)
+        elif _one_shot:
+            _iterencode = _make_one_shot_encoder(
+                markers, self.default, _encoder, indent, floatstr,
+                self.key_separator, self.item_separator, self.sort_keys,
+                self.skipkeys)
         else:
             _iterencode = _make_iterencode(
                 markers, self.default, _encoder, indent, floatstr,
                 self.key_separator, self.item_separator, self.sort_keys,
                 self.skipkeys, _one_shot)
         return _iterencode(o, 0)
+
+
+def _encode_str_mode(s: str, mode: int, _encoder) -> str:
+    if mode == 1:
+        return py_encode_basestring_ascii(s)
+    if mode == 2:
+        return py_encode_basestring(s)
+    return _encoder(s)
+
+
+def _encode_list_oneshot(
+    chunks: list[str],
+    lst,
+    _current_indent_level: int,
+    markers,
+    _default,
+    _encoder,
+    mode: int,
+    _indent,
+    _floatstr,
+    _key_separator: str,
+    _item_separator: str,
+    _sort_keys: bool,
+    _skipkeys: bool,
+):
+    _append = chunks.append
+    if not lst:
+        _append('[]')
+        return
+    if markers is not None:
+        markerid = id(lst)
+        if markerid in markers:
+            raise ValueError("Circular reference detected")
+        markers[markerid] = lst
+    buf: str = '['
+    if _indent is not None:
+        _current_indent_level += 1
+        newline_indent = '\n' + _indent * _current_indent_level
+        separator: str = _item_separator + newline_indent
+        buf += newline_indent
+    else:
+        newline_indent = None
+        separator = _item_separator
+    i: int = 0
+    while i < len(lst):
+        value = lst[i]
+        if i:
+            buf = separator
+        try:
+            if type(value) is str:
+                if mode == 1:
+                    _append(buf + py_encode_basestring_ascii(value))
+                elif mode == 2:
+                    _append(buf + py_encode_basestring(value))
+                else:
+                    _append(buf + _encoder(value))
+            elif value is None:
+                _append(buf + 'null')
+            elif value is True:
+                _append(buf + 'true')
+            elif value is False:
+                _append(buf + 'false')
+            elif type(value) is int:
+                _append(buf + str(value))
+            elif type(value) is float:
+                _append(buf + _floatstr(value))
+            elif isinstance(value, str):
+                _append(buf + _encode_str_mode(value, mode, _encoder))
+            elif isinstance(value, int):
+                _append(buf + int.__repr__(value))
+            elif isinstance(value, float):
+                _append(buf + _floatstr(value))
+            else:
+                _append(buf)
+                if type(value) is list or type(value) is tuple or isinstance(value, (list, tuple)):
+                    _encode_list_oneshot(
+                        chunks, value, _current_indent_level, markers, _default,
+                        _encoder, mode, _indent, _floatstr, _key_separator,
+                        _item_separator, _sort_keys, _skipkeys
+                    )
+                elif type(value) is dict or isinstance(value, dict):
+                    _encode_dict_oneshot(
+                        chunks, value, _current_indent_level, markers, _default,
+                        _encoder, mode, _indent, _floatstr, _key_separator,
+                        _item_separator, _sort_keys, _skipkeys
+                    )
+                else:
+                    _encode_obj_oneshot(
+                        chunks, value, _current_indent_level, markers, _default,
+                        _encoder, mode, _indent, _floatstr, _key_separator,
+                        _item_separator, _sort_keys, _skipkeys
+                    )
+        except BaseException as exc:
+            exc.add_note(f'when serializing {type(lst).__name__} item {i}')
+            raise
+        i += 1
+    if newline_indent is not None:
+        _current_indent_level -= 1
+        _append('\n' + _indent * _current_indent_level)
+    _append(']')
+    if markers is not None:
+        del markers[markerid]
+
+
+def _encode_dict_oneshot(
+    chunks: list[str],
+    dct,
+    _current_indent_level: int,
+    markers,
+    _default,
+    _encoder,
+    mode: int,
+    _indent,
+    _floatstr,
+    _key_separator: str,
+    _item_separator: str,
+    _sort_keys: bool,
+    _skipkeys: bool,
+):
+    _append = chunks.append
+    if not dct:
+        _append('{}')
+        return
+    if markers is not None:
+        markerid = id(dct)
+        if markerid in markers:
+            raise ValueError("Circular reference detected")
+        markers[markerid] = dct
+    _append('{')
+    if _indent is not None:
+        _current_indent_level += 1
+        newline_indent = '\n' + _indent * _current_indent_level
+        item_separator: str = _item_separator + newline_indent
+    else:
+        newline_indent = None
+        item_separator = _item_separator
+    first: bool = True
+    if _sort_keys:
+        items = sorted(dct.items())
+    else:
+        items = dct.items()
+    for key, value in items:
+        if type(key) is str or isinstance(key, str):
+            pass
+        elif isinstance(key, float):
+            key = _floatstr(key)
+        elif key is True:
+            key = 'true'
+        elif key is False:
+            key = 'false'
+        elif key is None:
+            key = 'null'
+        elif type(key) is int:
+            key = str(key)
+        elif isinstance(key, int):
+            key = int.__repr__(key)
+        elif _skipkeys:
+            continue
+        else:
+            raise TypeError(f'keys must be str, int, float, bool or None, '
+                            f'not {key.__class__.__name__}')
+        if first:
+            first = False
+            if newline_indent is not None:
+                _append(newline_indent)
+        else:
+            _append(item_separator)
+        if type(key) is str:
+            if mode == 1:
+                _append(py_encode_basestring_ascii(key))
+            elif mode == 2:
+                _append(py_encode_basestring(key))
+            else:
+                _append(_encoder(key))
+        else:
+            _append(_encode_str_mode(key, mode, _encoder))
+        _append(_key_separator)
+        try:
+            if type(value) is str:
+                if mode == 1:
+                    _append(py_encode_basestring_ascii(value))
+                elif mode == 2:
+                    _append(py_encode_basestring(value))
+                else:
+                    _append(_encoder(value))
+            elif value is None:
+                _append('null')
+            elif value is True:
+                _append('true')
+            elif value is False:
+                _append('false')
+            elif type(value) is int:
+                _append(str(value))
+            elif type(value) is float:
+                _append(_floatstr(value))
+            elif isinstance(value, str):
+                _append(_encode_str_mode(value, mode, _encoder))
+            elif isinstance(value, int):
+                _append(int.__repr__(value))
+            elif isinstance(value, float):
+                _append(_floatstr(value))
+            elif type(value) is list or type(value) is tuple or isinstance(value, (list, tuple)):
+                _encode_list_oneshot(
+                    chunks, value, _current_indent_level, markers, _default,
+                    _encoder, mode, _indent, _floatstr, _key_separator,
+                    _item_separator, _sort_keys, _skipkeys
+                )
+            elif type(value) is dict or isinstance(value, dict):
+                _encode_dict_oneshot(
+                    chunks, value, _current_indent_level, markers, _default,
+                    _encoder, mode, _indent, _floatstr, _key_separator,
+                    _item_separator, _sort_keys, _skipkeys
+                )
+            else:
+                _encode_obj_oneshot(
+                    chunks, value, _current_indent_level, markers, _default,
+                    _encoder, mode, _indent, _floatstr, _key_separator,
+                    _item_separator, _sort_keys, _skipkeys
+                )
+        except BaseException as exc:
+            exc.add_note(f'when serializing {type(dct).__name__} item {key!r}')
+            raise
+    if not first and newline_indent is not None:
+        _current_indent_level -= 1
+        _append('\n' + _indent * _current_indent_level)
+    _append('}')
+    if markers is not None:
+        del markers[markerid]
+
+
+def _encode_obj_oneshot(
+    chunks: list[str],
+    o,
+    _current_indent_level: int,
+    markers,
+    _default,
+    _encoder,
+    mode: int,
+    _indent,
+    _floatstr,
+    _key_separator: str,
+    _item_separator: str,
+    _sort_keys: bool,
+    _skipkeys: bool,
+):
+    _append = chunks.append
+    if type(o) is str or isinstance(o, str):
+        _append(_encode_str_mode(o, mode, _encoder))
+    elif o is None:
+        _append('null')
+    elif o is True:
+        _append('true')
+    elif o is False:
+        _append('false')
+    elif type(o) is int:
+        _append(str(o))
+    elif isinstance(o, int):
+        _append(int.__repr__(o))
+    elif isinstance(o, float):
+        _append(_floatstr(o))
+    elif type(o) is list or type(o) is tuple or isinstance(o, (list, tuple)):
+        _encode_list_oneshot(
+            chunks, o, _current_indent_level, markers, _default,
+            _encoder, mode, _indent, _floatstr, _key_separator,
+            _item_separator, _sort_keys, _skipkeys
+        )
+    elif type(o) is dict or isinstance(o, dict):
+        _encode_dict_oneshot(
+            chunks, o, _current_indent_level, markers, _default,
+            _encoder, mode, _indent, _floatstr, _key_separator,
+            _item_separator, _sort_keys, _skipkeys
+        )
+    else:
+        if markers is not None:
+            markerid = id(o)
+            if markerid in markers:
+                raise ValueError("Circular reference detected")
+            markers[markerid] = o
+        newobj = _default(o)
+        try:
+            _encode_obj_oneshot(
+                chunks, newobj, _current_indent_level, markers, _default,
+                _encoder, mode, _indent, _floatstr, _key_separator,
+                _item_separator, _sort_keys, _skipkeys
+            )
+        except BaseException as exc:
+            exc.add_note(f'when serializing {type(o).__name__} object')
+            raise
+        if markers is not None:
+            del markers[markerid]
+
+
+def _make_one_shot_encoder(markers, _default, _encoder, _indent, _floatstr,
+        _key_separator, _item_separator, _sort_keys, _skipkeys):
+    if not isinstance(_key_separator, str):
+        raise TypeError(
+            f"make_encoder() argument 5 must be str, not {type(_key_separator).__name__}"
+        )
+    if not isinstance(_item_separator, str):
+        raise TypeError(
+            f"make_encoder() argument 6 must be str, not {type(_item_separator).__name__}"
+        )
+    sort_keys_flag: bool = True if _sort_keys else False
+    skipkeys_flag: bool = True if _skipkeys else False
+    mode: int = (
+        1
+        if _encoder is py_encode_basestring_ascii
+        else (2 if _encoder is py_encode_basestring else 0)
+    )
+
+    def _one_shot_encode(o, _current_indent_level: int):
+        chunks: list[str] = []
+        _encode_obj_oneshot(
+            chunks,
+            o,
+            _current_indent_level,
+            markers,
+            _default,
+            _encoder,
+            mode,
+            _indent,
+            _floatstr,
+            _key_separator,
+            _item_separator,
+            sort_keys_flag,
+            skipkeys_flag,
+        )
+        return chunks
+
+    return _one_shot_encode
 
 def _make_iterencode(markers, _default, _encoder, _indent, _floatstr,
         _key_separator, _item_separator, _sort_keys, _skipkeys, _one_shot,
