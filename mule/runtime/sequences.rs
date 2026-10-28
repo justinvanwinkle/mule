@@ -2113,14 +2113,13 @@ pub(crate) unsafe fn convert_stop_iteration_to_runtime_error() {
 #[inline(never)]
 pub(crate) unsafe fn raise_stop_iteration_value(value: Value) {
     unsafe {
-        if value == object::none_value() {
-            object::release(value);
-            object::error("StopIteration", "");
-            return;
-        }
         let stop_class = object::lookup(mule_protocol_globals(), "StopIteration");
         if !stop_class.is_null() {
-            let stop_inst = object::call(stop_class, &[value]);
+            let stop_inst = if value == object::none_value() {
+                object::call(stop_class, &[])
+            } else {
+                object::call(stop_class, &[value])
+            };
             if !stop_inst.is_null() {
                 let _ = mule_raise_pending(stop_inst);
                 object::release(stop_inst);

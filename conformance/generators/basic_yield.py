@@ -20,6 +20,7 @@ try:
     next(g)
 except StopIteration as e:
     print("exhausted", type(e).__name__, e.value)
+    print("exhausted args", e.args)
 print("trace", trace)
 try:
     next(g)
@@ -56,6 +57,19 @@ try:
     next(only_return())
 except StopIteration as e:
     print("return value on first next", e.value)
+
+
+def completion_value(value):
+    if False:
+        yield
+    return value
+
+
+for value in (None, "", 0):
+    try:
+        next(completion_value(value))
+    except StopIteration as e:
+        print("completion value", repr(e.value), e.args)
 
 
 def yields_none():
