@@ -266,8 +266,8 @@ def _optimize_charset(charset, iscased=None, fixup=None, fixes=None):
                     else:
                         charmap[av] = 1
                 elif op is RANGE:
+                    r = range(av[0], av[1]+1)
                     if fixup: # IGNORECASE and not LOCALE
-                        r = range(av[0], av[1]+1)
                         if fixes:
                             for i in map(fixup, r):
                                 charmap[i] = 1
@@ -280,15 +280,8 @@ def _optimize_charset(charset, iscased=None, fixup=None, fixes=None):
                         if not hascased:
                             hascased = any(map(iscased, r))
                     else:
-                        lo: int = av[0]
-                        hi: int = av[1]
-                        cmap_len: int = len(charmap)
-                        if hi >= cmap_len:
-                            if cmap_len == 65536 and lo < 65536:
-                                charmap[lo:65536] = b'\x01' * (65536 - lo)
-                            raise IndexError
-                        if lo <= hi:
-                            charmap[lo:hi + 1] = b'\x01' * (hi - lo + 1)
+                        for i in r:
+                            charmap[i] = 1
                 elif op is NEGATE:
                     out.append((op, av))
                 elif op is CATEGORY and tail and (CATEGORY, CH_NEGATE[av]) in tail:
@@ -404,32 +397,7 @@ def _optimize_charset(charset, iscased=None, fixup=None, fixes=None):
 _CODEBITS = _sre.CODESIZE * 8
 MAXCODE = (1 << _CODEBITS) - 1
 _BITS_TRANS = b'0' + b'1' * 255
-_ZERO_32 = b'\x00' * 32
-_ONE_32 = b'\x01' * 32
-
-
 def _mk_bitmap(bits, _CODEBITS=_CODEBITS, _int=int):
-    if _CODEBITS == 32:
-        res = []
-        _append = res.append
-        n: int = len(bits)
-        i: int = 0
-        while i < n:
-            chunk = bits[i : i + 32]
-            if chunk == _ZERO_32:
-                _append(0)
-            elif chunk == _ONE_32:
-                _append(0xffffffff)
-            else:
-                word: int = 0
-                bit: int = 0
-                while bit < 32:
-                    if bits[i + bit]:
-                        word |= 1 << bit
-                    bit += 1
-                _append(word)
-            i += 32
-        return res
     s = bits.translate(_BITS_TRANS)[::-1]
     return [_int(s[i - _CODEBITS: i], 2)
             for i in range(len(s), 0, -_CODEBITS)]

@@ -25,9 +25,8 @@ singleton-list fill (Section 6J), pre-representation calling-convention
 selection and inline Latin-1 string equality (Section 6L), and `SetType`
 lattice, IR1 set/dict transforms, and pre-sized `_Table` set operations
 (Section 6M); **proposed** for
-Sections 1C, 2, the remaining items in Sections 1D and 5, Sections 6D, 6F, 6H,
-6I, 6K, and the remaining SBCL parity gaps identified in the 24-workload suite
-review (Sections 6N–6Q).
+Sections 1C, 2, the remaining items in Sections 1D and 5, Sections 6D, 6F, 6H, 6I, 6K, and the remaining SBCL parity gaps identified in the
+24-workload and `pyperformance` suite reviews (Sections 6N–6R).
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`,
@@ -1488,3 +1487,62 @@ describe the Python mutation and ownership adaptations to SBCL.
      caller, inline the factory in IR1 so the closure becomes a closed local
      lambda in the caller and its `nonlocal` variables lower to caller frame
      registers (`escape.py`).
+
+
+### 6R. Iterative zero-allocation `_sre` bytecode VM and `_INFO` prefix/charset search (`stdlib/_sre.py`, `stdlib/re/_compiler.py`) (proposed)
+
+- **Observed benchmark impact**: `bm_regex_dna`, `bm_regex_effbot`, `bm_regex_v8`,
+  and general `re` workloads in `pyperformance`.
+- **Current Mule defect**:
+  1. **Recursive and generator-allocating `_Engine` in `stdlib/_sre.py`**:
+     - `_Engine._search_state` (`stdlib/_sre.py`) is an untyped, recursive Python
+       interpreter over CPython SRE bytecode.
+     - General repetitions (`_REPEAT`, `_POSSESSIVE_REPEAT` in `_Engine._repeat`)
+       allocate a Python generator coroutine (`_repeat_states`) per repeat entry
+       and yield `(at, list(marks))` tuples across every backtracking step.
+     - Every capture group mark transition (`_MARK`) clones the entire `marks`
+       list on the heap (`next_marks = list(marks)`) instead of saving/restoring
+       mutated mark slots on a flat undo stack.
+     - `_Engine.char(pos)` on `str` inputs indexes `self.string[pos]` (allocating
+       a 1-character `str` object when not lowered to a raw codepoint primitive)
+       and calls `ord(...)` on every character inspection.
+  2. **Unused `_INFO` prefix/overlap and charset tables from `re._compiler`**:
+     - `stdlib/re/_compiler.py` (`_compile_info`) already emits CPython's `_INFO`
+       header (`SRE_INFO_PREFIX`, `SRE_INFO_LITERAL`, `SRE_INFO_CHARSET`) at
+       `code[0]`, including minimum/maximum match lengths (`lo`, `hi`), the exact
+       literal prefix array, the Knuth-Morris-Pratt (`overlap`) skip table, and
+       the 256-bit starting `CHARSET` bitmap.
+     - `stdlib/_sre.py` ignores the `_INFO` header altogether and steps
+       `self._match_at(string, pos, endpos)` one character at a time from `pos`
+       to `end`.
+- **CPython and SBCL (CL-PPCRE) references**:
+  - CPython `Modules/_sre/sre_lib.h` (`SRE(match)`, `SRE(search)`,
+    `SRE(fast_search)`): flat iterative bytecode VM using an explicit integer data
+    stack (`SRE_REPEAT` frames + `(mark_index, old_pos)` mark-undo stack) over
+    direct UCS1/UCS2/UCS4/byte buffer reads, paired with `_INFO`-driven fast
+    prefix/KMP overlap and charset search.
+  - CL-PPCRE (`scanner.lisp`, `closures.lisp`): compiled closures/state machines
+    with flat integer mark arrays and Boyer-Moore-Horspool / start-char skip
+    loops derived from the pattern tree.
+- **Required implementation**:
+  1. **Unboxed codepoint access (`%text_codepoint_at`)**: Route `_Engine.char(pos)`
+     on `str`, `bytes`, `bytearray`, and `memoryview` through direct unboxed
+     integer codepoint/byte reads without allocating 1-character `str` slices.
+  2. **Flat iterative typed `_Engine` VM (`stdlib/_sre.py`)**:
+     - Type `_Engine` fields and VM loop locals (`code: list[int]`, `pc: int`,
+       `pos: int`, `end: int`, `marks: list[int]`, `undo_stack: list[int]`,
+       `state_stack: list[int]`) so Mule compiles opcode dispatch and character
+       matching with unboxed `i64` registers and fixed-slot instance access
+       (`__mule_slots__`).
+     - Replace Python call recursion and `_repeat_states` generator coroutines
+       with an explicit flat `state_stack: list[int]` and an in-place `marks`
+       array restored via `undo_stack: list[int]` high-water marks (matching
+       `MARK_PUSH` / `MARK_POP` in CPython's `sre_lib.h`).
+  3. **Standard `_INFO`-driven search (`SRE_INFO_PREFIX` / `SRE_INFO_CHARSET`)**:
+     - Parse the `_INFO` block emitted by `stdlib/re/_compiler.py` (`flags`,
+       `min_width`, `prefix` + `overlap` KMP table, or `charset` bitmap) in
+       `Pattern.__init__` and execute CPython's `sre_search` algorithm directly
+       from the `_INFO` block — with no ad-hoc pattern heuristics or custom
+       bytecode prefilters.
+  4. **Compliance verification**: Validate against CPython's upstream
+     `stdlib/test/test_re.py` test suite and `test/mule/compiler/test_regex_repeats.py`.
