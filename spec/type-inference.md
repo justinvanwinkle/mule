@@ -1,6 +1,6 @@
 # Type inference and flow propagation
 
-Status: **implemented** for the value-type lattice (`ctype`), checked machine-width contracts, basic scalar/single-level-list local annotation hints, intraprocedural forward constraint propagation, interprocedural local-call entry specialization, and cross-module return-type summaries in the `builtins` interface and `ModuleCompiler`; **proposed** for nested container/tuple/dict/class parameter contracts, entry-checked/guarded parameter specialization on uncalled public/callback functions, `InstanceType` method variant retention on attribute access, wheel-level `.so` interfaces, and demand-driven cross-package re-specialization.
+Status: **implemented** for the value-type lattice (`ctype`), bounded text content domain (`text_domain`), checked machine-width contracts, declared scalar/container/class parameter and element contracts (Section 0A), intraprocedural forward constraint propagation, interprocedural local-call entry specialization (`propagate-to-args`), `InstanceType` method specialization and field-type inference (Section 0C), and cross-module return-type and constant summaries in the `builtins` interface and `ModuleCompiler`; **proposed** for wiring `TextContent` into `TextType` (Section 6D), `SetType`/`FrozenSetType` (Section 6M), `match`/`%isinstance` user-class branch narrowing (Section 6O), wheel-level `.so` interfaces, and demand-driven cross-package re-specialization.
 
 See [SBCL compiler](sbcl-compiler.md), [Native implementation selection](native-lowering.md), [Optimization policies](optimization-policies.md), and [Remaining compiler and IR1 transform gaps](compiler-gaps.md).
 
@@ -267,10 +267,9 @@ Mule distinguishes between two kinds of source annotations:
    - Lower to explicit IR1 `Cast` nodes at parameter entry, annotated local stores, and `return` statements (`mule/compiler/ir1tran.py`, `mule/compiler/ir1tran_lambda.py`).
    - On `*args: T` and `**kwargs: T`, preserve the outer `TupleType()` / `DICT_TYPE` container fact while checking individual elements/values.
    - Statically contradictory values fail compilation (`AnnotationLedger.check`); unproven values emit borrowed runtime checks (`mule/compiler/checkgen.py`) unless `safety == 0`.
-2. **Standard Python annotations** (`int`, `float`, `str`, `bytes`, `list[T]`; **proposed**: `bool`, `dict[K, V]`, `tuple[...]`, nested container contracts, `T | None`, and in-module user classes):
-   - Currently, `_DECLARATION_BINDINGS` (`mule/compiler/ir1tran.py`) recognizes only `int`, `float`, `str`, `bytes`, and `list` (`ListContract`), where `ListContract`'s element must itself be one of those scalar contracts. Annotations using `bool`, `tuple[...]`, `dict[K, V]`, nested containers (such as `list[tuple[str, int]]` or `tuple[list[list[int]], list[list[int]]]`), unions (`T | None`), or user-defined classes (`_Node`, `Expr`, `Account`) currently resolve to `_OPAQUE_BINDING` (`None`) and are ignored.
-   - Recognized contracts are recorded on `Lambda.local_annotations`. However, `Contract.general_parameter_type()` (`mule/compiler/annotation_types.py`) currently returns `UNKNOWN` for all contracts except `ListContract` with a non-`None` element. Scalar parameter annotations (`x: int`, `s: str`) only seed a `"fixnum"` variant when `_ParameterUse.analyze` (`mule/compiler/locall.py`) directly observes primitive numeric, text, or list operations on the parameter, and do not seed `"general"`.
-   - Consequently, functions passed as callbacks without direct intra-module call sites (such as benchmark `run(data: ...)` functions) or methods whose annotated parameters are passed to other methods (`self._map.get(key)`) currently receive `UNKNOWN` parameter types unless extended as proposed in [compiler-gaps.md](compiler-gaps.md#0-high-impact-architectural-parity-gaps-from-the-14-workload-suite-audit-proposed).
+2. **Standard Python annotations** (`int`, `float`, `bool`, `None`, `str`, `bytes`, `list[T]`, `tuple[...]`, `dict[K, V]`, `T | None`, and user classes):
+   - `mule/compiler/annotation_types.py` and `_DeclaredAnnotationReference` (`mule/compiler/ir1tran.py`) recognize scalar, `TupleContract`, `DictContract`, `ClassContract`, `UnionContract`, nested container subscript bindings, and `*args: T` / `**kwargs: T` annotations (see [compiler-gaps.md](compiler-gaps.md#0a-declared-parameter-contracts-and-nested-containerclass-annotations-ir1tranpy-annotation_typespy-locallpy-constraintpy-codegenpy-vopspy-implemented)).
+   - Under `safety == 3` (`safety == 0` when trusted), `partial_params` establishes the entry-checked parameter `ValueType` in the `"general"` entry, while under `1 <= safety < 3` `locall.py` synthesizes a guarded entry (`.spec.0`) from `Contract.speculative_parameter_type()` alongside the hint-tolerant `"general"` entry and propagates container element contracts with runtime element guards (`_ContractAssertion`).
    - If any local store or interprocedural call site contradicts an unchecked Python annotation, `locall.py` records the variable in `annotations.ignored` and resets the parameter/local expectation to `UNKNOWN` so dynamic callers remain sound.
 
 ### 3.4 Intraprocedural constraint propagation (`mule/compiler/constraint.py`)
@@ -311,7 +310,7 @@ For a single `Lambda` and parameter tuple, `propagate()` runs a worklist over th
 
 1. **Static discovery before the fixpoint**:
    - `_collect_closed_lambdas`: Finds nested functions whose function object never escapes and whose every reference is the callee of a direct positional call.
-   - `collect_global_constants`: Finds module-level private constants (`_NAME = <literal>`) that are assigned once at toplevel and never rebound, seeding their `Ref.derived_type` under `safety < 3`.
+   - `collect_global_constants` and `_fold_protocol_constants`: Tracks module-level `GlobalVar.sets`, dominance/post-dominance (`_unconditional_toplevel_stores`), and `Final` annotations without identifier-spelling heuristics (Section 6A), seeding constant `derived_type`s and folding `Final` constants to `Constant` leaves under `safety < 3`.
    - `_GlobalFunctionStores` and `_ImportBindingStores`: Maps module-level function definitions and `from mod import fn` bindings so intra-module and cross-module calls can be predicted and typed.
    - `captured_vars`: Initializes `var.optimistic_type = BOTTOM` for closed-over variables assigned in the unit so their types grow optimistically from observed stores.
    - `_ParameterUse`: Seeds `"general"` and `"fixnum"` parameter tuples for every `Lambda`.
@@ -325,7 +324,7 @@ For a single `Lambda` and parameter tuple, `propagate()` runs a worklist over th
    - Once the fixpoint settles, `_publish_derived_types` writes the `"general"` node and lvar types onto IR1 (`node.derived_type`, `lvar.derived_type`).
    - Any known call (`CallKind.KNOWN`, `len()`, or predictable global known function) whose operand `Lvar` gained a narrower non-`UNKNOWN` type is marked `node.reoptimize = True`, triggering another pass of `ir1opt.ir1_optimize_until_done` (`mule/compiler/main.py`).
    - For `"fixnum"` and `"observed"` entry contexts whose narrower parameter types unlock additional IR1 transforms (`_would_reoptimize_for_context`), `specialized_ir1_context` clones the `Lambda`'s IR1 component during IR2 translation, runs `ir1opt` + `dfo` + `loop.analyze` under that entry's types, lowers the specialized IR2/LLVM body, and restores the canonical IR1 component.
-   - **Current limitation in `_SpecializesBody`**: `locall.analyze` retains a `"fixnum"` entry context (including `(InstanceType(cls), ...)` on class methods) only when `_SpecializesBody` observes that a node narrows to `INTEGER`, `BOOLEAN`, or `FLOAT`, or specializes a `list`/`str`/`dict` container operation. Methods whose specialization consists of `InstanceType` attribute reads/writes (`GETATTR` / `SETATTR`) or `PYTHON_INTEGER` results currently drop their `"fixnum"` variant (`variants=()`). Extending `_SpecializesBody` to preserve `InstanceType` slot specialization is tracked in [compiler-gaps.md](compiler-gaps.md#0-high-impact-architectural-parity-gaps-from-the-14-workload-suite-audit-proposed).
+   - `_SpecializesBody` retains `"fixnum"` / `"observed"` method entry contexts when `candidate` narrows a `GETATTR` or `SETATTR` receiver to `InstanceType` or narrows numeric/container operations, and drops `"observed"` when it adds no body, element-contract, or return-type specialization beyond `"fixnum"` (Section 0C in [compiler-gaps.md](compiler-gaps.md#0c-preserving-instancetypecls-method-specialization-instance-field-inference-and-method-call-return-contracts-locallpy-constraintpy-return_checkspy-codegenpy-implemented)).
 
 #### Bounded text content domain
 
@@ -367,15 +366,10 @@ Serialization preserves these content facts and requires all fields.
 
 #### Known analysis gaps
 
-- **Confirmed `TYPE_CHECKING` miscompile:** `fold_type_checking_constants` in
-  `main.py` replaces global references imported from `typing.TYPE_CHECKING` with
-  `False` based on a syntactic store count. `driver.py` applies it before code
-  generation. For `print(TYPE_CHECKING)` followed by
-  `from typing import TYPE_CHECKING`, Mule prints `False` while CPython raises
-  `NameError`: the import has not executed. `locall.py` independently seeds the
-  same false global fact under a similar condition. Its independent effect has
-  not been reproduced. Both paths need sound binding and execution-order facts;
-  removing only the early rewrite leaves the other assumption in analysis.
+- **`TYPE_CHECKING` import folding (resolved):** `fold_type_checking_constants`
+  has been removed from `main.py` and `locall.py` (`eebe93d`), so imported
+  `typing.TYPE_CHECKING` bindings follow ordinary dominance, execution-order,
+  and rebinding analysis rather than unconditional syntactic replacement.
 - **Context derivation depth:** `locall.py` limits active context-dependent
   derivations to six, including acyclic chains. At the limit it falls back to a
   general return summary or abandons branch narrowing, which can discard useful
