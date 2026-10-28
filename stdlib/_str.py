@@ -1144,8 +1144,7 @@ def str(object=_MISSING, encoding=_MISSING, errors=_MISSING):
             return ""
         if _type_of(object) is str:
             return object
-        result = _string_protocol(object)
-        return _text_slice(result, 0, _text_length(result))
+        return _string_protocol(object)
     if encoding is _MISSING:
         encoding = "utf-8"
     if object is _MISSING:
