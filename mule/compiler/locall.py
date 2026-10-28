@@ -2037,6 +2037,7 @@ def _update_class_field_types(
     if not class_facts or not setattr_sites:
         return False
     direct_stores: dict[str, dict[str, ValueType]] = defaultdict(dict)
+    unattributed_stores: dict[str, ValueType] = {}
     ambiguous_fields: set[str] = set()
     unknown_field_write = False
     for lam, node in setattr_sites:
@@ -2064,6 +2065,7 @@ def _update_class_field_types(
         found_context = False
         saw_typed_receiver = False
         best_stores: dict[str, ValueType] = {}
+        unattributed_type = BOTTOM
         for ctx_name in ("observed", "fixnum", "general"):
             body = bodies.get((lam, ctx_name))
             if body is None:
@@ -2080,6 +2082,7 @@ def _update_class_field_types(
             if recv_fact.type is BOTTOM or val_fact.type is BOTTOM:
                 continue
             found_context = True
+            unattributed_type = unattributed_type.join(val_fact.type)
             for recv_cls in recv_fact.type.accept(_INSTANCE_CLASSES):
                 if recv_cls in class_facts:
                     saw_typed_receiver = True
@@ -2109,11 +2112,11 @@ def _update_class_field_types(
             ):
                 prev = direct_stores[recv_cls].get(field_name, BOTTOM)
                 direct_stores[recv_cls][field_name] = prev.join(stored_type)
-        # Method ownership alone does not type the receiver. Variadic methods,
-        # for example, may have only a general entry with an unknown receiver.
-        # Their writes still prevent other stores from defining a field type.
+        # Without receiver identity, this value can reach any existing candidate
+        # for the attribute. It widens those candidates without creating owners.
         if found_context and not saw_typed_receiver:
-            ambiguous_fields.add(field_name)
+            previous = unattributed_stores.get(field_name, BOTTOM)
+            unattributed_stores[field_name] = previous.join(unattributed_type)
 
     for lam, node in setitem_sites:
         attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
@@ -2200,6 +2203,7 @@ def _update_class_field_types(
                 anc_type = direct_stores.get(anc_id, {}).get(name, BOTTOM)
                 if anc_type is not BOTTOM:
                     joined = joined.join(anc_type)
+            joined = joined.join(unattributed_stores.get(name, BOTTOM))
             sanitized = joined.accept(sanitizer)
             if (
                 sanitized is not UNKNOWN
