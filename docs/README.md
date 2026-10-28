@@ -25,9 +25,8 @@ Open http://127.0.0.1:8000. Stop the server with Ctrl-C.
 ## Performance snapshot
 
 `assets/results.json` preserves the complete recorded suite run from
-`20261028T051301.006545Z`. It includes all 14 cases across CPython 3.15.0, Mule
-`-O2` without LTO, and SBCL 2.6.4. The measured checkout was `2d6edd5a7` with
-uncommitted tracked changes, identified by its recorded diff digest. It is not a
+`20261028T163732.408543Z`. It includes all 14 cases across CPython 3.15.0, Mule
+`-O2` without LTO, and SBCL 2.6.4. The measured checkout was `0a9e3e863`. It is not a
 measurement of every later commit. The report retains individual samples,
 commands, input sizes, source and binary hashes, and revision metadata. The run
 used four concurrent scenario jobs, so timings may include contention.
