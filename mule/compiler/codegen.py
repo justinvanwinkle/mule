@@ -444,6 +444,7 @@ class ForeignFunction:
     namespace: str = ""
     borrowed_parameters: frozenset[int] = frozenset()
     entry_parameter_types: tuple[ValueType, ...] | None = None
+    default_types: tuple[ValueType, ...] = ()
 
     def as_lambda(self) -> None:
         return None
@@ -2488,10 +2489,7 @@ class ModuleGenerator:
                     owned.append(f"%arg.{idx}")
                 else:
                     builder.line(
-                        f"  %def.{tag}.{pos} = call ptr @mule_function_default(ptr %callee, i32 {-2 - idx})"
-                    )
-                    builder.line(
-                        f"  %own.{tag}.{pos} = call ptr @mule.fast.retain(ptr %def.{tag}.{pos})"
+                        f"  %own.{tag}.{pos} = call ptr @mule.fast.retain(ptr %def.{pos})"
                     )
                     owned.append(f"%own.{tag}.{pos}")
             closure_ops = []
@@ -2553,9 +2551,21 @@ class ModuleGenerator:
                     builder.line(f"  call void @llvm.assume(i1 {assumed})")
             builder.line(f"  ret ptr %res.{tag}")
 
+        for pos, idx in enumerate(order):
+            if idx < 0:
+                builder.line(
+                    f"  %def.{pos} = call ptr @mule_function_default(ptr %callee, i32 {-2 - idx})"
+                )
         for step_idx, (context, needed) in enumerate(steps):
             guards = [
-                expected.accept(_ArgumentGuard(builder, f"%arg.{order[param_idx]}"))
+                expected.accept(
+                    _ArgumentGuard(
+                        builder,
+                        f"%arg.{order[param_idx]}"
+                        if order[param_idx] >= 0
+                        else f"%def.{param_idx}",
+                    )
+                )
                 for param_idx, expected in enumerate(needed)
                 if expected is not None
             ]
@@ -2736,10 +2746,7 @@ class ModuleGenerator:
                     owned.append(f"%arg.{idx}")
                 else:
                     builder.line(
-                        f"  %def.{tag}.{pos} = call ptr @mule_function_default(ptr %callee, i32 {-2 - idx})"
-                    )
-                    builder.line(
-                        f"  %own.{tag}.{pos} = call ptr @mule.fast.retain(ptr %def.{tag}.{pos})"
+                        f"  %own.{tag}.{pos} = call ptr @mule.fast.retain(ptr %def.{pos})"
                     )
                     owned.append(f"%own.{tag}.{pos}")
             closure_ops = []
@@ -2800,9 +2807,21 @@ class ModuleGenerator:
                 builder.lines.append(f"invoke.accepted.{tag}:")
             builder.line(f"  ret ptr %res.{tag}")
 
+        for pos, idx in enumerate(order):
+            if idx < 0:
+                builder.line(
+                    f"  %def.{pos} = call ptr @mule_function_default(ptr %callee, i32 {-2 - idx})"
+                )
         for step_idx, (context, needed) in enumerate(steps):
             guards = [
-                expected.accept(_ArgumentGuard(builder, f"%arg.{order[param_idx]}"))
+                expected.accept(
+                    _ArgumentGuard(
+                        builder,
+                        f"%arg.{order[param_idx]}"
+                        if order[param_idx] >= 0
+                        else f"%def.{param_idx}",
+                    )
+                )
                 for param_idx, expected in enumerate(needed)
                 if expected is not None
             ]
@@ -5396,6 +5415,38 @@ class FunctionGenerator:
             self.lines.append(continuation + ":")
         return self.operation(f"call double @llvm.sqrt.f64(double {value})")
 
+    def float_pow(self, left: str, right: str) -> str:
+        if right == "0x3FE0000000000000":
+            normalized = self.operation(f"fadd double {left}, 0.0")
+            return self.operation(f"call double @llvm.sqrt.f64(double {normalized})")
+        zero_base = self.operation(f"fcmp oeq double {left}, 0.0")
+        neg_exp = self.operation(f"fcmp olt double {right}, 0.0")
+        zero_div = self.operation(f"and i1 {zero_base}, {neg_exp}")
+        failed_z, check_pow = self.fresh("pow.zero")[1:], self.fresh("pow.eval")[1:]
+        self.line(f"br i1 {zero_div}, label %{failed_z}, label %{check_pow}")
+        self.lines.append(failed_z + ":")
+        self.line("call i32 @mule_native_zero_division()")
+        self.line(f"br label %{self.failure_target()}")
+        self.lines.append(check_pow + ":")
+        result = self.operation(
+            f"call double @llvm.pow.f64(double {left}, double {right})"
+        )
+        abs_res = self.operation(f"call double @llvm.fabs.f64(double {result})")
+        is_inf = self.operation(f"fcmp oeq double {abs_res}, 0x7FF0000000000000")
+        abs_left = self.operation(f"call double @llvm.fabs.f64(double {left})")
+        left_fin = self.operation(f"fcmp olt double {abs_left}, 0x7FF0000000000000")
+        abs_right = self.operation(f"call double @llvm.fabs.f64(double {right})")
+        right_fin = self.operation(f"fcmp olt double {abs_right}, 0x7FF0000000000000")
+        both_fin = self.operation(f"and i1 {left_fin}, {right_fin}")
+        overflow = self.operation(f"and i1 {is_inf}, {both_fin}")
+        failed_ovf, ok_label = self.fresh("pow.ovf")[1:], self.fresh("pow.ok")[1:]
+        self.line(f"br i1 {overflow}, label %{failed_ovf}, label %{ok_label}")
+        self.lines.append(failed_ovf + ":")
+        self.line("call i32 @mule_native_overflow()")
+        self.line(f"br label %{self.failure_target()}")
+        self.lines.append(ok_label + ":")
+        return result
+
     def field_address(self, tn, owner: str, name: str) -> str:
         layout = tn.primitive_type.layout
         index = layout.info.fields.index(name)
@@ -5731,13 +5782,34 @@ class FunctionGenerator:
             )
             return self.operation(f"call ptr {helper}({operands})")
         order = function.call_order(keywords, len(arguments))
+        default_types = function.default_types
         argument_types = tuple(
             (argument_refs[index].tn.type or UNKNOWN) if index >= 0 else None
             for index in order
         )
         supplied_sources = [source for source in argument_types if source is not None]
         if len(supplied_sources) != len(order):
-            steps = ((None, ()),)
+            omitted_defaults = [
+                default_types[def_idx]
+                if 0 <= (def_idx := -2 - index) < len(default_types)
+                else UNKNOWN
+                for index in order
+                if index < 0
+            ]
+            if any(def_t.has_float_specialization() for def_t in omitted_defaults):
+                full_types = [
+                    (argument_refs[index].tn.type or UNKNOWN)
+                    if index >= 0
+                    else (
+                        default_types[def_idx]
+                        if 0 <= (def_idx := -2 - index) < len(default_types)
+                        else UNKNOWN
+                    )
+                    for index in order
+                ]
+                steps = entry_steps(module, function, full_types)
+            else:
+                steps = ((None, ()),)
         else:
             steps = entry_steps(module, function, supplied_sources)
         if unpack_arity is not None:

@@ -62,6 +62,7 @@ from .ctype import (
     IMMORTAL_UNBOUND,
     INTEGER,
     INTERNED_TEXT_TYPE,
+    ITERATOR_TYPE,
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
@@ -75,6 +76,7 @@ from .ctype import (
     InstanceType,
     IntegerType,
     IteratorType,
+    ListType,
     TextType,
     TupleType,
     ValueType,
@@ -1668,6 +1670,12 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 fact = self.walk.invalidated[key]
             if key in self.walk.local_vars_set:
                 fact = self._update_relations_on_set(key, node.value, fact)
+                if key.type is not None and fact.type.fits(PYTHON_INTEGER):
+                    fact = Fact(
+                        fact.type.annotated_integer(key.type),
+                        fact.target,
+                        fact.proven,
+                    )
             seq_key = self.walk.seq_len_keys.get(key)
             if seq_key is not None:
                 self._update_seq_len_on_set(seq_key, node.value, fact)
@@ -1874,11 +1882,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
         value = self.type_of(node.value)
         if value is BOTTOM:
             return NO_FACT
-        if (
-            node.declaration is not None
-            and node.declaration[0] == "inferred-return"
-            and node.contract.fact is PYTHON_INTEGER
-        ):
+        if node.declaration is not None and node.declaration[0] == "inferred-return":
             call = node.declaration[1]
             if call.kind in (CallKind.FULL, CallKind.GUARDED) and call.info is not None:
                 callee_fact = self.fact_of(call.fun)
@@ -1888,22 +1892,45 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     and (
                         target_lam in self.walk.recursive_targets
                         or self.walk.is_specialized_context
+                        or self.walk.for_return_derivation
                     )
                 ):
-                    arg_types = tuple(self.type_of(arg) for arg in call.args)
+                    arg_facts = tuple(self.fact_of(arg) for arg in call.args)
+                    arg_types = tuple(f.type for f in arg_facts)
                     if any(t is BOTTOM for t in arg_types):
                         return NO_FACT
+                    arg_domains = tuple(
+                        FunctionType(target=lam)
+                        if t is UNKNOWN
+                        and f.target is not None
+                        and (lam := f.target.as_lambda()) is not None
+                        else t
+                        for f, t in zip(arg_facts, arg_types, strict=True)
+                    )
                     resolved = self.walk.resolve_call(
                         callee_fact,
-                        tuple(t.widen_constant() for t in arg_types),
+                        tuple(t.widen_inferred_contract() for t in arg_domains),
                         call.info.location,
                         call.info.keywords,
                         True,
                     )
                     if resolved is BOTTOM:
                         return NO_FACT
-                    if resolved.is_fixnum:
+                    if node.contract.fact is PYTHON_INTEGER and resolved.is_fixnum:
                         return _fact(resolved.widen_constant())
+                    if (
+                        (
+                            self.walk.is_specialized_context
+                            or self.walk.for_return_derivation
+                        )
+                        and resolved is not UNKNOWN
+                        and not resolved.has_unspecialized_part()
+                    ):
+                        specialized_fact = InferredReturnContract(
+                            target_lam.name, resolved.widen_inferred_contract()
+                        ).fact
+                        if specialized_fact.fits(node.contract.fact):
+                            return _fact(specialized_fact)
         if self.walk.annotations.check(
             node.contract, value, node.location, node.declaration
         ):
@@ -1940,11 +1967,14 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 seq_len = self.sequence_length_type(node.args[0])
                 if seq_len is not None:
                     return _fact(seq_len)
+            arg_domains = tuple(
+                self.fact_of(arg).argument_domain() for arg in node.args
+            )
             callee_fact = self.fact_of(node.fun)
             target = self.resolve_call_target(node)
             resolved = self.walk.resolve_call(
                 callee_fact,
-                arg_types,
+                arg_domains,
                 info.location,
                 info.keywords,
             )
@@ -1957,7 +1987,13 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 and (target_lam := callee_fact.target.as_lambda()) is not None
                 and (
                     target_lam in self.walk.recursive_targets
-                    or self.walk.is_specialized_context
+                    or (
+                        not self.walk.lambda_.is_protocol
+                        and (
+                            not self.walk.unique_targets
+                            or target_lam in self.walk.unique_targets
+                        )
+                    )
                 )
                 and self.walk.lambda_.policy.infers_return_contracts
                 and node.lexenv.policy.infers_return_contracts
@@ -1966,7 +2002,13 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 and node.lvar is not None
                 and len(node.lvar.uses) == 1
                 and node.lvar.dest is not None
-                and not node.lvar.dest.accept(_InferredReturnDestination(node))
+                and (
+                    (
+                        self.walk.for_return_derivation
+                        and not self.walk.lambda_.is_protocol
+                    )
+                    or not node.lvar.dest.accept(_InferredReturnDestination(node))
+                )
                 and len(node.fun.uses) == 1
                 and (callee_name := node.fun.use().accept(_GLOBAL_CALLEE_NAME))
                 is not None
@@ -1982,7 +2024,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
             ):
                 inferred_res = self.walk.resolve_call(
                     callee_fact,
-                    tuple(t.widen_constant() for t in arg_types),
+                    tuple(t.widen_inferred_contract() for t in arg_domains),
                     info.location,
                     info.keywords,
                     True,
@@ -1991,7 +2033,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     return NO_FACT
                 if inferred_res is not UNKNOWN:
                     resolved = InferredReturnContract(
-                        target_lam.name, inferred_res.widen_constant()
+                        target_lam.name, inferred_res.widen_inferred_contract()
                     ).fact
             if resolved is UNKNOWN and target is not None:
                 resolved = target.propagate_call(
@@ -2054,7 +2096,11 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 for arg in node.args:
                     self.widen_escaped_container(self.origins.get(arg))
             fact = _fact(resolved)
-            self.invalidate()
+            if not (
+                builtin_type is not UNKNOWN
+                and not any(t.may_run_user_code for t in arg_types)
+            ):
+                self.invalidate()
             return fact
         return self.derive_known(node)
 
@@ -3976,7 +4022,9 @@ class _Walk:
         builtin_targets: (Mapping[str, object] | None) = None,
         class_facts: Mapping | None = None,
         recursive_targets: frozenset[Lambda] = frozenset(),
+        unique_targets: frozenset[Lambda] = frozenset(),
         is_specialized_context: bool = False,
+        for_return_derivation: bool = False,
     ):
         self.lambda_ = lambda_
         self.global_targets = global_targets
@@ -3993,7 +4041,9 @@ class _Walk:
         self.builtin_targets = builtin_targets
         self.class_facts = class_facts or {}
         self.recursive_targets = recursive_targets
+        self.unique_targets = unique_targets
         self.is_specialized_context = is_specialized_context
+        self.for_return_derivation = for_return_derivation
         # Calls this walk resolved to methods of typed classes.
         self.method_calls: list[CallSite] = []
         self.method_targets: dict[object, Lambda] = {}
@@ -4212,12 +4262,13 @@ class _Walk:
         arg_types: tuple[ValueType, ...],
         keywords: tuple[str | None, ...] = (),
     ) -> ValueType:
-        if (
-            self.lambda_.kind is FunctionalKind.TOPLEVEL
-            or self.lambda_.policy.safety >= 3
-        ):
+        if self.lambda_.policy.safety >= 3:
             return UNKNOWN
         name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
+        if self.lambda_.kind is FunctionalKind.TOPLEVEL and (
+            self.lambda_.is_protocol or name != "list"
+        ):
+            return UNKNOWN
         if name is None or name in self.rebound_globals or name in self.global_targets:
             return UNKNOWN
         if self.builtin_targets is not None:
@@ -4226,6 +4277,11 @@ class _Walk:
                 derived = target.derive_return_type(arg_types, keywords)
                 if derived is not UNKNOWN:
                     return derived
+        bootstrap_target = BOOTSTRAP_BUILTIN_TARGETS.get(name)
+        if bootstrap_target is not None:
+            derived = bootstrap_target.derive_return_type(arg_types, keywords)
+            if derived is not UNKNOWN:
+                return derived
         if not keywords and self.builtin_return_types is not None:
             return self.builtin_return_types.get(name, UNKNOWN)
         return UNKNOWN
@@ -4492,11 +4548,22 @@ class _Walk:
                                 key_visits[block, key] += 1
                                 widened_keys[block].add(key)
                                 if key_visits[block, key] in (3, 4):
-                                    widened[key] = widen_fact(old_val, val, thresholds)
+                                    w_val = widen_fact(old_val, val, thresholds)
                                 elif key_visits[block, key] > 4:
-                                    widened[key] = widen_fact(old_val, val)
+                                    w_val = widen_fact(old_val, val)
                                 else:
-                                    widened[key] = val
+                                    w_val = val
+                                if (
+                                    key in self.local_vars_set
+                                    and key.type is not None
+                                    and w_val.type.fits(PYTHON_INTEGER)
+                                ):
+                                    w_val = Fact(
+                                        w_val.type.annotated_integer(key.type),
+                                        w_val.target,
+                                        w_val.proven,
+                                    )
+                                widened[key] = w_val
                             else:
                                 widened[key] = val
                         if widened != state:
@@ -4510,12 +4577,24 @@ class _Walk:
                 if visits[block] >= 3 and previous is not None:
                     state, state_changed = join_states(previous, state)
                     if state_changed and block in headers:
-                        state = {
-                            k: widen_fact(previous[k], v)
-                            if v is not previous[k] and v != previous[k]
-                            else v
-                            for k, v in state.items()
-                        }
+                        new_state = {}
+                        for k, v in state.items():
+                            if v is not previous[k] and v != previous[k]:
+                                w_v = widen_fact(previous[k], v)
+                                if (
+                                    k in self.local_vars_set
+                                    and k.type is not None
+                                    and w_v.type.fits(PYTHON_INTEGER)
+                                ):
+                                    w_v = Fact(
+                                        w_v.type.annotated_integer(k.type),
+                                        w_v.target,
+                                        w_v.proven,
+                                    )
+                                new_state[k] = w_v
+                            else:
+                                new_state[k] = v
+                        state = new_state
                 else:
                     state_changed = state is not previous and state != previous
                 rel_changed = rels != old_rels
@@ -4925,6 +5004,87 @@ def _derive_builtin_max(
     return UNKNOWN
 
 
+def _derive_builtin_enumerate(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if 1 <= len(arg_types) <= 2 and not keywords:
+        if len(arg_types) == 2 and not arg_types[1].fits(PYTHON_INTEGER):
+            return UNKNOWN
+        iter_t = arg_types[0].flow_iterate_type()
+        elem_t = iter_t.next_item_type() if iter_t.fits_iterator() else UNKNOWN
+        idx_t = IntegerType(0, (1 << 60) - 1) if len(arg_types) == 1 else INTEGER
+        return IteratorType(TupleType(2, (idx_t, elem_t)))
+    return IteratorType(TupleType(2))
+
+
+def _derive_builtin_zip(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if not arg_types:
+        return IteratorType(TupleType(0, ()))
+    elems = []
+    for arg in arg_types:
+        iter_t = arg.flow_iterate_type()
+        elems.append(iter_t.next_item_type() if iter_t.fits_iterator() else UNKNOWN)
+    return IteratorType(
+        TupleType(
+            len(arg_types),
+            None if all(e is UNKNOWN for e in elems) else tuple(elems),
+        )
+    )
+
+
+def _derive_builtin_iter(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 1 and not keywords:
+        return arg_types[0].flow_iterate_type()
+    return ITERATOR_TYPE
+
+
+def _derive_builtin_next(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 1 and not keywords:
+        return arg_types[0].next_item_type()
+    if len(arg_types) == 2 and not keywords:
+        item = arg_types[0].next_item_type()
+        return UNKNOWN if item is UNKNOWN else item.join(arg_types[1])
+    return UNKNOWN
+
+
+def _derive_builtin_reversed(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 1 and not keywords:
+        iter_t = arg_types[0].flow_iterate_type()
+        if iter_t.fits_iterator():
+            return iter_t
+    return ITERATOR_TYPE
+
+
+def _derive_builtin_sorted(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) >= 1:
+        iter_t = arg_types[0].flow_iterate_type()
+        if iter_t.fits_iterator() and iter_t.element is not BOTTOM:
+            return ListType(iter_t.element)
+    return LIST_TYPE
+
+
 BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget] = {
     **BOOTSTRAP_CLASS_TARGETS,
     "len": ForeignCallTarget(
@@ -4938,6 +5098,30 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget]
     "max": ForeignCallTarget(
         return_type=UNKNOWN,
         derive_fn=_derive_builtin_max,
+    ),
+    "enumerate": ForeignCallTarget(
+        return_type=IteratorType(TupleType(2)),
+        derive_fn=_derive_builtin_enumerate,
+    ),
+    "zip": ForeignCallTarget(
+        return_type=ITERATOR_TYPE,
+        derive_fn=_derive_builtin_zip,
+    ),
+    "iter": ForeignCallTarget(
+        return_type=ITERATOR_TYPE,
+        derive_fn=_derive_builtin_iter,
+    ),
+    "next": ForeignCallTarget(
+        return_type=UNKNOWN,
+        derive_fn=_derive_builtin_next,
+    ),
+    "reversed": ForeignCallTarget(
+        return_type=ITERATOR_TYPE,
+        derive_fn=_derive_builtin_reversed,
+    ),
+    "sorted": ForeignCallTarget(
+        return_type=LIST_TYPE,
+        derive_fn=_derive_builtin_sorted,
     ),
     "range": ForeignCallTarget(return_type=IteratorType(INTEGER)),
     "ord": ForeignCallTarget(return_type=IntegerType(0, 0x10FFFF)),
@@ -4965,7 +5149,9 @@ def propagate(
     builtin_targets: (Mapping[str, object] | None) = None,
     class_facts: Mapping | None = None,
     recursive_targets: frozenset[Lambda] = frozenset(),
+    unique_targets: frozenset[Lambda] = frozenset(),
     is_specialized_context: bool = False,
+    for_return_derivation: bool = False,
 ) -> Body:
     """Propagate facts through ``lambda_`` from the given parameter types.
 
@@ -4994,7 +5180,9 @@ def propagate(
         builtin_targets=builtin_targets,
         class_facts=class_facts,
         recursive_targets=recursive_targets,
+        unique_targets=unique_targets,
         is_specialized_context=is_specialized_context,
+        for_return_derivation=for_return_derivation,
     ).run()
 
 

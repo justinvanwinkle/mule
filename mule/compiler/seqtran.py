@@ -17,6 +17,7 @@ from .ctype import (
     BOOLEAN_TRUE,
     BYTEARRAY_TYPE,
     BYTES_TYPE,
+    FIXNUM_MIN,
     INTEGER,
     LIST_TYPE,
     NONE_TYPE,
@@ -370,6 +371,141 @@ _is_safe_dropped_element = is_pure_bound_ref
 _delete_pure_ref = _flush_operand
 
 
+class _UnmutatedEnumerateGlobalRef(NodeVisitor, LeafVisitor):
+    """Match a ``Ref`` to an unmutated ``GlobalVar('enumerate')``."""
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        if node.lexenv.policy.safety >= 3:
+            return False
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_GlobalVar(self, leaf: GlobalVar) -> bool:
+        return leaf.name == "enumerate" and not leaf.sets
+
+
+_UNMUTATED_ENUMERATE_GLOBAL_REF = _UnmutatedEnumerateGlobalRef()
+
+
+class _EnumerateCallCheck(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.prev is not None
+            and node.kind in (CallKind.FULL, CallKind.GUARDED)
+            and 1 <= len(node.args) <= 2
+            and not (node.info is not None and node.info.keywords)
+            and len(node.fun.uses) == 1
+            and node.fun.uses[0].accept(_UNMUTATED_ENUMERATE_GLOBAL_REF)
+        ):
+            return node
+        return None
+
+
+_ENUMERATE_CALL_CHECK = _EnumerateCallCheck()
+
+
+class _EnumerateIterateCheck(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.prev is not None
+            and node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.PROTOCOLS["iterate"]
+            and len(node.args) == 1
+            and len(node.args[0].uses) == 1
+        ):
+            enum_call = node.args[0].uses[0].accept(_ENUMERATE_CALL_CHECK)
+            if enum_call is not None and enum_call.block is node.block:
+                return node, enum_call
+        return None
+
+
+_ENUMERATE_ITERATE_CHECK = _EnumerateIterateCheck()
+
+
+class _SequenceAvailableOnLvar(NodeVisitor):
+    def __init__(self, target_lvar: Lvar):
+        self.target_lvar = target_lvar
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Combination(self, node: Combination) -> bool:
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info
+            in (
+                fndb.SEQUENCE_AVAILABLE,
+                fndb.PROTOCOLS.get("sequence_available"),
+            )
+            and len(node.args) >= 1
+            and node.args[0] is self.target_lvar
+        )
+
+
+class _EnumerateIteratorRef(NodeVisitor, LeafVisitor):
+    def __init__(self):
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if len(leaf.sets) != 1:
+            return None
+        store = leaf.sets[0]
+        if store.prev is None or store.value is None or len(store.value.uses) != 1:
+            return None
+        matched = store.value.uses[0].accept(_ENUMERATE_ITERATE_CHECK)
+        if matched is None:
+            return None
+        iterate_call, enum_call = matched
+        if store.block is not iterate_call.block:
+            return None
+        return self._ref, leaf, store, iterate_call, enum_call
+
+
+class _NextItemEnumerateProducer(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.PROTOCOLS["next_item"]
+            and len(node.args) == 1
+            and len(node.args[0].uses) == 1
+        ):
+            setup = None
+            if node.info is not None and hasattr(node.info, "accept"):
+                setup = node.info.accept(_EnumerateIteratorRef())
+            if setup is None:
+                setup = node.args[0].uses[0].accept(_EnumerateIteratorRef())
+            if setup is not None:
+                return (node, *setup)
+        return None
+
+
+_NEXT_ITEM_ENUMERATE_PRODUCER = _NextItemEnumerateProducer()
+
+
 @deftransform("%unpack")
 def _transform_unpack(node: Combination) -> bool:
     if node.lvar is None or len(node.args) != 2 or len(node.fun.uses) != 1:
@@ -400,13 +536,71 @@ def _transform_unpack(node: Combination) -> bool:
     seq_literal = constant_literal(seq_lvar)
     const_elements = None
     build_node = None
+    enum_setup = None
     if seq_literal is not None:
         const_elements = seq_literal.accept(_CONSTANT_TUPLE_ELEMENTS)
         if const_elements is None or len(const_elements) != n:
             return False
     else:
         build_node = seq_producer.accept(_BUILD_SEQUENCE_PRODUCER)
-        if build_node is None or len(build_node.args) != n:
+        if build_node is not None:
+            if len(build_node.args) != n:
+                return False
+        elif n == 2 and node.lexenv.policy.safety < 3:
+            home = node.home_lambda
+            if home is not None and (
+                home.policy.safety < 3 and not home.name.startswith(_PROTOCOL_PREFIXES)
+            ):
+                enum_setup = seq_producer.accept(_NEXT_ITEM_ENUMERATE_PRODUCER)
+                if enum_setup is not None:
+                    (
+                        _next_call,
+                        next_iter_ref,
+                        iterator_var,
+                        iter_set,
+                        iterate_call,
+                        enum_call,
+                    ) = enum_setup
+                    start_val = 0
+                    if len(enum_call.args) == 2:
+                        start_lit = constant_literal(enum_call.args[1])
+                        s_val = (
+                            None
+                            if start_lit is None
+                            else start_lit.accept(_EXACT_INTEGER_LITERAL)
+                        )
+                        if (
+                            s_val is None
+                            or not is_pure_bound_ref(enum_call.args[1])
+                            or not (FIXNUM_MIN <= s_val < (1 << 60))
+                        ):
+                            enum_setup = None
+                        else:
+                            start_val = s_val
+                    if enum_setup is not None:
+                        valid_refs = True
+                        saw_avail = False
+                        for ref in iterator_var.refs:
+                            if ref is next_iter_ref:
+                                continue
+                            if ref.lvar is None:
+                                continue
+                            if (
+                                len(ref.lvar.uses) == 1
+                                and ref.lvar.dest is not None
+                                and ref.lvar.dest.accept(
+                                    _SequenceAvailableOnLvar(ref.lvar)
+                                )
+                            ):
+                                saw_avail = True
+                                continue
+                            valid_refs = False
+                            break
+                        if not valid_refs or not saw_avail:
+                            enum_setup = None
+            if enum_setup is None:
+                return False
+        else:
             return False
 
     dest = node.lvar.dest
@@ -447,7 +641,91 @@ def _transform_unpack(node: Combination) -> bool:
     if discard_ref is None or any(call is None for call in ref_calls):
         return False
 
-    if build_node is not None:
+    if enum_setup is not None:
+        (
+            _next_call,
+            _next_iter_ref,
+            iterator_var,
+            iter_set,
+            iterate_call,
+            enum_call,
+        ) = enum_setup
+        start_val = 0
+        if len(enum_call.args) == 2:
+            start_lit = constant_literal(enum_call.args[1])
+            assert start_lit is not None
+            start_val = start_lit.accept(_EXACT_INTEGER_LITERAL)
+            assert start_val is not None
+            _delete_pure_ref(enum_call.args[1])
+        seq_arg = enum_call.args[0]
+        enum_call.args = []
+        seq_arg.dest = iterate_call
+        enum_res_lvar = iterate_call.args[0]
+        enum_res_lvar.dest = None
+        delete_lvar_use(enum_call)
+        iterate_call.args[0] = seq_arg
+        _flush_operand(enum_call.fun)
+        unlink_node(enum_call)
+
+        home = node.home_lambda
+        idx_var = LambdaVar(f"$enum_idx_{iterator_var.name}")
+        idx_var.home = home
+        idx_var.type = IntegerType(start_val, (1 << 60) - 1)
+        home.locals.append(idx_var)
+
+        init_lvar = _emit_const_int_before(iter_set, start_val)
+        init_set = Set(iter_set.lexenv, iter_set.source, idx_var, init_lvar)
+        init_lvar.dest = init_set
+        idx_var.sets.append(init_set)
+        insert_node_before(iter_set, init_set)
+
+        ref_call_0 = ref_calls[0]
+        ref_call_1 = ref_calls[1]
+        assert ref_call_0 is not None and ref_call_1 is not None
+
+        idx_out_lvar = linked(ref_call_0.lvar, ref_call_0, "lvar")
+        cur_idx_ref = Ref(ref_call_0.lexenv, ref_call_0.source, idx_var)
+        cur_idx_ref.derived_type = idx_var.type
+        idx_var.refs.append(cur_idx_ref)
+        insert_node_before(ref_call_0, cur_idx_ref)
+        delete_lvar_use(ref_call_0)
+        use_lvar(cur_idx_ref, idx_out_lvar)
+        reoptimize_lvar(idx_out_lvar)
+
+        inc_read_ref = Ref(ref_call_0.lexenv, ref_call_0.source, idx_var)
+        inc_read_ref.derived_type = idx_var.type
+        idx_var.refs.append(inc_read_ref)
+        inc_read_lvar = Lvar()
+        use_lvar(inc_read_ref, inc_read_lvar)
+        inc_read_lvar.derived_type = idx_var.type
+        insert_node_before(ref_call_0, inc_read_ref)
+
+        one_lvar = _emit_const_int_before(ref_call_0, 1)
+        add_info = fndb.BINARY[ast.BinaryOperator.ADD]
+        add_res_lvar = _emit_known_call_before(
+            ref_call_0, add_info, [inc_read_lvar, one_lvar]
+        )
+        inc_set = Set(ref_call_0.lexenv, ref_call_0.source, idx_var, add_res_lvar)
+        add_res_lvar.dest = inc_set
+        idx_var.sets.append(inc_set)
+        insert_node_before(ref_call_0, inc_set)
+
+        _flush_operand(ref_call_0.fun)
+        _delete_pure_ref(ref_call_0.args[0])
+        _delete_pure_ref(ref_call_0.args[1])
+        ref_call_0.args = []
+        unlink_node(ref_call_0)
+
+        val_out_lvar = linked(ref_call_1.lvar, ref_call_1, "lvar")
+        delete_lvar_use(ref_call_1)
+        seq_lvar.dest = None
+        substitute_lvar_uses(val_out_lvar, seq_lvar)
+        _flush_operand(ref_call_1.fun)
+        _delete_pure_ref(ref_call_1.args[0])
+        _delete_pure_ref(ref_call_1.args[1])
+        ref_call_1.args = []
+        unlink_node(ref_call_1)
+    elif build_node is not None:
         source_lvars = list(build_node.args)
         build_node.args = []
         for i in range(n):

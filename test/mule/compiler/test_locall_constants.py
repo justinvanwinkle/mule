@@ -5,12 +5,14 @@ from mule.compiler.ctype import (
     BYTES_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
+    FLOAT,
     FROZENSET_TYPE,
     INTEGER,
     NONE_TYPE,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
+    ListType,
     TupleType,
 )
 from mule.compiler.locall import collect_global_constants
@@ -337,3 +339,96 @@ def test_cross_module_imported_constants_propagate_without_underscore_spelling(
             UNKNOWN,
         ),
     )
+
+
+def test_module_global_containers_propagate_to_default_parameter_specialization():
+    source = (
+        "def combinations(items):\n"
+        " result = []\n"
+        " for i in range(len(items)):\n"
+        "  for j in range(i + 1, len(items)):\n"
+        "   result.append((items[i], items[j]))\n"
+        " return result\n"
+        "BODIES = {'a': ([1.0, 2.0], [0.1, 0.2], 3.0), 'b': ([4.0, 5.0], [0.3, 0.4], 6.0)}\n"
+        "SYSTEM = list(BODIES.values())\n"
+        "PAIRS = combinations(SYSTEM)\n"
+        "def step(dt, n, bodies=SYSTEM, pairs=PAIRS):\n"
+        " for _ in range(n):\n"
+        "  for ([x1, y1], v1, m1), ([x2, y2], v2, m2) in pairs:\n"
+        "   dx = x1 - x2\n"
+        "   dy = y1 - y2\n"
+        "   mag = dt * ((dx * dx + dy * dy) ** (-1.5))\n"
+        "   v1[0] -= dx * m2 * mag\n"
+        "   v2[0] += dx * m1 * mag\n"
+        "  for r, [vx, vy], _m in bodies:\n"
+        "   r[0] += vx * dt\n"
+        "   r[1] += vy * dt\n"
+        "def run():\n"
+        " step(0.01, 2)\n"
+        " return SYSTEM[0][0][0]\n"
+    )
+    compilation = compile_source(source)
+    by_name = {lam.source_name: lam for lam in compilation.lambdas}
+    step_fn = by_name["step"]
+    assert step_fn.default_types[0] == ListType(
+        TupleType(3, (ListType(FLOAT), ListType(FLOAT), FLOAT))
+    )
+    assert step_fn.default_types[1] == ListType(
+        TupleType(
+            2,
+            (
+                TupleType(3, (ListType(FLOAT), ListType(FLOAT), FLOAT)),
+                TupleType(3, (ListType(FLOAT), ListType(FLOAT), FLOAT)),
+            ),
+        )
+    )
+    assert compilation.facts is not None
+    observed_variants = [
+        v for v in compilation.facts[step_fn].variants if v.id == "observed"
+    ]
+    assert len(observed_variants) == 1
+    assert observed_variants[0].parameters[0] is FLOAT
+    assert observed_variants[0].parameters[2] == step_fn.default_types[0]
+    assert observed_variants[0].parameters[3] == step_fn.default_types[1]
+
+
+def test_higher_order_callable_and_tuple_element_specialization():
+    source = (
+        "def eval_A(i, j):\n"
+        " return 1.0 / ((i + j) * (i + j + 1) // 2 + i + 1)\n"
+        "def part_A_times_u(i_u):\n"
+        " i, u = i_u\n"
+        " partial_sum = 0\n"
+        " for j, u_j in enumerate(u):\n"
+        "  partial_sum += eval_A(i, j) * u_j\n"
+        " return partial_sum\n"
+        "def part_At_times_u(i_u):\n"
+        " i, u = i_u\n"
+        " partial_sum = 0\n"
+        " for j, u_j in enumerate(u):\n"
+        "  partial_sum += eval_A(j, i) * u_j\n"
+        " return partial_sum\n"
+        "def eval_times_u(func, u):\n"
+        " return [func((i, u)) for i in range(len(list(u)))]\n"
+        "def eval_AtA_times_u(u):\n"
+        " return eval_times_u(part_At_times_u, eval_times_u(part_A_times_u, u))\n"
+        "def bench(n):\n"
+        " u = [1] * n\n"
+        " for _ in range(3):\n"
+        "  v = eval_AtA_times_u(u)\n"
+        "  u = eval_AtA_times_u(v)\n"
+        " return u\n"
+        "bench(4)\n"
+    )
+    compilation = compile_source(source)
+    assert compilation.facts is not None
+    by_name = {lam.source_name: lam for lam in compilation.lambdas}
+    eval_times_variants = compilation.facts[by_name["eval_times_u"]].variants
+    assert len(eval_times_variants) == 2
+    for fn_name in ("part_A_times_u", "part_At_times_u"):
+        variants = compilation.facts[by_name[fn_name]].variants
+        assert len(variants) == 1
+        param = variants[0].parameters[0]
+        assert param.arity == 2
+        assert param.elements is not None
+        assert param.elements[1].has_float_specialization()

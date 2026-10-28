@@ -16,6 +16,7 @@ functions shared by the object templates are emitted once per module from
 
 from __future__ import annotations
 
+import math
 import struct
 from enum import IntEnum
 
@@ -31,6 +32,7 @@ from .ctype import (
     UNKNOWN,
     ValueTypeVisitor,
 )
+from .node import CallKind, LeafVisitor, NodeVisitor
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -38,6 +40,7 @@ from .vop import (
     BOX_LAYOUTS,
     BOXED_FLOAT,
     BOXED_I64,
+    BOXED_REAL,
     CLASS,
     DESCRIPTOR,
     DOUBLE,
@@ -875,7 +878,45 @@ class _InferredResultPredicate(ValueTypeVisitor):
         return self.gen.operation(f"and i1 {known}, {same}")
 
     def visit_ListType(self, fact):
-        return self.kind(_ReturnValueKind.LIST)
+        valid = self.kind(_ReturnValueKind.LIST)
+        if fact.element is UNKNOWN:
+            return valid
+        start = self.gen.fresh("return.list.start")[1:]
+        header = self.gen.fresh("return.list.header")[1:]
+        loop = self.gen.fresh("return.list.loop")[1:]
+        body = self.gen.fresh("return.list.body")[1:]
+        step = self.gen.fresh("return.list.step")[1:]
+        done = self.gen.fresh("return.list.done")[1:]
+        self.gen.line(f"br label %{start}")
+        self.gen.lines.append(start + ":")
+        self.gen.line(f"br i1 {valid}, label %{header}, label %{done}")
+        self.gen.lines.append(header + ":")
+        len_addr = self.gen.operation(
+            f"getelementptr i64, ptr {self.value}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+        )
+        length = self.gen.operation(f"load i64, ptr {len_addr}")
+        data_addr = self.gen.operation(
+            f"getelementptr ptr, ptr {self.value}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+        )
+        data = self.gen.operation(f"load ptr, ptr {data_addr}")
+        self.gen.line(f"br label %{loop}")
+        self.gen.lines.append(loop + ":")
+        idx = self.gen.operation(f"phi i64 [0, %{header}], [%next.{step}, %{step}]")
+        at_end = self.gen.operation(f"icmp eq i64 {idx}, {length}")
+        self.gen.line(f"br i1 {at_end}, label %{done}, label %{body}")
+        self.gen.lines.append(body + ":")
+        slot = self.gen.operation(f"getelementptr ptr, ptr {data}, i64 {idx}")
+        item = self.gen.operation(f"load ptr, ptr {slot}")
+        elem_valid = fact.element.accept(_InferredResultPredicate(self.assertion, item))
+        elem_end = self.gen.current_block()
+        self.gen.line(f"br i1 {elem_valid}, label %{step}, label %{done}")
+        self.gen.lines.append(step + ":")
+        self.gen.lines.append(f"  %next.{step} = add i64 {idx}, 1")
+        self.gen.line(f"br label %{loop}")
+        self.gen.lines.append(done + ":")
+        return self.gen.operation(
+            f"phi i1 [false, %{start}], [true, %{loop}], [false, %{elem_end}]"
+        )
 
     def visit_DictType(self, fact):
         return self.kind(_ReturnValueKind.DICT)
@@ -1409,8 +1450,32 @@ for _operator, _opcode in UNARY_OPCODES.items():
 def unbox_float_operand(gen, operand):
     if operand.tn.sc is DOUBLE:
         return gen.load(operand)
+    ptr_val = gen.load(operand)
+    if operand.tn.primitive_type is BOXED_REAL:
+        bits = gen.operation(f"ptrtoint ptr {ptr_val} to i64")
+        tag = gen.operation(f"and i64 {bits}, 1")
+        is_fix = gen.operation(f"icmp ne i64 {tag}, 0")
+        fix_lbl, flt_lbl, done_lbl = (
+            gen.fresh("real.fix")[1:],
+            gen.fresh("real.flt")[1:],
+            gen.fresh("real.done")[1:],
+        )
+        gen.line(f"br i1 {is_fix}, label %{fix_lbl}, label %{flt_lbl}")
+        gen.lines.append(fix_lbl + ":")
+        fix_i64 = gen.operation(f"ashr i64 {bits}, 1")
+        fix_f64 = gen.operation(f"sitofp i64 {fix_i64} to double")
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(flt_lbl + ":")
+        flt_f64 = gen.operation(
+            f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {ptr_val})"
+        )
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(done_lbl + ":")
+        return gen.operation(
+            f"phi double [{fix_f64}, %{fix_lbl}], [{flt_f64}, %{flt_lbl}]"
+        )
     return gen.operation(
-        f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {gen.load(operand)})"
+        f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {ptr_val})"
     )
 
 
@@ -1516,6 +1581,69 @@ for _operator, _opcode in _RAW_FLOAT_BINARY.items():
     _mixed_float_binary(_operator, _opcode, False)
 
 
+def _mixed_real_float_binary(operator, opcode, left_float: bool):
+    arg_scs = (
+        ((DESCRIPTOR, DOUBLE), (DESCRIPTOR,))
+        if left_float
+        else ((DESCRIPTOR,), (DESCRIPTOR, DOUBLE))
+    )
+    arg_ptypes = (
+        ((BOXED_FLOAT,), (BOXED_REAL,))
+        if left_float
+        else ((BOXED_REAL,), (BOXED_FLOAT,))
+    )
+    side = "left" if left_float else "right"
+
+    @define_vop(
+        f"mixed-real-float-{operator.name.lower()}-{side}",
+        translate=fndb.BINARY[operator],
+        also_translate=(fndb.INPLACE_BINARY[operator],),
+        args=arg_scs,
+        results=((DESCRIPTOR, DOUBLE),),
+        arg_types=arg_ptypes,
+        result_types=((BOXED_FLOAT,),),
+        cost=-1,
+        fresh_result=True,
+        reuses_local=not left_float,
+        arg_escapes=(False, False),
+    )
+    def generator(gen, vop):
+        operands = [unbox_float_operand(gen, operand) for operand in vop.args]
+        value = gen.float_arithmetic(opcode, *operands, check_zero=True)
+        left, right = (gen.take(operand) for operand in vop.args)
+        consumed = [
+            val
+            for operand, val in zip(vop.args, (left, right))
+            if operand.tn.sc is DESCRIPTOR
+        ]
+        if vop.results[0].tn.sc is DOUBLE:
+            gen.store(vop.results[0], value)
+            for operand in consumed:
+                gen.release(operand)
+            return
+        info = vop.codegen_info
+        if (
+            not left_float
+            and info is not None
+            and info.reuse_local is not None
+            and gen.local_owned(info.reuse_local)
+            and vop.args[0].tn.sc is DESCRIPTOR
+        ):
+            local = gen.operation(f"load ptr, ptr {gen.local_slot(info.reuse_local)}")
+            operation = (
+                f"call ptr @mule_box_f64_move(double {value}, ptr {left}, ptr {local})"
+            )
+            consumed = [right] if vop.args[1].tn.sc is DESCRIPTOR else []
+        else:
+            operation = f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
+        gen.pointer_result(vop.results[0], operation, consumed)
+
+
+for _operator, _opcode in _RAW_FLOAT_BINARY.items():
+    _mixed_real_float_binary(_operator, _opcode, True)
+    _mixed_real_float_binary(_operator, _opcode, False)
+
+
 @define_vop(
     "boxed-float-math-sqrt",
     translate=fndb.MATH_SQRT,
@@ -1543,6 +1671,172 @@ def boxed_float_math_sqrt(gen, vop):
         f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})",
         consumed,
     )
+
+
+class _SameLeafVar(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf):
+        return leaf if not leaf.indirect else None
+
+
+_SAME_LEAF_VAR = _SameLeafVar()
+
+
+class _NonNegativeLiteral(ast.Visitor):
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_IntegerLiteral(self, node) -> bool:
+        return node.value >= 0
+
+    def visit_FloatLiteral(self, node) -> bool:
+        return node.value >= 0.0
+
+
+_NON_NEGATIVE_LITERAL = _NonNegativeLiteral()
+
+
+class _IntegralExponentLiteral(ast.Visitor):
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_IntegerLiteral(self, node) -> bool:
+        return True
+
+    def visit_FloatLiteral(self, node) -> bool:
+        return math.isfinite(node.value) and node.value.is_integer()
+
+
+_INTEGRAL_EXPONENT_LITERAL = _IntegralExponentLiteral()
+
+
+class _IsIntegralExponentNode(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node) -> bool:
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_Constant(self, leaf) -> bool:
+        return leaf.value.accept(_INTEGRAL_EXPONENT_LITERAL)
+
+
+_IS_INTEGRAL_EXPONENT_NODE = _IsIntegralExponentNode()
+
+
+class _IsNonNegativeFloatNode(NodeVisitor, LeafVisitor):
+    def __init__(self):
+        self.visited = set()
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node) -> bool:
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_Constant(self, leaf) -> bool:
+        return leaf.value.accept(_NON_NEGATIVE_LITERAL)
+
+    def visit_LambdaVar(self, leaf) -> bool:
+        if (
+            leaf.indirect
+            or len(leaf.sets) != 1
+            or leaf.sets[0].value is None
+            or len(leaf.sets[0].value.uses) != 1
+            or leaf in self.visited
+        ):
+            return False
+        self.visited.add(leaf)
+        return leaf.sets[0].value.use().accept(self)
+
+    def visit_Cast(self, node) -> bool:
+        return len(node.value.uses) == 1 and node.value.use().accept(self)
+
+    def visit_Combination(self, node) -> bool:
+        if node.kind is not CallKind.KNOWN or len(node.args) != 2:
+            return False
+        if len(node.args[0].uses) != 1 or len(node.args[1].uses) != 1:
+            return False
+        u0, u1 = node.args[0].use(), node.args[1].use()
+        if node.fun_info is fndb.BINARY[ast.BinaryOperator.MULTIPLY]:
+            v0 = u0.accept(_SAME_LEAF_VAR)
+            if v0 is not None and v0 is u1.accept(_SAME_LEAF_VAR):
+                return True
+            return u0.accept(self) and u1.accept(self)
+        if node.fun_info is fndb.BINARY[ast.BinaryOperator.ADD]:
+            return u0.accept(self) and u1.accept(self)
+        return False
+
+
+def _is_real_float_power_call(call) -> bool:
+    if len(call.args) != 2:
+        return False
+    if len(call.args[1].uses) == 1 and call.args[1].use().accept(
+        _IS_INTEGRAL_EXPONENT_NODE
+    ):
+        return True
+    return len(call.args[0].uses) == 1 and call.args[0].use().accept(
+        _IsNonNegativeFloatNode()
+    )
+
+
+@define_vop(
+    "boxed-float-power",
+    translate=fndb.BINARY[ast.BinaryOperator.POWER],
+    also_translate=(fndb.INPLACE_BINARY[ast.BinaryOperator.POWER],),
+    args=((DESCRIPTOR, DOUBLE), (DESCRIPTOR, DOUBLE)),
+    results=((DESCRIPTOR, DOUBLE),),
+    arg_types=((BOXED_FLOAT,), (BOXED_FLOAT,)),
+    result_types=((BOXED_FLOAT,),),
+    guard=_is_real_float_power_call,
+    cost=-1,
+    fresh_result=True,
+    reuses_local=True,
+    arg_escapes=(False, False),
+)
+def boxed_float_power(gen, vop):
+    operands = [unbox_float_operand(gen, operand) for operand in vop.args]
+    value = gen.float_pow(*operands)
+    left, right = (gen.take(operand) for operand in vop.args)
+    consumed = [
+        val
+        for operand, val in zip(vop.args, (left, right))
+        if operand.tn.sc is DESCRIPTOR
+    ]
+    if vop.results[0].tn.sc is DOUBLE:
+        gen.store(vop.results[0], value)
+        for operand in consumed:
+            gen.release(operand)
+        return
+    info = vop.codegen_info
+    if (
+        info is not None
+        and info.reuse_local is not None
+        and gen.local_owned(info.reuse_local)
+        and vop.args[0].tn.sc is DESCRIPTOR
+    ):
+        local = gen.operation(f"load ptr, ptr {gen.local_slot(info.reuse_local)}")
+        operation = (
+            f"call ptr @mule_box_f64_move(double {value}, ptr {left}, ptr {local})"
+        )
+        consumed = [right] if vop.args[1].tn.sc is DESCRIPTOR else []
+    else:
+        operation = f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {value})"
+    gen.pointer_result(vop.results[0], operation, consumed)
 
 
 @define_vop(

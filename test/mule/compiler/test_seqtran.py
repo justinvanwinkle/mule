@@ -654,3 +654,17 @@ except IndexError:
     completed = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "61\nbounds_ok\n"
+
+
+def test_enumerate_for_loop_open_codes_index_and_sequence_iteration():
+    compilation = compile_source(
+        "def weighted_sum(items: list[float]) -> float:\n"
+        " total = 0.0\n"
+        " for idx, val in enumerate(items, 2):\n"
+        "  total += idx * val\n"
+        " return total\n"
+    )
+    fn = compilation.lambdas[1]
+    assert list(known_calls(fn, "%unpack")) == []
+    assert list(known_calls(fn, "%unpack_ref")) == []
+    check_ir1_consistency(compilation.components)

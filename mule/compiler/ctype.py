@@ -301,6 +301,9 @@ class ValueType:
     def widen_constant(self):
         return self
 
+    def widen_inferred_contract(self):
+        return self.widen_constant()
+
     def as_optional(self, may_be_unbound: bool = False):
         result = union_type(self, NONE_TYPE)
         return result.with_unbound() if may_be_unbound else result
@@ -329,10 +332,16 @@ class ValueType:
     def widen_mutable_containers(self):
         return self
 
-    def limit_container_depth(self, max_depth: int = 3):
+    def limit_container_depth(self, max_depth: int = 4):
         return self
 
     def has_float_specialization(self) -> bool:
+        return False
+
+    def has_unspecialized_part(self) -> bool:
+        return False
+
+    def has_bottom_part(self) -> bool:
         return False
 
     def runtime_class_type(self):
@@ -757,6 +766,9 @@ class ValueType:
 @dataclass(frozen=True, slots=True)
 class UnknownType(ValueType):
     may_be_unbound: bool = False
+
+    def has_unspecialized_part(self) -> bool:
+        return True
 
     def accept(self, visitor):
         return visitor.visit_UnknownType(self)
@@ -1449,6 +1461,9 @@ class FloatType(PrimitiveType):
     @property
     def is_heap_object(self):
         return not self.may_be_unbound
+
+    def dispatch_domain(self):
+        return None if self.may_be_unbound else FLOAT
 
     def dispatch_rank(self) -> int:
         return 2**64 if self.may_be_unbound else 0
@@ -2473,7 +2488,7 @@ class TupleType(ValueType):
                 and len(self.elements) == len(left.elements)
             ):
                 joined_elems = tuple(
-                    l_el.join(r_el).limit_container_depth(1)
+                    l_el.join(r_el).limit_container_depth(2)
                     for l_el, r_el in zip(left.elements, self.elements)
                 )
                 elements = (
@@ -2511,7 +2526,7 @@ class TupleType(ValueType):
             and len(self.elements) == len(old.elements)
         ):
             widened_elems = tuple(
-                widen_fact(o_el, n_el, thresholds).limit_container_depth(1)
+                widen_fact(o_el, n_el, thresholds).limit_container_depth(2)
                 for o_el, n_el in zip(old.elements, self.elements)
             )
             elements = (
@@ -2532,7 +2547,16 @@ class TupleType(ValueType):
             self.may_be_unbound,
         )
 
-    def limit_container_depth(self, max_depth: int = 3):
+    def widen_inferred_contract(self):
+        return TupleType(
+            self.arity,
+            None
+            if self.elements is None
+            else tuple(el.widen_inferred_contract() for el in self.elements),
+            self.may_be_unbound,
+        )
+
+    def limit_container_depth(self, max_depth: int = 4):
         if self.elements is None:
             return self
         if max_depth <= 0:
@@ -2551,11 +2575,40 @@ class TupleType(ValueType):
             and any(el.has_float_specialization() for el in self.elements)
         )
 
+    def has_unspecialized_part(self) -> bool:
+        return self.elements is None or any(
+            el.has_unspecialized_part() for el in self.elements
+        )
+
+    def has_bottom_part(self) -> bool:
+        return self.elements is not None and any(
+            el.has_bottom_part() for el in self.elements
+        )
+
+    def dispatch_domain(self):
+        if (
+            self.may_be_unbound
+            or self.arity is None
+            or self.elements is None
+            or not (
+                self.has_float_specialization()
+                or any(el.fits_list(LIST_TYPE) for el in self.elements)
+            )
+        ):
+            return None
+        elem_domains = tuple(
+            el.dispatch_domain() or (FLOAT if el.fits_float(FLOAT) else UNKNOWN)
+            for el in self.elements
+        )
+        if any(el is not UNKNOWN for el in elem_domains):
+            return TupleType(self.arity, elem_domains)
+        return None
+
     def update_nested_lists(self, elem_type):
         if self.elements is None:
             return self
         new_elems = tuple(
-            el._update_as_nested_list(elem_type).limit_container_depth(2)
+            el._update_as_nested_list(elem_type).limit_container_depth(3)
             for el in self.elements
         )
         if new_elems == self.elements:
@@ -2566,7 +2619,7 @@ class TupleType(ValueType):
         if self.elements is None:
             return self
         new_elems = tuple(
-            el._update_as_nested_dict(key_type, val_type).limit_container_depth(2)
+            el._update_as_nested_dict(key_type, val_type).limit_container_depth(3)
             for el in self.elements
         )
         if new_elems == self.elements:
@@ -2577,7 +2630,7 @@ class TupleType(ValueType):
         if self.elements is None:
             return self
         new_elems = tuple(
-            el._update_as_nested_set(elem_type).limit_container_depth(2)
+            el._update_as_nested_set(elem_type).limit_container_depth(3)
             for el in self.elements
         )
         if new_elems == self.elements:
@@ -2859,7 +2912,7 @@ class ListType(ValueType):
             return self
         return ListType(self.element, True)
 
-    def limit_container_depth(self, max_depth: int = 3):
+    def limit_container_depth(self, max_depth: int = 4):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         if max_depth <= 0:
@@ -2871,11 +2924,20 @@ class ListType(ValueType):
             return self
         return ListType(limited, self.may_be_unbound)
 
+    def has_float_specialization(self) -> bool:
+        return not self.may_be_unbound and self.element.has_float_specialization()
+
+    def has_unspecialized_part(self) -> bool:
+        return self.element.has_unspecialized_part()
+
+    def has_bottom_part(self) -> bool:
+        return self.element.has_bottom_part()
+
     def update_nested_lists(self, elem_type):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
-            2
+            3
         )
         if new_elem == self.element:
             return self
@@ -2889,7 +2951,7 @@ class ListType(ValueType):
             return self
         new_elem = self.element._update_as_nested_dict(
             key_type, val_type
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         if new_elem == self.element:
             return self
         return ListType(new_elem, self.may_be_unbound)
@@ -2898,7 +2960,7 @@ class ListType(ValueType):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
-            2
+            3
         )
         if new_elem == self.element:
             return self
@@ -2909,6 +2971,11 @@ class ListType(ValueType):
 
     def widen_constant(self):
         return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
+
+    def widen_inferred_contract(self):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
+        return ListType(self.element.widen_inferred_contract(), self.may_be_unbound)
 
     def widen_mutable_containers(self):
         # Code the analysis cannot see may store any value or remove any
@@ -2927,7 +2994,7 @@ class ListType(ValueType):
         elif self.element is BOTTOM:
             element = left.element
         else:
-            element = left.element.join(self.element).limit_container_depth(2)
+            element = left.element.join(self.element).limit_container_depth(3)
         if element is UNKNOWN and not may_be_unbound:
             return LIST_TYPE
         if element == self.element and may_be_unbound == self.may_be_unbound:
@@ -2942,7 +3009,7 @@ class ListType(ValueType):
     def widen_list(self, old, thresholds: tuple[int, ...] = ()):
         element = widen_fact(
             old.element, self.element, thresholds
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if element == self.element and may_be_unbound == self.may_be_unbound:
             return self
@@ -2957,7 +3024,19 @@ class ListType(ValueType):
         return (-max_len, max_len - 1)
 
     def dispatch_domain(self):
-        return None if self.may_be_unbound else LIST_TYPE
+        if self.may_be_unbound:
+            return None
+        if (
+            self.element is not BOTTOM
+            and self.element is not UNKNOWN
+            and (self.has_float_specialization() or self.element.fits_real(REAL))
+        ):
+            elem_dom = self.element.dispatch_domain() or (
+                FLOAT if self.element.fits_float(FLOAT) else None
+            )
+            if elem_dom is not None:
+                return ListType(elem_dom)
+        return LIST_TYPE
 
     def dispatch_rank(self) -> int:
         return 2**64 if self.may_be_unbound else 0
@@ -3036,11 +3115,11 @@ class ListType(ValueType):
         return TupleType(arity)
 
     def with_element(self, element):
-        elem = element.as_bound().limit_container_depth(2)
+        elem = element.as_bound().limit_container_depth(3)
         new_elem = (
             elem
             if self.element is BOTTOM
-            else self.element.join(elem).limit_container_depth(2)
+            else self.element.join(elem).limit_container_depth(3)
         )
         return ListType(new_elem, self.may_be_unbound)
 
@@ -3230,7 +3309,7 @@ class DictType(ValueType):
             return self
         return DictType(self.key, self.value, True, self.proven)
 
-    def limit_container_depth(self, max_depth: int = 3):
+    def limit_container_depth(self, max_depth: int = 4):
         if self.key is UNKNOWN and self.value is UNKNOWN:
             return self
         if max_depth <= 0:
@@ -3257,10 +3336,16 @@ class DictType(ValueType):
             return self
         return DictType(lk, lv, self.may_be_unbound, self.proven)
 
+    def has_unspecialized_part(self) -> bool:
+        return self.key.has_unspecialized_part() or self.value.has_unspecialized_part()
+
+    def has_bottom_part(self) -> bool:
+        return self.key.has_bottom_part() or self.value.has_bottom_part()
+
     def update_nested_lists(self, elem_type):
         if self.value is BOTTOM or self.value is UNKNOWN:
             return self
-        new_val = self.value._update_as_nested_list(elem_type).limit_container_depth(2)
+        new_val = self.value._update_as_nested_list(elem_type).limit_container_depth(3)
         if new_val == self.value:
             return self
         return DictType(self.key, new_val, self.may_be_unbound, self.proven)
@@ -3270,7 +3355,7 @@ class DictType(ValueType):
             return self
         new_val = self.value._update_as_nested_dict(
             key_type, val_type
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         if new_val == self.value:
             return self
         return DictType(self.key, new_val, self.may_be_unbound, self.proven)
@@ -3283,7 +3368,7 @@ class DictType(ValueType):
     def update_nested_sets(self, elem_type):
         if self.value is BOTTOM or self.value is UNKNOWN:
             return self
-        new_val = self.value._update_as_nested_set(elem_type).limit_container_depth(2)
+        new_val = self.value._update_as_nested_set(elem_type).limit_container_depth(3)
         if new_val == self.value:
             return self
         return DictType(self.key, new_val, self.may_be_unbound, self.proven)
@@ -3315,13 +3400,13 @@ class DictType(ValueType):
         elif self.key is BOTTOM:
             key = left.key
         else:
-            key = left.key.join(self.key).limit_container_depth(2)
+            key = left.key.join(self.key).limit_container_depth(3)
         if left.value is BOTTOM:
             value = self.value
         elif self.value is BOTTOM:
             value = left.value
         else:
-            value = left.value.join(self.value).limit_container_depth(2)
+            value = left.value.join(self.value).limit_container_depth(3)
         if key is UNKNOWN and value is UNKNOWN and not may_be_unbound and proven:
             return DICT_TYPE
         if (
@@ -3344,8 +3429,8 @@ class DictType(ValueType):
         return new.widen_dict(self, thresholds)
 
     def widen_dict(self, old, thresholds: tuple[int, ...] = ()):
-        key = widen_fact(old.key, self.key, thresholds).limit_container_depth(2)
-        value = widen_fact(old.value, self.value, thresholds).limit_container_depth(2)
+        key = widen_fact(old.key, self.key, thresholds).limit_container_depth(3)
+        value = widen_fact(old.value, self.value, thresholds).limit_container_depth(3)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         proven = old.proven and self.proven
         if (
@@ -3403,11 +3488,11 @@ class DictType(ValueType):
         return not (self.may_be_unbound and not expected.may_be_unbound)
 
     def with_entry(self, key, value):
-        k = key.as_bound().limit_container_depth(2)
-        v = value.as_bound().limit_container_depth(2)
-        new_key = k if self.key is BOTTOM else self.key.join(k).limit_container_depth(2)
+        k = key.as_bound().limit_container_depth(3)
+        v = value.as_bound().limit_container_depth(3)
+        new_key = k if self.key is BOTTOM else self.key.join(k).limit_container_depth(3)
         new_val = (
-            v if self.value is BOTTOM else self.value.join(v).limit_container_depth(2)
+            v if self.value is BOTTOM else self.value.join(v).limit_container_depth(3)
         )
         return DictType(new_key, new_val, self.may_be_unbound, self.proven)
 
@@ -3587,7 +3672,7 @@ class IteratorType(ValueType):
             return self
         return IteratorType(self.element, True)
 
-    def limit_container_depth(self, max_depth: int = 3):
+    def limit_container_depth(self, max_depth: int = 4):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         if max_depth <= 0:
@@ -3603,11 +3688,17 @@ class IteratorType(ValueType):
             return self
         return IteratorType(limited, self.may_be_unbound)
 
+    def has_unspecialized_part(self) -> bool:
+        return self.element.has_unspecialized_part()
+
+    def has_bottom_part(self) -> bool:
+        return self.element.has_bottom_part()
+
     def update_nested_lists(self, elem_type):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
-            2
+            3
         )
         if new_elem == self.element:
             return self
@@ -3618,7 +3709,7 @@ class IteratorType(ValueType):
             return self
         new_elem = self.element._update_as_nested_dict(
             key_type, val_type
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         if new_elem == self.element:
             return self
         return IteratorType(new_elem, self.may_be_unbound)
@@ -3627,7 +3718,7 @@ class IteratorType(ValueType):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
-            2
+            3
         )
         if new_elem == self.element:
             return self
@@ -3653,7 +3744,7 @@ class IteratorType(ValueType):
         elif self.element is BOTTOM:
             element = left.element
         else:
-            element = left.element.join(self.element).limit_container_depth(2)
+            element = left.element.join(self.element).limit_container_depth(3)
         if element is UNKNOWN and not may_be_unbound:
             return ITERATOR_TYPE
         if element == self.element and may_be_unbound == self.may_be_unbound:
@@ -3668,7 +3759,7 @@ class IteratorType(ValueType):
     def widen_iterator(self, old, thresholds: tuple[int, ...] = ()):
         element = widen_fact(
             old.element, self.element, thresholds
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         if element == self.element and may_be_unbound == self.may_be_unbound:
             return self
@@ -3702,6 +3793,9 @@ class IteratorType(ValueType):
 @dataclass(frozen=True, slots=True)
 class BottomType(ValueType):
     may_be_unbound: bool = False
+
+    def has_bottom_part(self) -> bool:
+        return True
 
     def as_bound(self):
         return BOTTOM
@@ -3977,6 +4071,11 @@ class UnionType(ValueType):
 
     def fits_list(self, expected=None):
         return self._fits_family(expected, lambda member: member.fits_list(member))
+
+    def fits_list_dispatch(self, expected):
+        return not self.may_be_unbound and all(
+            member.fits_list_dispatch(expected) for member in self.members
+        )
 
     def fits_dict(self, expected=None):
         return self._fits_family(expected, lambda member: member.fits_dict(member))
@@ -4262,8 +4361,22 @@ class UnionType(ValueType):
     def widen_constant(self):
         return self.map(lambda m: m.widen_constant())
 
-    def limit_container_depth(self, max_depth: int = 3):
+    def widen_inferred_contract(self):
+        return self.map(lambda m: m.widen_inferred_contract())
+
+    def limit_container_depth(self, max_depth: int = 4):
         return self.map(lambda m: m.limit_container_depth(max_depth))
+
+    def has_float_specialization(self) -> bool:
+        return not self.may_be_unbound and any(
+            m.has_float_specialization() for m in self.members
+        )
+
+    def has_unspecialized_part(self) -> bool:
+        return any(m.has_unspecialized_part() for m in self.members)
+
+    def has_bottom_part(self) -> bool:
+        return any(m.has_bottom_part() for m in self.members)
 
     def update_nested_lists(self, elem_type):
         return self.map(lambda m: m._update_as_nested_list(elem_type))
@@ -4638,11 +4751,17 @@ class SetType(InstanceType):
             self.identity, self.may_be_unbound, self.fixed_slots, limited, self.proven
         )
 
+    def has_unspecialized_part(self) -> bool:
+        return self.element.has_unspecialized_part()
+
+    def has_bottom_part(self) -> bool:
+        return self.element.has_bottom_part()
+
     def update_nested_lists(self, elem_type):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
-            2
+            3
         )
         if new_elem == self.element:
             return self
@@ -4655,7 +4774,7 @@ class SetType(InstanceType):
             return self
         new_elem = self.element._update_as_nested_dict(
             key_type, val_type
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         if new_elem == self.element:
             return self
         return SetType(
@@ -4666,7 +4785,7 @@ class SetType(InstanceType):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
         new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
-            2
+            3
         )
         if new_elem == self.element:
             return self
@@ -4736,7 +4855,7 @@ class SetType(InstanceType):
         elif self.element is BOTTOM:
             element = left.element
         else:
-            element = left.element.join(self.element).limit_container_depth(2)
+            element = left.element.join(self.element).limit_container_depth(3)
         if (
             element is UNKNOWN
             and not may_be_unbound
@@ -4770,7 +4889,7 @@ class SetType(InstanceType):
             return self
         element = widen_fact(
             old.element, self.element, thresholds
-        ).limit_container_depth(2)
+        ).limit_container_depth(3)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
         proven = old.proven and self.proven
         slots = self.fixed_slots or old.fixed_slots
@@ -5300,7 +5419,7 @@ class UniqueObjectType(ValueType):
 def widen_fact(
     previous: ValueType, current: ValueType, thresholds: tuple[int, ...] = ()
 ) -> ValueType:
-    return previous.widen(previous.join(current), thresholds).limit_container_depth(3)
+    return previous.widen(previous.join(current), thresholds).limit_container_depth(4)
 
 
 INTEGER = IntegerType()
