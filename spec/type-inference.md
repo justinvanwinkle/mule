@@ -132,6 +132,10 @@ In particular, inserted checks on recursive calls participate in the next
 return derivation instead of appearing as unavailable tuple elements. Leaf and
 non-leaf tuple results therefore remain alternatives in the checked contract.
 
+General method result checks use the receiver and callee facts of the general
+body. Facts available only in specialized entries do not establish a general
+result contract.
+
 Only runtime-checkable facts become contracts. Immutable tuple element facts can
 be checked recursively. Mutable collection contents must not become trusted from
 a shallow object check; those facts are widened before the contract is formed.

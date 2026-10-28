@@ -12,6 +12,16 @@ def run_source(tmp_path, source):
     return result.stdout
 
 
+@pytest.mark.integration
+def test_inherited_readinto_uses_overridden_read_result(tmp_path):
+    source = """import io
+stream = io.BytesIO(b"abcdef")
+buffer = bytearray(3)
+print(stream.readinto(buffer), buffer)
+"""
+    assert run_source(tmp_path, source) == "3 bytearray(b'abc')\n"
+
+
 @pytest.mark.parametrize("safety", [0, 2, 3])
 @pytest.mark.parametrize("bad_result", ["1.5", "11", "True"])
 @pytest.mark.parametrize(

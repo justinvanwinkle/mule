@@ -251,31 +251,6 @@ class _AssertResult(NodeVisitor):
             result = result.join(self.facts.types.get(producer, UNKNOWN))
         return result
 
-    def receiver_lvar_type(self, lvar):
-        result = self.lvar_type(lvar)
-        if (
-            result is not UNKNOWN
-            or self.function.method_class is None
-            or not self.function.vars
-        ):
-            return result
-        joined = BOTTOM
-        for producer in lvar.uses:
-            cand = self.facts.types.get(producer, UNKNOWN)
-            if cand is UNKNOWN:
-                for variant in self.facts.variants:
-                    if (
-                        variant.parameters
-                        and variant.parameters[0].instance_class()
-                        == self.function.method_class
-                    ):
-                        v_type = variant.types.get(producer, UNKNOWN)
-                        if v_type is not UNKNOWN and v_type is not BOTTOM:
-                            cand = v_type
-                            break
-            joined = joined.join(cand)
-        return joined
-
     def _resolved_method_contract(self, call: Combination):
         if not call.args or len(call.args[0].uses) != 1:
             return None
@@ -283,21 +258,13 @@ class _AssertResult(NodeVisitor):
         if resolved is None:
             return None
         receiver_lvar, method_name = resolved
-        receiver_type = self.receiver_lvar_type(receiver_lvar).accept(
-            _CONTRACT_PREDICTION
-        )
+        receiver_type = self.lvar_type(receiver_lvar).accept(_CONTRACT_PREDICTION)
         arg_types = tuple(
             self.lvar_type(arg).accept(_CONTRACT_PREDICTION) for arg in call.args[1:]
         )
         arguments = (receiver_type, *arg_types)
         keywords = call.info.keywords
         target = self.facts.targets.get(call)
-        if target is None:
-            variant_targets = {
-                v.targets[call] for v in self.facts.variants if call in v.targets
-            }
-            if len(variant_targets) == 1:
-                target = next(iter(variant_targets))
         if target is not None:
             target_lam = target.as_lambda()
             if (
