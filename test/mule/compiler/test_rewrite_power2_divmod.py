@@ -173,14 +173,14 @@ def test_inline_fixnum_divmod_unsigned_signed_and_bytes_dispatch():
     assert "mule_format_modulo" not in signed_ir
 
     _, byte_variants = module.contexts(by_name["byte_mod"])
-    assert byte_variants
-    assert any(
-        ctx.parameters[0] == BYTES_TYPE and ctx.return_type == IntegerType(0, 24)
+    byte_contexts = [
+        ctx
         for ctx in byte_variants
-    )
-    module.protocol_helpers["getitem"] = "@mule.protocol.getitem"
+        if ctx.parameters[0] == BYTES_TYPE and ctx.return_type == IntegerType(0, 24)
+    ]
+    assert byte_contexts
     byte_ir = "\n".join(
-        module.emit_body(by_name["byte_mod"], ctx) for ctx in byte_variants
+        module.emit_body(by_name["byte_mod"], ctx) for ctx in byte_contexts
     )
     assert "urem i64" in byte_ir
     assert "@mule.fixnum.binary.5" not in byte_ir
