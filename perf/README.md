@@ -12,7 +12,7 @@ uv run python -m perf.suite.perfutils run --samples 3
 
 # Compare CPython, an optimized native Mule build, and SBCL on every case.
 uv run python -m perf.suite.perfutils run \
-  --config perf/runtimes.example.toml --samples 3
+  --config perf/runtimes.example.toml --samples 3 --jobs 4
 
 # Run one scenario directly, from any working directory.
 uv run python perf/suite/log_aggregation.py \
@@ -119,12 +119,13 @@ command to measure full link-time optimization separately; this can increase
 link time substantially. The example configuration also compiles each scenario's
 `.lisp` implementation into a standalone SBCL executable for side-by-side comparison.
 
-All commands run one at a time, including builds, validation, and timed samples
-across all scenarios. All native builds complete before validation or timing
-begins. Each case is built once. The harness validates every runtime against the
-baseline's result, then rotates runtime order between samples. `--jobs` defaults
-to 1 and rejects other values. Historical runs with concurrent scenario jobs
-retain their recorded settings and are not directly comparable with serial runs.
+`--jobs N` permits up to N concurrent builds, then up to N concurrent scenario
+measurements. It accepts any positive integer and defaults to 1 for serial runs.
+All native builds complete before validation or timing begins. Each case is
+built once. Within each scenario, commands remain serial: the harness validates
+every runtime against the baseline's result, then rotates runtime order between
+samples. Concurrent scenarios can contend for resources; compare runs with the
+same jobs setting. Historical runs retain their recorded concurrency settings.
 Each sample repeats validation. Build failures,
 timeouts, and incorrect results appear in the report and produce a nonzero
 exit status; other comparisons continue.
