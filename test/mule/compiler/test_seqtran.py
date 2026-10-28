@@ -511,7 +511,7 @@ print(decode_packets([b"\\x03abc"]))
     assert "bytearray_getitem" in spec_body
     assert "bytearray_setitem" in spec_body
     assert "urem i64 " in spec_body
-    assert "131043" in spec_body
+    assert ", 65521" in spec_body
 
 
 def test_bytearray_argument_guard_and_annotation_specialization():
@@ -590,3 +590,67 @@ print("ok")
     completed = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "ok\n"
+
+
+def test_list_and_tuple_in_bounds_unboxed_indexing_and_setitem(tmp_path):
+    import subprocess
+
+    from mule.compiler.driver import build_executable, emit_llvm
+
+    src = """def accumulate_and_search(items: list[int], targets: tuple[int, ...]) -> int:
+    n = len(items)
+    for i in range(n):
+        items[i] = items[i] + (i >> 1)
+    total = 0
+    for q in range(len(targets)):
+        target = targets[q]
+        lo = 0
+        hi = n - 1
+        while lo <= hi:
+            mid = (lo + hi) >> 1
+            val = items[mid]
+            if target < val:
+                hi = mid - 1
+            elif target > val:
+                lo = mid + 1
+            else:
+                total += val
+                break
+    return total
+
+print(accumulate_and_search([10, 20, 30, 40], (10, 20, 31, 99)))
+"""
+    ir = emit_llvm(src)
+    spec_start = ir.index(
+        'define internal ptr @"mule_fn_accumulate_and_search.spec.0"('
+    )
+    spec_end = ir.index("\n}", spec_start)
+    spec_body = ir[spec_start:spec_end]
+    assert "@mule_list_getitem_borrow" not in spec_body
+    assert "@mule_tuple_getitem_borrow" not in spec_body
+    assert "@mule.fast.setitem.move" not in spec_body
+    assert "icmp ult i64" not in spec_body
+
+    exe_src = (
+        src
+        + """
+def check_bounds(items: list[int], idx: int) -> int:
+    return items[idx]
+
+assert check_bounds([5, 6, 7], -1) == 7
+try:
+    check_bounds([5, 6, 7], 3)
+    raise AssertionError("expected IndexError")
+except IndexError:
+    print("bounds_ok")
+"""
+    )
+    exe = build_executable(
+        exe_src,
+        str(tmp_path / "list_tuple_in_bounds.py"),
+        roots=None,
+        workers=1,
+    )
+    completed = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "61\nbounds_ok\n"

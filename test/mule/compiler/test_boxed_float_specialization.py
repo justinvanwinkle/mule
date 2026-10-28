@@ -371,6 +371,8 @@ print(binary_search_intervals([(0, 2, 1), (4, 6, 2), (8, 10, 3), (12, 14, 4)], 1
     body = llvm.split('define internal ptr @"mule_fn_binary_search_intervals.spec.1"')[
         1
     ].split("\n}")[0]
-    assert "call ptr @mule_list_getitem_borrow(" in body
+    assert "getelementptr ptr, ptr " in body
+    assert "call ptr @mule_list_getitem(" not in body
+    assert "call ptr @mule_list_getitem_borrow(" not in body
     assert body.count("call ptr @mule.fast.tuple.borrow(") == 2
     compare(tmp_path, source)

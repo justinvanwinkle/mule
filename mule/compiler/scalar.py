@@ -23,7 +23,6 @@ from .ctype import (
     TupleType,
     ValueTypeVisitor,
 )
-from .ir1util import block_exception_target
 from .ir2tran import LocalAccess, _BorrowedLifetime
 from .ltn import primitive_type_of
 from .vmdef import define_vop
@@ -463,7 +462,7 @@ class _Family:
                 if owners and not children_inert and not _infallible(vop):
                     # A handler can resume with the old aggregate still alive.
                     # This pass only closes lifetimes within the normal block.
-                    if block_exception_target(block.block) is not None:
+                    if block.exception_target is not None:
                         return None
                     named_owners = [tn for tn in owners if _named_owner(tn)]
                     if not named_owners:
@@ -819,7 +818,7 @@ class _Family:
                     ):
                         return None
                     if owners and not children_inert and not _infallible(vop):
-                        if block_exception_target(block.block) is not None:
+                        if block.exception_target is not None:
                             return None
                         named_owners = [tn for tn in owners if _named_owner(tn)]
                         if not named_owners:

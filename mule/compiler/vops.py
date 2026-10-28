@@ -23,7 +23,14 @@ from mule import ast
 
 from . import fndb
 from .annotation_types import ContractVisitor
-from .ctype import FLOAT, INTEGER, PYTHON_INTEGER, REAL, UNKNOWN, ValueTypeVisitor
+from .ctype import (
+    FLOAT,
+    INTEGER,
+    PYTHON_INTEGER,
+    REAL,
+    UNKNOWN,
+    ValueTypeVisitor,
+)
 from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
@@ -1212,6 +1219,142 @@ def _fixnum_binary(operator, opcode):
 
 for _operator, _opcode in _RAW_BINARY.items():
     _fixnum_binary(_operator, _opcode)
+
+
+@define_vop(
+    "fixnum-left_shift",
+    translate=fndb.BINARY[ast.BinaryOperator.LEFT_SHIFT],
+    also_translate=(fndb.INPLACE_BINARY[ast.BinaryOperator.LEFT_SHIFT],),
+    args=((SIGNED,), (SIGNED,)),
+    results=((SIGNED,),),
+    arg_types=((FIXNUM,), (FIXNUM,)),
+    result_types=((FIXNUM,),),
+    guard=lambda call: (
+        call.args[1].info is not None
+        and call.args[1].info.value_type.minimum is not None
+        and call.args[1].info.value_type.minimum >= 0
+        and call.args[1].info.value_type.maximum is not None
+        and call.args[1].info.value_type.maximum <= 62
+    ),
+    cost=-1,
+    arg_escapes=(False, False),
+)
+def fixnum_left_shift(gen, vop):
+    left, right = (gen.take(operand) for operand in vop.args)
+    gen.store(vop.results[0], gen.operation(f"shl nsw i64 {left}, {right}"))
+
+
+@define_vop(
+    "fixnum-right_shift",
+    translate=fndb.BINARY[ast.BinaryOperator.RIGHT_SHIFT],
+    also_translate=(fndb.INPLACE_BINARY[ast.BinaryOperator.RIGHT_SHIFT],),
+    args=((SIGNED,), (SIGNED,)),
+    results=((SIGNED,),),
+    arg_types=((FIXNUM,), (FIXNUM,)),
+    result_types=((FIXNUM,),),
+    guard=lambda call: (
+        call.args[1].info is not None
+        and call.args[1].info.value_type.minimum is not None
+        and call.args[1].info.value_type.minimum >= 0
+        and call.args[1].info.value_type.maximum is not None
+        and call.args[1].info.value_type.maximum <= 62
+    ),
+    cost=-1,
+    arg_escapes=(False, False),
+)
+def fixnum_right_shift(gen, vop):
+    left, right = (gen.take(operand) for operand in vop.args)
+    gen.store(vop.results[0], gen.operation(f"ashr i64 {left}, {right}"))
+
+
+@define_vop(
+    "fixnum-floor_divide",
+    translate=fndb.BINARY[ast.BinaryOperator.FLOOR_DIVIDE],
+    also_translate=(fndb.INPLACE_BINARY[ast.BinaryOperator.FLOOR_DIVIDE],),
+    args=((SIGNED,), (SIGNED,)),
+    results=((SIGNED,),),
+    arg_types=((FIXNUM,), (FIXNUM,)),
+    result_types=((FIXNUM,),),
+    guard=lambda call: (
+        call.args[1].info is not None
+        and (
+            (
+                call.args[1].info.value_type.minimum is not None
+                and call.args[1].info.value_type.minimum > 0
+            )
+            or (
+                call.args[1].info.value_type.maximum is not None
+                and call.args[1].info.value_type.maximum < 0
+            )
+        )
+    ),
+    cost=-1,
+    arg_escapes=(False, False),
+)
+def fixnum_floor_divide(gen, vop):
+    a, b = (gen.take(operand) for operand in vop.args)
+    left_type = vop.args[0].tn.type or UNKNOWN
+    right_type = vop.args[1].tn.type or UNKNOWN
+    if (
+        left_type.minimum is not None
+        and left_type.minimum >= 0
+        and right_type.minimum is not None
+        and right_type.minimum > 0
+    ):
+        gen.store(vop.results[0], gen.operation(f"udiv i64 {a}, {b}"))
+        return
+    rem = gen.operation(f"srem i64 {a}, {b}")
+    pred = "slt" if right_type.minimum is not None and right_type.minimum > 0 else "sgt"
+    adjust = gen.operation(f"icmp {pred} i64 {rem}, 0")
+    quot = gen.operation(f"sdiv i64 {a}, {b}")
+    corr = gen.operation(f"zext i1 {adjust} to i64")
+    gen.store(vop.results[0], gen.operation(f"sub nsw i64 {quot}, {corr}"))
+
+
+@define_vop(
+    "fixnum-modulo",
+    translate=fndb.BINARY[ast.BinaryOperator.MODULO],
+    also_translate=(fndb.INPLACE_BINARY[ast.BinaryOperator.MODULO],),
+    args=((SIGNED,), (SIGNED,)),
+    results=((SIGNED,),),
+    arg_types=((FIXNUM,), (FIXNUM,)),
+    result_types=((FIXNUM,),),
+    guard=lambda call: (
+        call.args[1].info is not None
+        and (
+            (
+                call.args[1].info.value_type.minimum is not None
+                and call.args[1].info.value_type.minimum > 0
+            )
+            or (
+                call.args[1].info.value_type.maximum is not None
+                and call.args[1].info.value_type.maximum < 0
+            )
+        )
+    ),
+    cost=-1,
+    arg_escapes=(False, False),
+)
+def fixnum_modulo(gen, vop):
+    a, b = (gen.take(operand) for operand in vop.args)
+    left_type = vop.args[0].tn.type or UNKNOWN
+    right_type = vop.args[1].tn.type or UNKNOWN
+    if (
+        left_type.minimum is not None
+        and left_type.minimum >= 0
+        and right_type.minimum is not None
+        and right_type.minimum > 0
+    ):
+        gen.store(vop.results[0], gen.operation(f"urem i64 {a}, {b}"))
+        return
+    rem = gen.operation(f"srem i64 {a}, {b}")
+    pred = "slt" if right_type.minimum is not None and right_type.minimum > 0 else "sgt"
+    adjust = gen.operation(f"icmp {pred} i64 {rem}, 0")
+    adjusted = gen.operation(f"add nsw i64 {rem}, {b}")
+    gen.store(
+        vop.results[0],
+        gen.operation(f"select i1 {adjust}, i64 {adjusted}, i64 {rem}"),
+    )
 
 
 def _fixnum_compare(operator, predicate):
@@ -2754,6 +2897,8 @@ def format_(gen, vop):
 
 
 def _decode_fixnum_operand(gen, operand) -> str:
+    if operand.tn.sc is SIGNED:
+        return gen.take(operand)
     value = gen.take(operand)
     bits = gen.operation(f"ptrtoint ptr {value} to i64")
     decoded = gen.operation(f"ashr i64 {bits}, 1")
@@ -2953,7 +3098,11 @@ def range_available(gen, vop):
     gen.refine(vop.results[0].tn, result)
 
 
-@define_vop("range-advance", translate=fndb.RANGE_ADVANCE, results=(OBJECT,))
+@define_vop(
+    "range-advance",
+    translate=fndb.RANGE_ADVANCE,
+    results=((DESCRIPTOR, IMMEDIATE, SIGNED),),
+)
 def range_advance(gen, vop):
     info = vop.codegen_info
     state = vop.args[0].tn.slot
@@ -2964,6 +3113,9 @@ def range_advance(gen, vop):
         current, _, step = _range_words(gen, state)
         following = gen.operation(f"add nsw i64 {current}, {step}")
     gen.line(f"store i64 {following}, ptr {state}")
+    if vop.results[0].tn.sc is SIGNED:
+        gen.store(vop.results[0], current)
+        return
     encoded = gen.operation(f"shl nsw i64 {current}, 1")
     tagged = gen.operation(f"or disjoint i64 {encoded}, 1")
     result = gen.operation(f"inttoptr i64 {tagged} to ptr")
@@ -2973,6 +3125,25 @@ def range_advance(gen, vop):
 
 @define_vop("sequence-available", translate=fndb.SEQUENCE_AVAILABLE, results=(OBJECT,))
 def sequence_available(gen, vop):
+    info = vop.codegen_info
+    if info is not None:
+        sequence = gen.load(vop.args[0])
+        pos = gen.operation(f"load i64, ptr {info.index_tn.slot}")
+        exact_len = info.seq_type.exact_length()
+        if exact_len is not None:
+            length = str(exact_len)
+        else:
+            len_addr = gen.operation(
+                f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+            )
+            length = gen.operation(f"load i64, ptr {len_addr}")
+        available = gen.operation(f"icmp ult i64 {pos}, {length}")
+        result = gen.operation(
+            f"select i1 {available}, ptr @mule.true, ptr @mule.false"
+        )
+        gen.publish(vop.results[0], result)
+        gen.refine(vop.results[0].tn, result)
+        return
     iterator = gen.load(vop.args[0])
     out = gen.out_pointer()
     unpack_arity = gen.unpacked_sequence_available_arity(vop)
@@ -2995,6 +3166,32 @@ def sequence_available(gen, vop):
     "protocol-next_item", translate=fndb.PROTOCOLS["next_item"], results=(OBJECT,)
 )
 def protocol_next_item(gen, vop):
+    info = vop.codegen_info
+    if info is not None:
+        gen.take(vop.args[0])
+        sequence = gen.operation(f"load ptr, ptr {info.iterator_local.slot}")
+        pos = gen.operation(f"load i64, ptr {info.index_tn.slot}")
+        next_pos = gen.operation(f"add nuw nsw i64 {pos}, 1")
+        gen.line(f"store i64 {next_pos}, ptr {info.index_tn.slot}")
+        data_addr = gen.operation(
+            f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+        )
+        data = gen.operation(f"load ptr, ptr {data_addr}")
+        slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+        result = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+        res_tn = vop.results[0].tn
+        res_type = res_tn.type or UNKNOWN
+        unchecked_contract = gen._has_unchecked_element_contract(res_tn)
+        immortal_elem = not unchecked_contract and (
+            not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+        )
+        if not info.borrow_element and not immortal_elem:
+            if not unchecked_contract and res_type.is_heap_object:
+                gen.heap_values.add(result)
+            result = gen.retain(result)
+        gen.publish(vop.results[0], result)
+        gen.refine(vop.results[0].tn, result)
+        return
     iterator = gen.take(vop.args[0])
     if iterator in ("null", "@mule.none"):
         item = gen.operation(f"load ptr, ptr {gen.out_pointer()}")
@@ -3009,6 +3206,17 @@ def protocol_next_item(gen, vop):
 
 @define_vop("protocol-iterate", translate=fndb.PROTOCOLS["iterate"], results=(OBJECT,))
 def protocol_iterate(gen, vop):
+    info = vop.codegen_info
+    if info is not None:
+        sequence = gen.take(vop.args[0])
+        gen.line(f"store i64 0, ptr {info.index_tn.slot}")
+        if vop.results[0].tn.borrowed_from is not None or gen.owns_reference(sequence):
+            result = sequence
+        else:
+            result = gen.retain(sequence)
+        gen.publish(vop.results[0], result)
+        gen.refine(vop.results[0].tn, result)
+        return
     sequence = gen.take(vop.args[0])
     move = gen.owns_reference(sequence)
     helper = gen.module.iterate_helper(move=move)
@@ -3165,7 +3373,13 @@ def protocol_getitem(gen, vop):
         return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])
+    raw_index_sc = vop.args[1].tn.sc is SIGNED
     info = vop.codegen_info
+    if info is None and idx_type.is_fixnum:
+        if seq_type.is_exact_list:
+            info = "list_owned"
+        elif seq_type.is_exact_tuple:
+            info = "tuple_owned"
     if info in ("list_borrow", "list_owned", "tuple_borrow", "tuple_owned"):
         if info == "list_borrow":
             helper = "@mule_list_getitem_borrow"
@@ -3176,65 +3390,89 @@ def protocol_getitem(gen, vop):
         seq_type = vop.args[0].tn.type or UNKNOWN
         idx_type = vop.args[1].tn.type or UNKNOWN
         non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
-        bits = gen.operation(f"ptrtoint ptr {index} to i64")
-        raw = gen.operation(f"ashr i64 {bits}, 1")
-        exact_len = seq_type.exact_length()
-        if exact_len is not None:
-            length = str(exact_len)
+        in_bounds = vop.node in gen.context.in_bounds_nodes and non_negative
+        if raw_index_sc:
+            raw = index
         else:
-            len_addr = gen.operation(
-                f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
-            )
-            length = gen.operation(f"load i64, ptr {len_addr}")
-        if non_negative:
-            pos = raw
-        else:
-            neg = gen.operation(f"icmp slt i64 {raw}, 0")
-            wrapped = gen.operation(f"add i64 {raw}, {length}")
-            pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw}")
-        inside = gen.operation(f"icmp ult i64 {pos}, {length}")
-        read_lbl = gen.fresh("list.read")[1:]
-        slow_lbl = gen.fresh("list.slow")[1:]
-        done_lbl = gen.fresh("list.done")[1:]
-        gen.line(
-            f"br i1 {inside}, label %{read_lbl}, label %{slow_lbl}, "
-            f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
-        )
-        gen.lines.append(read_lbl + ":")
-        data_addr = gen.operation(
-            f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
-        )
-        data = gen.operation(f"load ptr, ptr {data_addr}")
-        slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
-        fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+            bits = gen.operation(f"ptrtoint ptr {index} to i64")
+            raw = gen.operation(f"ashr i64 {bits}, 1")
         res_tn = vop.results[0].tn
         res_type = res_tn.type or UNKNOWN
         unchecked_contract = gen._has_unchecked_element_contract(res_tn)
         immortal_elem = not unchecked_contract and (
             not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
         )
-        if info in ("list_owned", "tuple_owned") and not immortal_elem:
-            if not unchecked_contract and res_type.is_heap_object:
-                gen.heap_values.add(fast_val)
-            fast_val = gen.retain(fast_val)
-        gen.line(f"br label %{done_lbl}")
-        gen.lines.append(slow_lbl + ":")
-        slow_val = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
-        gen.line(f"br label %{done_lbl}")
-        gen.lines.append(done_lbl + ":")
-        result = gen.operation(
-            f"phi ptr [{fast_val}, %{read_lbl}], [{slow_val}, %{slow_lbl}]"
-        )
+        if in_bounds:
+            data_addr = gen.operation(
+                f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+            )
+            data = gen.operation(f"load ptr, ptr {data_addr}")
+            slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {raw}")
+            result = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+            if info in ("list_owned", "tuple_owned") and not immortal_elem:
+                if not unchecked_contract and res_type.is_heap_object:
+                    gen.heap_values.add(result)
+                result = gen.retain(result)
+            gen.nonnull_values.add(result)
+        else:
+            exact_len = seq_type.exact_length()
+            if exact_len is not None:
+                length = str(exact_len)
+            else:
+                len_addr = gen.operation(
+                    f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+                )
+                length = gen.operation(f"load i64, ptr {len_addr}")
+            if non_negative:
+                pos = raw
+            else:
+                neg = gen.operation(f"icmp slt i64 {raw}, 0")
+                wrapped = gen.operation(f"add i64 {raw}, {length}")
+                pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw}")
+            inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+            read_lbl = gen.fresh("list.read")[1:]
+            slow_lbl = gen.fresh("list.slow")[1:]
+            done_lbl = gen.fresh("list.done")[1:]
+            gen.line(
+                f"br i1 {inside}, label %{read_lbl}, label %{slow_lbl}, "
+                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+            )
+            gen.lines.append(read_lbl + ":")
+            data_addr = gen.operation(
+                f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+            )
+            data = gen.operation(f"load ptr, ptr {data_addr}")
+            slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+            fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+            if info in ("list_owned", "tuple_owned") and not immortal_elem:
+                if not unchecked_contract and res_type.is_heap_object:
+                    gen.heap_values.add(fast_val)
+                fast_val = gen.retain(fast_val)
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(slow_lbl + ":")
+            boxed_index = gen.encode(index) if raw_index_sc else index
+            slow_val = gen.operation(
+                f"call ptr {helper}(ptr {sequence}, ptr {boxed_index})"
+            )
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(done_lbl + ":")
+            result = gen.operation(
+                f"phi ptr [{fast_val}, %{read_lbl}], [{slow_val}, %{slow_lbl}]"
+            )
     else:
+        in_bounds = False
         if info is True:
             helper = "@mule_text_codepoint_getitem"
         else:
             helper = gen.module.getitem_helper()
-        result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {index})")
+        boxed_index = gen.encode(index) if raw_index_sc else index
+        result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {boxed_index})")
     gen.release(sequence)
-    gen.release(index)
+    if not raw_index_sc:
+        gen.release(index)
     gen.publish(vop.results[0], result)
-    gen.check_pointer(result)
+    if not in_bounds:
+        gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)
 
 
@@ -3320,29 +3558,38 @@ def protocol_setitem(gen, vop):
             and seq_type.iterate_type().next_item_type() == FLOAT
         ):
             non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
-            bits = gen.operation(f"ptrtoint ptr {index} to i64")
-            raw_idx = gen.operation(f"ashr i64 {bits}, 1")
-            len_addr = gen.operation(
-                f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
-            )
-            length = gen.operation(f"load i64, ptr {len_addr}")
-            if non_negative:
-                pos = raw_idx
+            in_bounds = vop.node in gen.context.in_bounds_nodes and non_negative
+            if vop.args[1].tn.sc is SIGNED:
+                raw_idx = index
             else:
-                neg = gen.operation(f"icmp slt i64 {raw_idx}, 0")
-                wrapped = gen.operation(f"add i64 {raw_idx}, {length}")
-                pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw_idx}")
-            inside = gen.operation(f"icmp ult i64 {pos}, {length}")
-            set_lbl = gen.fresh("list.fset")[1:]
+                bits = gen.operation(f"ptrtoint ptr {index} to i64")
+                raw_idx = gen.operation(f"ashr i64 {bits}, 1")
             reuse_lbl = gen.fresh("list.freuse")[1:]
             alloc_lbl = gen.fresh("list.falloc")[1:]
-            slow_lbl = gen.fresh("list.fslow")[1:]
             done_lbl = gen.fresh("list.fdone")[1:]
-            gen.line(
-                f"br i1 {inside}, label %{set_lbl}, label %{slow_lbl}, "
-                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
-            )
-            gen.lines.append(set_lbl + ":")
+            if in_bounds:
+                pos = raw_idx
+            else:
+                len_addr = gen.operation(
+                    f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+                )
+                length = gen.operation(f"load i64, ptr {len_addr}")
+                if non_negative:
+                    pos = raw_idx
+                else:
+                    neg = gen.operation(f"icmp slt i64 {raw_idx}, 0")
+                    wrapped = gen.operation(f"add i64 {raw_idx}, {length}")
+                    pos = gen.operation(
+                        f"select i1 {neg}, i64 {wrapped}, i64 {raw_idx}"
+                    )
+                inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+                set_lbl = gen.fresh("list.fset")[1:]
+                slow_lbl = gen.fresh("list.fslow")[1:]
+                gen.line(
+                    f"br i1 {inside}, label %{set_lbl}, label %{slow_lbl}, "
+                    f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                )
+                gen.lines.append(set_lbl + ":")
             data_addr = gen.operation(
                 f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
             )
@@ -3368,39 +3615,136 @@ def protocol_setitem(gen, vop):
             gen.line(f"store ptr {new_box}, ptr {slot}")
             gen.line(f"call void @mule.fast.release(ptr {old_box})")
             gen.line(f"br label %{done_lbl}")
-            gen.lines.append(slow_lbl + ":")
-            slow_box = gen.operation(
-                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
-            )
-            helper = gen.module.setitem_helper(move=True)
-            slow_res = gen.operation(
-                f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {slow_box})"
-            )
-            slow_end = gen.current_block()
-            gen.line(f"br label %{done_lbl}")
-            gen.lines.append(done_lbl + ":")
-            result = gen.operation(
-                f"phi ptr [@mule.none, %{reuse_lbl}], [@mule.none, %{alloc_lbl}], [{slow_res}, %{slow_end}]"
-            )
+            if in_bounds:
+                gen.lines.append(done_lbl + ":")
+                result = "@mule.none"
+            else:
+                gen.lines.append(slow_lbl + ":")
+                slow_box = gen.operation(
+                    f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
+                )
+                slow_index = gen.encode(index) if vop.args[1].tn.sc is SIGNED else index
+                helper = gen.module.setitem_helper(move=True)
+                slow_res = gen.operation(
+                    f"call ptr {helper}(ptr {sequence}, ptr {slow_index}, ptr {slow_box})"
+                )
+                slow_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(done_lbl + ":")
+                result = gen.operation(
+                    f"phi ptr [@mule.none, %{reuse_lbl}], [@mule.none, %{alloc_lbl}], [{slow_res}, %{slow_end}]"
+                )
             gen.immortal_values.add(result)
             gen.release(sequence)
-            gen.release(index)
+            if vop.args[1].tn.sc in OBJECT:
+                gen.release(index)
             gen.publish(vop.results[0], result)
-            gen.check_pointer(result)
+            if not in_bounds:
+                gen.check_pointer(result)
             gen.refine(vop.results[0].tn, result)
             return
         boxed_item = gen.operation(
             f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
         )
+        slow_index = gen.encode(index) if vop.args[1].tn.sc is SIGNED else index
         helper = gen.module.setitem_helper(move=True)
         result = gen.operation(
-            f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {boxed_item})"
+            f"call ptr {helper}(ptr {sequence}, ptr {slow_index}, ptr {boxed_item})"
         )
         gen.immortal_values.add(result)
         gen.release(sequence)
-        gen.release(index)
+        if vop.args[1].tn.sc in OBJECT:
+            gen.release(index)
         gen.publish(vop.results[0], result)
         gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
+        return
+    if seq_type.is_exact_list and idx_type.is_fixnum:
+        sequence = gen.take(vop.args[0])
+        index = gen.take(vop.args[1])
+        item = gen.take(vop.args[2])
+        if vop.args[2].tn.sc is SIGNED:
+            item = gen.encode(item)
+            gen.immortal_values.add(item)
+            move_item = True
+        else:
+            move_item = gen.owns_reference(item) and item != sequence and item != index
+        val_type = vop.args[2].tn.type or UNKNOWN
+        elem_type = seq_type.iterate_type().next_item_type()
+        non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
+        in_bounds = vop.node in gen.context.in_bounds_nodes and non_negative
+        if vop.args[1].tn.sc is SIGNED:
+            raw_idx = index
+        else:
+            bits = gen.operation(f"ptrtoint ptr {index} to i64")
+            raw_idx = gen.operation(f"ashr i64 {bits}, 1")
+        if in_bounds:
+            pos = raw_idx
+        else:
+            len_addr = gen.operation(
+                f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
+            )
+            length = gen.operation(f"load i64, ptr {len_addr}")
+            if non_negative:
+                pos = raw_idx
+            else:
+                neg = gen.operation(f"icmp slt i64 {raw_idx}, 0")
+                wrapped = gen.operation(f"add i64 {raw_idx}, {length}")
+                pos = gen.operation(f"select i1 {neg}, i64 {wrapped}, i64 {raw_idx}")
+            inside = gen.operation(f"icmp ult i64 {pos}, {length}")
+            write_lbl = gen.fresh("list.set")[1:]
+            slow_lbl = gen.fresh("list.sslow")[1:]
+            done_lbl = gen.fresh("list.sdone")[1:]
+            gen.line(
+                f"br i1 {inside}, label %{write_lbl}, label %{slow_lbl}, "
+                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+            )
+            gen.lines.append(write_lbl + ":")
+        data_addr = gen.operation(
+            f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+        )
+        data = gen.operation(f"load ptr, ptr {data_addr}")
+        slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
+        old_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+        if move_item or val_type.is_fixnum or val_type.is_immortal:
+            owned_val = item
+        else:
+            if val_type.is_heap_object:
+                gen.heap_values.add(item)
+            owned_val = gen.retain(item)
+        gen.line(f"store ptr {owned_val}, ptr {slot}")
+        if not (
+            val_type.is_fixnum or val_type.is_immortal or val_type.fits_text(val_type)
+        ):
+            gen.line(f"call void @mule_storage_track(ptr {sequence}, ptr {item})")
+        if not (elem_type.is_fixnum or elem_type.is_immortal):
+            gen.release(old_val)
+        if in_bounds:
+            result = "@mule.none"
+        else:
+            write_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(slow_lbl + ":")
+            slow_index = gen.encode(index) if vop.args[1].tn.sc is SIGNED else index
+            helper = gen.module.setitem_helper(move=move_item)
+            slow_res = gen.operation(
+                f"call ptr {helper}(ptr {sequence}, ptr {slow_index}, ptr {item})"
+            )
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(done_lbl + ":")
+            result = gen.operation(
+                f"phi ptr [@mule.none, %{write_end}], [{slow_res}, %{slow_end}]"
+            )
+        gen.immortal_values.add(result)
+        gen.release(sequence)
+        if vop.args[1].tn.sc in OBJECT:
+            gen.release(index)
+        if not move_item and vop.args[2].tn.sc in OBJECT:
+            gen.release(item)
+        gen.publish(vop.results[0], result)
+        if not in_bounds:
+            gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
         return
     if seq_type.fits_dict():
@@ -3581,11 +3925,19 @@ def primitive(name, info, emit, *, consumes_arguments=False):
     def generator(gen, vop):
         values = [gen.take(value) for value in vop.args]
         result = emit(gen, vop, values)
+        if vop.results and vop.results[0].tn.sc is SIGNED:
+            gen.store(vop.results[0], result)
+            if not consumes_arguments:
+                for arg, value in zip(vop.args, values):
+                    if arg.tn.sc in OBJECT:
+                        gen.release(value)
+            return
         gen.publish(vop.results[0], result)
         if not consumes_arguments:
-            for value in values:
-                gen.release(value)
-        if not result.startswith("@mule."):
+            for ref, value in zip(vop.args, values, strict=True):
+                if ref.tn.sc is not SIGNED:
+                    gen.release(value)
+        if not result.startswith("@mule.") and result not in gen.immortal_values:
             gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
 
@@ -3613,7 +3965,11 @@ def text_access(function):
                         f"getelementptr i64, ptr {values[0]}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
                     )
                     count = gen.operation(f"load i64, ptr {len_addr}")
-                return gen.encode(count)
+                if vop.results and vop.results[0].tn.sc is SIGNED:
+                    return count
+                encoded = gen.encode(count)
+                gen.immortal_values.add(encoded)
+                return encoded
             if (
                 function == "mule_storage_read"
                 and (arg_type.is_exact_list or arg_type.is_exact_tuple)
@@ -3622,9 +3978,29 @@ def text_access(function):
                 and vop.results
             ):
                 sequence, index = values[0], values[1]
+                raw_index_sc = vop.args[1].tn.sc is SIGNED
                 idx_type = vop.args[1].tn.type or UNKNOWN
                 non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
-                raw = gen.decode(index)
+                raw = index if raw_index_sc else gen.decode(index)
+                res_tn = vop.results[0].tn
+                res_type = res_tn.type or UNKNOWN
+                unchecked_contract = gen._has_unchecked_element_contract(res_tn)
+                immortal_elem = not unchecked_contract and (
+                    not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+                )
+                if vop.node in gen.context.in_bounds_nodes and non_negative:
+                    data_addr = gen.operation(
+                        f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+                    )
+                    data = gen.operation(f"load ptr, ptr {data_addr}")
+                    slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {raw}")
+                    fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+                    if vop.codegen_info != "storage_borrow" and not immortal_elem:
+                        if not unchecked_contract and res_type.is_heap_object:
+                            gen.heap_values.add(fast_val)
+                        fast_val = gen.retain(fast_val)
+                    gen.nonnull_values.add(fast_val)
+                    return fast_val
                 exact_len = arg_type.exact_length()
                 if exact_len is not None:
                     length = str(exact_len)
@@ -3654,12 +4030,6 @@ def text_access(function):
                 data = gen.operation(f"load ptr, ptr {data_addr}")
                 slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
                 fast_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
-                res_tn = vop.results[0].tn
-                res_type = res_tn.type or UNKNOWN
-                unchecked_contract = gen._has_unchecked_element_contract(res_tn)
-                immortal_elem = not unchecked_contract and (
-                    not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
-                )
                 if vop.codegen_info != "storage_borrow" and not immortal_elem:
                     if not unchecked_contract and res_type.is_heap_object:
                         gen.heap_values.add(fast_val)
@@ -3667,8 +4037,9 @@ def text_access(function):
                 read_end = gen.current_block()
                 gen.line(f"br label %{done_lbl}")
                 gen.lines.append(slow_lbl + ":")
+                boxed_index = gen.encode(index) if raw_index_sc else index
                 slow_val = gen.operation(
-                    f"call ptr @mule_storage_read(ptr {sequence}, ptr {index})"
+                    f"call ptr @mule_storage_read(ptr {sequence}, ptr {boxed_index})"
                 )
                 slow_end = gen.current_block()
                 gen.line(f"br label %{done_lbl}")
@@ -3683,11 +4054,40 @@ def text_access(function):
                 and (vop.args[1].tn.type or UNKNOWN).is_fixnum
             ):
                 sequence, index, replacement = values[0], values[1], values[2]
+                if vop.args[2].tn.sc is SIGNED:
+                    replacement = gen.encode(replacement)
+                    gen.immortal_values.add(replacement)
+                raw_index_sc = vop.args[1].tn.sc is SIGNED
                 idx_type = vop.args[1].tn.type or UNKNOWN
                 val_type = vop.args[2].tn.type or UNKNOWN
                 elem_type = arg_type.iterate_type().next_item_type()
                 non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
-                raw = gen.decode(index)
+                raw = index if raw_index_sc else gen.decode(index)
+                if vop.node in gen.context.in_bounds_nodes and non_negative:
+                    data_addr = gen.operation(
+                        f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
+                    )
+                    data = gen.operation(f"load ptr, ptr {data_addr}")
+                    slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {raw}")
+                    old_val = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
+                    if val_type.is_fixnum or val_type.is_immortal:
+                        owned_val = replacement
+                    else:
+                        if val_type.is_heap_object:
+                            gen.heap_values.add(replacement)
+                        owned_val = gen.retain(replacement)
+                    gen.line(f"store ptr {owned_val}, ptr {slot}")
+                    if not (
+                        val_type.is_fixnum
+                        or val_type.is_immortal
+                        or val_type.fits_text(val_type)
+                    ):
+                        gen.line(
+                            f"call void @mule_storage_track(ptr {sequence}, ptr {replacement})"
+                        )
+                    if not (elem_type.is_fixnum or elem_type.is_immortal):
+                        gen.release(old_val)
+                    return "@mule.none"
                 len_addr = gen.operation(
                     f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
                 )
@@ -3733,8 +4133,9 @@ def text_access(function):
                 write_end = gen.current_block()
                 gen.line(f"br label %{done_lbl}")
                 gen.lines.append(slow_lbl + ":")
+                boxed_index = gen.encode(index) if raw_index_sc else index
                 slow_val = gen.operation(
-                    f"call ptr @mule_storage_write(ptr {sequence}, ptr {index}, ptr {replacement})"
+                    f"call ptr @mule_storage_write(ptr {sequence}, ptr {boxed_index}, ptr {replacement})"
                 )
                 slow_end = gen.current_block()
                 gen.line(f"br label %{done_lbl}")

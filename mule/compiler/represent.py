@@ -29,7 +29,7 @@ from mule import ast
 
 from . import vops
 from .annotation_types import EXPORTS, ContractVisitor
-from .ctype import BOTTOM, UNKNOWN
+from .ctype import BOTTOM, PYTHON_INTEGER, UNKNOWN
 from .ir1util import block_exception_target
 from .ltn import primitive_type_of
 from .node import (
@@ -647,9 +647,95 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
     if (
         restriction is None
         and ref.tn.primitive_type is FIXNUM
-        and vop.info.name in ("branch", "discard")
+        and (
+            vop.info.name in ("branch", "discard")
+            or (
+                not raw
+                and vop.info.name == "protocol-getitem"
+                and len(vop.args) == 2
+                and ref is vop.args[1]
+                and vop.codegen_info
+                in ("list_borrow", "list_owned", "tuple_borrow", "tuple_owned")
+            )
+            or (
+                not raw
+                and vop.info.name == "primitive-_storage_read"
+                and len(vop.args) == 2
+                and ref is vop.args[1]
+                and (
+                    (vop.args[0].tn.type or UNKNOWN).is_exact_list
+                    or (vop.args[0].tn.type or UNKNOWN).is_exact_tuple
+                )
+            )
+            or (
+                not raw
+                and vop.info.name == "primitive-_storage_write"
+                and len(vop.args) == 3
+                and ref is vop.args[1]
+                and (vop.args[0].tn.type or UNKNOWN).is_exact_list
+            )
+        )
     ):
         return (IMMEDIATE, SIGNED)
+    if not raw and ref.tn.primitive_type is FIXNUM:
+        vop_name = vop.info.name
+        if ref.write_p and vop_name == "range-advance":
+            return (SIGNED,)
+        if ref.write_p and vop_name == "primitive-_storage_length" and vop.args:
+            seq_type = vop.args[0].tn.type or UNKNOWN
+            if seq_type.is_exact_list or seq_type.is_exact_tuple:
+                return (SIGNED,)
+        if not ref.write_p and vop_name == "range-prepare" and ref is not vop.args[-1]:
+            info = vop.codegen_info
+            if info is not None and (
+                info.direct
+                or (
+                    info.fused
+                    and info.step_sign != 0
+                    and all(
+                        op.tn.type is not None
+                        and op.tn.type.fits(PYTHON_INTEGER)
+                        and op.tn.type.is_fixnum
+                        and not op.tn.type.may_be_unbound
+                        for op in vop.args[:-1]
+                    )
+                )
+            ):
+                return (SIGNED,)
+        if (
+            not ref.write_p
+            and vop_name == "protocol-getitem"
+            and len(vop.args) >= 2
+            and ref is vop.args[1]
+        ):
+            seq_type = vop.args[0].tn.type or UNKNOWN
+            if (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
+                vop.args[1].tn.type or UNKNOWN
+            ).is_fixnum:
+                return (SIGNED,)
+        if (
+            not ref.write_p
+            and vop_name == "primitive-_storage_read"
+            and len(vop.args) == 2
+            and ref is vop.args[1]
+        ):
+            seq_type = vop.args[0].tn.type or UNKNOWN
+            if (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
+                vop.args[1].tn.type or UNKNOWN
+            ).is_fixnum:
+                return (SIGNED,)
+        if (
+            not ref.write_p
+            and vop_name in ("protocol-setitem", "primitive-_storage_write")
+            and len(vop.args) >= 3
+        ):
+            seq_type = vop.args[0].tn.type or UNKNOWN
+            idx_type = vop.args[1].tn.type or UNKNOWN
+            if seq_type.is_exact_list and idx_type.is_fixnum:
+                if ref is vop.args[1]:
+                    return (SIGNED,)
+                if ref is vop.args[2]:
+                    return (*vops.OBJECT, SIGNED)
     return ref.tn.primitive_type.operand_restriction(restriction, raw=raw)
 
 

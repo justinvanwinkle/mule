@@ -552,6 +552,7 @@ class EntryContext:
     targets: dict[object, Lambda]
     return_type: ValueType
     element_contracts: dict[object, object] = field(default_factory=dict)
+    in_bounds_nodes: frozenset[object] = frozenset()
     escape_facts: object = None
     base_escape_facts: object = None
 
@@ -564,6 +565,7 @@ class LambdaFacts:
     return_type: ValueType = UNKNOWN
     parameters: tuple[ValueType, ...] = ()
     element_contracts: dict[object, object] = field(default_factory=dict)
+    in_bounds_nodes: frozenset[object] = frozenset()
 
     def method_return_type(self, receiver: ValueType) -> ValueType:
         """Predict a method result without narrowing its ordinary arguments.
@@ -4167,6 +4169,7 @@ def analyze(
             return_type=summaries[lambda_, "general"].normalized_bottom(),
             parameters=parameters[lambda_, "general"],
             element_contracts=dict(general.element_contracts),
+            in_bounds_nodes=general.in_bounds_nodes,
         )
         entries = []
         obs_params = parameters.get((lambda_, "observed"))
@@ -4199,6 +4202,7 @@ def analyze(
                     )
                 )
                 and body.element_contracts == facts.element_contracts
+                and body.in_bounds_nodes == facts.in_bounds_nodes
                 and not _specializes_body(
                     graph,
                     facts.types,
@@ -4219,6 +4223,7 @@ def analyze(
                     )
                 )
                 and body.element_contracts == facts.element_contracts
+                and body.in_bounds_nodes == facts.in_bounds_nodes
                 and not _specializes_body(
                     graph,
                     facts.types,
@@ -4235,6 +4240,8 @@ def analyze(
                 and (
                     bodies[lambda_, "fixnum"].element_contracts
                     != facts.element_contracts
+                    or bodies[lambda_, "fixnum"].in_bounds_nodes
+                    != facts.in_bounds_nodes
                     or _specializes_body(
                         graph,
                         facts.types,
@@ -4272,6 +4279,8 @@ def analyze(
                         )
                         and body.element_contracts
                         == bodies[lambda_, "fixnum"].element_contracts
+                        and body.in_bounds_nodes
+                        == bodies[lambda_, "fixnum"].in_bounds_nodes
                         and not _specializes_body(
                             graph,
                             bodies[lambda_, "fixnum"].types(),
@@ -4292,6 +4301,7 @@ def analyze(
                     body.targets(),
                     ret_type,
                     dict(body.element_contracts),
+                    body.in_bounds_nodes,
                 )
             )
         facts.variants = tuple(entries)
@@ -4597,6 +4607,7 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
     old_types = context.types
     old_targets = context.targets
     old_element_contracts = context.element_contracts
+    old_in_bounds_nodes = context.in_bounds_nodes
     old_escape_facts = context.escape_facts
     old_base_escape_facts = context.base_escape_facts
     try:
@@ -4610,6 +4621,9 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
             node_map.get(node, node): contract
             for node, contract in old_element_contracts.items()
         }
+        cloned_in_bounds_nodes = frozenset(
+            node_map.get(node, node) for node in old_in_bounds_nodes
+        )
         graph = build_lambda_graph(lambda_)
         reopt = _publish_derived_types(lambda_, graph, cloned_types)
         if reopt:
@@ -4633,6 +4647,7 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
         context.types = cloned_types
         context.targets = cloned_targets
         context.element_contracts = cloned_element_contracts
+        context.in_bounds_nodes = cloned_in_bounds_nodes
         context.base_escape_facts = old_escape_facts or old_base_escape_facts
         context.escape_facts = None
         yield
@@ -4641,6 +4656,7 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
         context.types = old_types
         context.targets = old_targets
         context.element_contracts = old_element_contracts
+        context.in_bounds_nodes = old_in_bounds_nodes
         context.escape_facts = old_escape_facts
         context.base_escape_facts = old_base_escape_facts
         restore()

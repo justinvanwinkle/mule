@@ -312,13 +312,14 @@ class Template:
 class IR2Block:
     """The VOP sequence for one IR1 block."""
 
-    __slots__ = ("block", "label", "number", "vops")
+    __slots__ = ("block", "exception_target", "label", "number", "vops")
 
-    def __init__(self, block, number: int):
+    def __init__(self, block, number: int, exception_target=None):
         self.block = block
         self.vops: list[VOP] = []
         self.number = number
         self.label = f"block.{number}"
+        self.exception_target = exception_target
 
     def append(self, vop: VOP) -> VOP:
         self.vops.append(vop)
