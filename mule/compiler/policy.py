@@ -10,10 +10,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class OptimizationPolicy:
-    speed: int = 3
-    # Safety 3 preserves dynamic builtin lookup. Safety 2, the default,
-    # assumes installed builtins stay bound; safety 0 drops unbound checks.
-    safety: int = 2
+    speed: int = 1
+    # Safety 3 preserves dynamic builtin lookup. Safety 2 adds recursion-depth
+    # and strict return/local checks; safety 1 is the default; safety 0 drops
+    # optional runtime contract and unbound checks.
+    safety: int = 1
     debug: int = 1
     # Compiler-private builtin implementations retain native debug metadata,
     # while contributing no Python source frames to exception tracebacks.

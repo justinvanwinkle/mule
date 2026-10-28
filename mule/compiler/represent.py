@@ -1423,7 +1423,7 @@ def select_native_plans(lambdas, facts, layouts) -> dict[Lambda, NativePlan]:
         for index, lambda_ in enumerate(lambdas):
             if (
                 lambda_.kind is FunctionalKind.TOPLEVEL
-                or lambda_.policy.speed < 3
+                or lambda_.policy.disables_optimization
                 or lambda_ in plans
             ):
                 continue

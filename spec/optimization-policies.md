@@ -125,7 +125,7 @@ Proposed default: an undecorated class uses `speed=1`, preserving ordinary Pytho
 class semantics. Restrictions require an explicit class policy. This class-default
 rule requires a compiler change.
 
-The default policy is `speed=3, safety=2, debug=1`. An `optimize()` directive
+The default policy is `speed=1, safety=1, debug=1`. An `optimize()` directive
 changes only the qualities it names; omitted qualities keep the enclosing
 policy, as an SBCL `(declare (optimize speed))` leaves safety alone. Checked
 native classes use `safety=3` explicitly.

@@ -118,27 +118,28 @@ def test_debug_levels_control_tracebacks_and_frames():
     assert "call i32 @mule_enter_frame()" in llvm_debug2
 
     llvm_rec_default = emit_llvm(
-        "__debug_level__ = 1\n"
         "def fib(n: int) -> int:\n"
         "    if n < 2:\n"
         "        return n\n"
         "    return fib(n - 1) + fib(n - 2)\n",
         "rec_default.py",
     )
-    assert "call i32 @mule_enter_frame()" in llvm_rec_default
+    fib_helper = llvm_rec_default.split(
+        'define internal ptr @"mule.direct.mule_fn_fib', 1
+    )[1].split("}", 1)[0]
+    assert "call i32 @mule_enter_frame()" not in fib_helper
     assert "call ptr @mule_frame_head_slot()" not in llvm_rec_default
 
-    llvm_rec_safety1 = emit_llvm(
-        "from mule_types import optimize\n"
-        "@optimize(debug=1, safety=1)\n"
+    llvm_rec_safety2 = emit_llvm(
+        "__safety__ = 2\n"
         "def fib(n: int) -> int:\n"
         "    if n < 2:\n"
         "        return n\n"
         "    return fib(n - 1) + fib(n - 2)\n",
-        "rec_safety1.py",
+        "rec_safety2.py",
     )
-    fib_helper = llvm_rec_safety1.split(
+    fib_helper2 = llvm_rec_safety2.split(
         'define internal ptr @"mule.direct.mule_fn_fib', 1
     )[1].split("}", 1)[0]
-    assert "call i32 @mule_enter_frame()" not in fib_helper
-    assert "call ptr @mule_frame_head_slot()" not in llvm_rec_safety1
+    assert "call i32 @mule_enter_frame()" in fib_helper2
+    assert "call ptr @mule_frame_head_slot()" not in llvm_rec_safety2
