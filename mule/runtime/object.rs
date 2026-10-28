@@ -672,27 +672,31 @@ pub unsafe fn new_value(data: Data) -> Value {
         }
     }
     let tracked = data.cycle_candidate();
-    let value = unsafe {
+    if tracked {
+        return unsafe { alloc_tracked_object(data) };
+    }
+    unsafe {
         alloc_object(Object {
             references: std::sync::atomic::AtomicUsize::new(1),
-            tracked,
+            tracked: false,
             gc_slot: 0,
             data,
         })
-    };
-    if tracked { crate::gc::track(value); }
-    value
+    }
 }
 
-const OBJECT_POOL_CAP: usize = 512;
+const OBJECT_POOL_CAP: usize = 2048;
+const TRACKED_POOL_CAP: usize = 2048;
 const TUPLE_POOL_MAX_LEN: usize = 4;
-const TUPLE_POOL_CAP: usize = 512;
-pub(crate) const SLICE_POOL_MAX_LEN: usize = 8;
-const SLICE_POOL_CAP: usize = 512;
+const TUPLE_POOL_CAP: usize = 2048;
+pub(crate) const SLICE_POOL_MAX_LEN: usize = 16;
+const SLICE_POOL_CAP: usize = 1024;
 
 struct ObjectPool {
     slots: [*mut Object; OBJECT_POOL_CAP],
     len: usize,
+    tracked_slots: [*mut Object; TRACKED_POOL_CAP],
+    tracked_len: usize,
     tuple_slots: [[*mut Object; TUPLE_POOL_CAP]; TUPLE_POOL_MAX_LEN],
     tuple_lens: [usize; TUPLE_POOL_MAX_LEN],
     slice_slots: [[*mut Value; SLICE_POOL_CAP]; SLICE_POOL_MAX_LEN],
@@ -704,6 +708,8 @@ impl ObjectPool {
         Self {
             slots: [std::ptr::null_mut(); OBJECT_POOL_CAP],
             len: 0,
+            tracked_slots: [std::ptr::null_mut(); TRACKED_POOL_CAP],
+            tracked_len: 0,
             tuple_slots: [[std::ptr::null_mut(); TUPLE_POOL_CAP]; TUPLE_POOL_MAX_LEN],
             tuple_lens: [0; TUPLE_POOL_MAX_LEN],
             slice_slots: [[std::ptr::null_mut(); SLICE_POOL_CAP]; SLICE_POOL_MAX_LEN],
@@ -720,10 +726,19 @@ impl ObjectPool {
                 let ptr = *self.slots.get_unchecked(self.len);
                 std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
             }
+            while self.tracked_len > 0 {
+                self.tracked_len -= 1;
+                let ptr = *self.tracked_slots.get_unchecked(self.tracked_len);
+                crate::gc::untrack(ptr);
+                std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
+            }
             for idx in 0..TUPLE_POOL_MAX_LEN {
                 while self.tuple_lens[idx] > 0 {
                     self.tuple_lens[idx] -= 1;
                     let ptr = *self.tuple_slots[idx].get_unchecked(self.tuple_lens[idx]);
+                    if ((*ptr).gc_slot & crate::gc::GC_SLOT_BIT) != 0 {
+                        crate::gc::untrack(ptr);
+                    }
                     std::ptr::drop_in_place(&mut (*ptr).data);
                     std::alloc::dealloc(ptr.cast::<u8>(), std::alloc::Layout::new::<Object>());
                 }
@@ -772,11 +787,53 @@ pub unsafe fn allocate_object_storage() -> Value {
             pool.len -= 1;
             return *pool.slots.get_unchecked(pool.len);
         }
+        allocate_object_storage_slow()
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn allocate_object_storage_slow() -> Value {
+    unsafe {
         let layout = std::alloc::Layout::new::<Object>();
         let ptr = std::alloc::alloc(layout).cast::<Object>();
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
         }
+        (*ptr).gc_slot = 0;
+        ptr
+    }
+}
+
+#[inline(always)]
+unsafe fn alloc_tracked_object(data: Data) -> Value {
+    unsafe {
+        let cell = OBJECT_POOL.with(|c| c.get());
+        let pool = &mut *cell;
+        if pool.tracked_len > 0 {
+            pool.tracked_len -= 1;
+            let ptr = *pool.tracked_slots.get_unchecked(pool.tracked_len);
+            (*ptr).references.store(1, std::sync::atomic::Ordering::Relaxed);
+            (*ptr).tracked = true;
+            std::ptr::write(&mut (*ptr).data, data);
+            return ptr;
+        }
+        alloc_tracked_object_slow(data)
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn alloc_tracked_object_slow(data: Data) -> Value {
+    unsafe {
+        let ptr = allocate_object_storage();
+        ptr.write(Object {
+            references: std::sync::atomic::AtomicUsize::new(1),
+            tracked: true,
+            gc_slot: 0,
+            data,
+        });
+        crate::gc::track(ptr);
         ptr
     }
 }
@@ -884,8 +941,7 @@ unsafe fn alloc_small_tuple_borrowed(len: usize, values: *const Value) -> Value 
             }
             (*ptr).references.store(1, std::sync::atomic::Ordering::Relaxed);
             (*ptr).tracked = tracked;
-            (*ptr).gc_slot = 0;
-            if tracked {
+            if tracked && ((*ptr).gc_slot & crate::gc::GC_SLOT_BIT) == 0 {
                 crate::gc::track(ptr);
             }
             return ptr;
@@ -913,8 +969,7 @@ unsafe fn alloc_small_tuple_owned(len: usize, values: *const Value, tracked: boo
             }
             (*ptr).references.store(1, std::sync::atomic::Ordering::Relaxed);
             (*ptr).tracked = tracked;
-            (*ptr).gc_slot = 0;
-            if tracked {
+            if tracked && ((*ptr).gc_slot & crate::gc::GC_SLOT_BIT) == 0 {
                 crate::gc::track(ptr);
             }
             return ptr;
@@ -929,16 +984,19 @@ unsafe fn alloc_small_tuple_owned(len: usize, values: *const Value, tracked: boo
         };
         std::ptr::copy_nonoverlapping(values, buf.as_mut_ptr(), len);
         buf.set_len(len);
-        let value = alloc_object(Object {
+        if tracked {
+            return alloc_tracked_object(Data::Args(
+                buf,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ));
+        }
+        alloc_object(Object {
             references: std::sync::atomic::AtomicUsize::new(1),
-            tracked,
+            tracked: false,
             gc_slot: 0,
             data: Data::Args(buf, std::ptr::null_mut(), std::ptr::null_mut()),
-        });
-        if tracked {
-            crate::gc::track(value);
-        }
-        value
+        })
     }
 }
 
@@ -947,7 +1005,16 @@ unsafe fn dealloc_object(value: Value) {
     unsafe {
         let cell = OBJECT_POOL.with(|c| c.get());
         let pool = &mut *cell;
-        if !has_error() && pool.len < OBJECT_POOL_CAP {
+        if ((*value).gc_slot & crate::gc::GC_SLOT_BIT) != 0 {
+            if !has_error() && pool.tracked_len < TRACKED_POOL_CAP {
+                (*value).tracked = false;
+                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+                *pool.tracked_slots.get_unchecked_mut(pool.tracked_len) = value;
+                pool.tracked_len += 1;
+                return;
+            }
+            crate::gc::untrack(value);
+        } else if !has_error() && pool.len < OBJECT_POOL_CAP {
             *pool.slots.get_unchecked_mut(pool.len) = value;
             pool.len += 1;
             return;
@@ -964,7 +1031,17 @@ unsafe fn dealloc_object(value: Value) {
 /// Uninitialized storage and trivially droppable scalar data need no payload drop.
 #[inline(always)]
 pub unsafe fn deallocate_object_storage(value: Value) {
-    unsafe { dealloc_object(value) }
+    unsafe {
+        let cell = OBJECT_POOL.with(|c| c.get());
+        let pool = &mut *cell;
+        if !has_error() && pool.len < OBJECT_POOL_CAP {
+            (*value).gc_slot = 0;
+            *pool.slots.get_unchecked_mut(pool.len) = value;
+            pool.len += 1;
+            return;
+        }
+        std::alloc::dealloc(value.cast::<u8>(), std::alloc::Layout::new::<Object>());
+    }
 }
 
 #[inline(always)]
@@ -972,23 +1049,35 @@ unsafe fn drop_and_dealloc_object(value: Value) {
     unsafe {
         if !has_error() {
             match &mut (*value).data {
-                Data::Args(values, ty, attrs)
-                    if ty.is_null()
-                        && attrs.is_null()
-                        && (1..=TUPLE_POOL_MAX_LEN).contains(&values.capacity()) =>
-                {
-                    let idx = values.capacity() - 1;
-                    let cell = OBJECT_POOL.with(|c| c.get());
-                    let pool = &mut *cell;
-                    let count = *pool.tuple_lens.get_unchecked(idx);
-                    if count < TUPLE_POOL_CAP {
-                        values.set_len(0);
-                        *pool.tuple_slots.get_unchecked_mut(idx).get_unchecked_mut(count) = value;
-                        *pool.tuple_lens.get_unchecked_mut(idx) = count + 1;
-                        return;
+                Data::Args(values, ty, attrs) if ty.is_null() && attrs.is_null() => {
+                    let cap = values.capacity();
+                    if (1..=TUPLE_POOL_MAX_LEN).contains(&cap) {
+                        let idx = cap - 1;
+                        let cell = OBJECT_POOL.with(|c| c.get());
+                        let pool = &mut *cell;
+                        let count = *pool.tuple_lens.get_unchecked(idx);
+                        if count < TUPLE_POOL_CAP {
+                            values.set_len(0);
+                            *pool.tuple_slots.get_unchecked_mut(idx).get_unchecked_mut(count) = value;
+                            *pool.tuple_lens.get_unchecked_mut(idx) = count + 1;
+                            return;
+                        }
                     }
+                    let ptr = values.as_mut_ptr();
+                    std::ptr::write(values, ValueBuffer::new());
+                    dealloc_value_slice(ptr, cap);
+                    dealloc_object(value);
+                    return;
                 }
-                Data::Instance { fields, attributes, .. } if attributes.is_null() => {
+                Data::List(values, ty, attrs) if ty.is_null() && attrs.is_null() => {
+                    let ptr = values.as_mut_ptr();
+                    let cap = values.capacity();
+                    std::ptr::write(values, ValueBuffer::new());
+                    dealloc_value_slice(ptr, cap);
+                    dealloc_object(value);
+                    return;
+                }
+                Data::Instance { fields, .. } => {
                     let slice = std::mem::replace(fields, Vec::new().into_boxed_slice());
                     let len = slice.len();
                     let ptr = Box::into_raw(slice).cast::<Value>();
@@ -1079,9 +1168,8 @@ unsafe fn destroy(value: Value) {
             crate::weakref::clear(value);
             if !(*value).remove_reference() { return; }
         }
-        if (*value).tracked {
-            crate::gc::untrack(value);
-        }
+        (*value).tracked = false;
+        (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
         match &(*value).data {
             Data::Text(text, ty, attrs) if ty.is_null() && attrs.is_null() => {
                 if (*value).gc_slot != 0 {
@@ -1114,7 +1202,6 @@ unsafe fn destroy(value: Value) {
             Data::List(values, ty, attrs) | Data::Args(values, ty, attrs)
                 if ty.is_null() && attrs.is_null() =>
             {
-                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
                 // Child weak-reference callbacks observe Python's reverse teardown order.
                 for &child in values.iter().rev() {
                     release(child);
@@ -1126,9 +1213,9 @@ unsafe fn destroy(value: Value) {
                 ty,
                 fields,
                 attributes,
-            } if attributes.is_null() => {
-                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+            } => {
                 release(*ty);
+                release(*attributes);
                 for &field in fields.iter() {
                     release(field);
                 }
@@ -1136,17 +1223,15 @@ unsafe fn destroy(value: Value) {
                 return;
             }
             Data::NativeInstance { ty, .. } => {
-                (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
                 release(*ty);
                 drop_and_dealloc_object(value);
                 return;
             }
             _ => (),
         }
-        (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
-        let data = std::ptr::read(&(*value).data);
-        dealloc_object(value);
+        let data = std::mem::replace(&mut (*value).data, Data::None);
         release_data(value, data);
+        dealloc_object(value);
     }
 }
 
@@ -1347,9 +1432,21 @@ pub fn release_interned_texts() {
     }
 }
 
+pub(crate) unsafe fn unintern_if_text(value: Value) {
+    unsafe {
+        if (*value).gc_slot != 0 && ((*value).gc_slot & crate::gc::GC_SLOT_BIT) == 0 {
+            if let Data::Text(ref text, ..) = (*value).data {
+                unintern_text_value(value, text);
+            }
+            (*value).gc_slot = 0;
+        }
+    }
+}
+
 pub unsafe fn is_interned_text_value(value: Value) -> bool {
     unsafe {
-        (*value).reference_count() == usize::MAX || (*value).gc_slot != 0
+        (*value).reference_count() == usize::MAX
+            || ((*value).gc_slot != 0 && ((*value).gc_slot & crate::gc::GC_SLOT_BIT) == 0)
     }
 }
 
@@ -1440,8 +1537,15 @@ pub unsafe fn intern_text_value(value: Value) -> Value {
 pub unsafe fn namespace() -> Value {
     unsafe { new_value(Data::Namespace(Namespace::default())) }
 }
+#[inline]
 pub unsafe fn list() -> Value {
-    unsafe { new_value(Data::List(ValueBuffer::new(), std::ptr::null_mut(), std::ptr::null_mut())) }
+    unsafe {
+        alloc_tracked_object(Data::List(
+            ValueBuffer::new(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        ))
+    }
 }
 pub unsafe fn list_append(list: Value, value: Value) -> bool {
     unsafe {
@@ -3435,6 +3539,7 @@ pub unsafe extern "C" fn mule_storage_reserve(list: Value, count: Value) -> Valu
 
 /// Copy and retain an evaluated buffer. Language evaluation and container
 /// algorithms are compiled Mule code; this only constructs owned storage.
+#[inline]
 unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<ValueBuffer> {
     unsafe {
         if count < 0 || (count != 0 && values.is_null()) {
@@ -3449,7 +3554,11 @@ unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<ValueBuf
         };
         let dst = result.as_mut_ptr();
         for index in 0..len {
-            *dst.add(index) = retain(*values.add(index));
+            let v = *values.add(index);
+            if !is_fixnum(v) {
+                retain(v);
+            }
+            *dst.add(index) = v;
         }
         result.set_len(len);
         Some(result)
@@ -3458,8 +3567,16 @@ unsafe fn sequence_buffer(count: isize, values: *const Value) -> Option<ValueBuf
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_sequence_list(count: isize, values: *const Value) -> Value {
     unsafe {
-        sequence_buffer(count, values)
-            .map_or(std::ptr::null_mut(), |values| new_value(Data::List(values, std::ptr::null_mut(), std::ptr::null_mut())))
+        if count == 0 {
+            return list();
+        }
+        sequence_buffer(count, values).map_or(std::ptr::null_mut(), |values| {
+            alloc_tracked_object(Data::List(
+                values,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ))
+        })
     }
 }
 #[unsafe(no_mangle)]

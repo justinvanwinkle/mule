@@ -4,68 +4,133 @@ use crate::object::{self, Data, Value};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ptr::null_mut;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-#[derive(Default)]
-struct HeapMembership {
-    tracked: Vec<usize>,
-    dead: HashSet<usize>,
-}
+pub const GC_SLOT_BIT: u32 = 0x8000_0000;
+const SHARD_COUNT: usize = 64;
+const INDEX_BITS: u32 = 24;
+const INDEX_MASK: u32 = (1 << INDEX_BITS) - 1;
 
-fn membership() -> &'static Mutex<HeapMembership> {
-    static MEMBERSHIP: OnceLock<Mutex<HeapMembership>> = OnceLock::new();
-    MEMBERSHIP.get_or_init(|| Mutex::new(HeapMembership::default()))
+#[repr(align(64))]
+struct Shard(Mutex<Vec<usize>>);
+
+static SHARDS: [Shard; SHARD_COUNT] = [const { Shard(Mutex::new(Vec::new())) }; SHARD_COUNT];
+static NEXT_SHARD: AtomicUsize = AtomicUsize::new(0);
+static HAS_DEAD: AtomicBool = AtomicBool::new(false);
+
+fn dead_set() -> &'static Mutex<HashSet<usize>> {
+    static DEAD: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    DEAD.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 thread_local! {
     static COLLECTING: Cell<bool> = const { Cell::new(false) };
+    static LOCAL_SHARD: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 
+#[inline(always)]
+fn current_shard() -> usize {
+    let shard = LOCAL_SHARD.with(Cell::get);
+    if shard < SHARD_COUNT {
+        return shard;
+    }
+    init_current_shard()
+}
+
+#[cold]
+#[inline(never)]
+fn init_current_shard() -> usize {
+    let shard = NEXT_SHARD.fetch_add(1, Ordering::Relaxed) % SHARD_COUNT;
+    LOCAL_SHARD.with(|slot| slot.set(shard));
+    shard
+}
+
+#[inline]
 pub fn track(value: Value) {
-    let mut guard = membership().lock().expect("heap registry poisoned");
     unsafe {
         (*value).tracked = true;
         let current = (*value).gc_slot;
-        if current != 0 {
-            let index = (current - 1) as usize;
-            if index < guard.tracked.len() && guard.tracked[index] == value as usize {
-                return;
-            }
+        if (current & GC_SLOT_BIT) != 0 {
+            return;
         }
-        let index = guard.tracked.len();
-        let slot = u32::try_from(index + 1).expect("tracked heap capacity exceeded");
+        if current != 0 {
+            object::unintern_if_text(value);
+        }
+        let shard_id = current_shard();
+        let mut tracked = SHARDS[shard_id].0.lock().expect("heap registry poisoned");
+        let index = tracked.len();
+        assert!(
+            index < INDEX_MASK as usize,
+            "tracked heap capacity exceeded"
+        );
+        let slot = GC_SLOT_BIT | ((shard_id as u32) << INDEX_BITS) | ((index as u32) + 1);
         (*value).gc_slot = slot;
-        guard.tracked.push(value as usize);
+        tracked.push(value as usize);
     }
 }
+
+#[inline]
 pub fn untrack(value: Value) {
-    let mut guard = membership().lock().expect("heap registry poisoned");
     unsafe {
         let current = (*value).gc_slot;
+        if (current & GC_SLOT_BIT) == 0 {
+            return;
+        }
         (*value).gc_slot = 0;
-        if current == 0 {
+        let shard_id = ((current & !GC_SLOT_BIT) >> INDEX_BITS) as usize;
+        let index = ((current & INDEX_MASK) - 1) as usize;
+        let mut tracked = SHARDS[shard_id].0.lock().expect("heap registry poisoned");
+        if index >= tracked.len() || tracked[index] != value as usize {
             return;
         }
-        let index = (current - 1) as usize;
-        if index >= guard.tracked.len() || guard.tracked[index] != value as usize {
-            return;
-        }
-        let last = guard.tracked.pop().unwrap();
-        if index < guard.tracked.len() {
-            guard.tracked[index] = last;
+        let last = tracked.pop().unwrap();
+        if index < tracked.len() {
+            tracked[index] = last;
             (*(last as Value)).gc_slot = current;
         }
     }
 }
+
 pub fn is_tracked(value: Value) -> bool {
-    membership().lock().expect("heap registry poisoned").tracked.contains(&(value as usize))
+    if value.is_null() || object::is_fixnum(value) {
+        return false;
+    }
+    let target = value as usize;
+    for shard in &SHARDS {
+        let tracked = shard.0.lock().expect("heap registry poisoned");
+        if tracked.contains(&target) {
+            return unsafe { (*value).tracked && (*value).reference_count() > 0 };
+        }
+    }
+    false
 }
+
+#[inline]
 pub fn unreachable(value: Value) -> bool {
-    membership().lock().expect("heap registry poisoned").dead.contains(&(value as usize))
+    if !HAS_DEAD.load(Ordering::Relaxed) {
+        return false;
+    }
+    dead_set()
+        .lock()
+        .expect("heap registry poisoned")
+        .contains(&(value as usize))
 }
 
 fn snapshot() -> Vec<Value> {
-    membership().lock().expect("heap registry poisoned").tracked.iter().map(|value| *value as Value).collect()
+    let mut values = Vec::new();
+    for shard in &SHARDS {
+        let tracked = shard.0.lock().expect("heap registry poisoned");
+        for &addr in tracked.iter() {
+            let value = addr as Value;
+            unsafe {
+                if (*value).tracked && (*value).reference_count() > 0 {
+                    values.push(value);
+                }
+            }
+        }
+    }
+    values
 }
 
 unsafe fn operands<const N: usize>(args: Value) -> Option<[Value; N]> {
@@ -114,7 +179,10 @@ unsafe fn collect_heap() -> Value {
             pending.extend(&edges[index]);
         }
         let dead: Vec<Value> = values.iter().enumerate().filter_map(|(index, value)| (!live[index]).then_some(*value)).collect();
-        membership().lock().expect("heap registry poisoned").dead.extend(dead.iter().map(|value| *value as usize));
+        if !dead.is_empty() {
+            dead_set().lock().expect("heap registry poisoned").extend(dead.iter().map(|value| *value as usize));
+            HAS_DEAD.store(true, Ordering::Release);
+        }
         for value in &dead { object::retain(*value); }
         // Clear weak targets before releasing any cycle edge. Callbacks owned
         // by unreachable reference objects must not run during their collection.
@@ -127,7 +195,10 @@ unsafe fn collect_heap() -> Value {
         }
         for (value, data) in storage { object::release_data(value, data); }
         for value in &dead { object::release(*value); }
-        membership().lock().expect("heap registry poisoned").dead.clear();
+        if !dead.is_empty() {
+            dead_set().lock().expect("heap registry poisoned").clear();
+            HAS_DEAD.store(false, Ordering::Release);
+        }
         object::small(dead.len() as i64)
     }
 }
