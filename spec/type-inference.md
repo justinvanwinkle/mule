@@ -197,7 +197,9 @@ the user's requested boundary, not an assumption that rebinding cannot occur.
 
 Field predictions join the stores attributed to a class during local-call
 analysis. A reachable store whose receiver has no class identity in any analyzed
-entry makes that field ambiguous, including stores inside known methods. Method
+entry contributes its value type to every existing candidate for that attribute.
+It can widen those candidates, but cannot establish a receiver class or create a
+new field prediction. An unknown stored value removes the prediction. Method
 ownership does not prove the runtime receiver's class. A variadic constructor
 can have only a general entry with an unknown receiver. Its assignments must
 not disappear from the evidence used to predict the field type.
