@@ -13,9 +13,11 @@ from .ctype import (
     BYTES_TYPE,
     DICT_TYPE,
     FLOAT,
+    FROZENSET_TYPE,
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
+    SET_TYPE,
     TEXT_TYPE,
     UNKNOWN,
     ClassType,
@@ -23,6 +25,7 @@ from .ctype import (
     InstanceType,
     IntegerType,
     ListType,
+    SetType,
     TupleType,
     ValueType,
     ValueTypeVisitor,
@@ -70,6 +73,9 @@ class ContractVisitor:
         return self.visit_Contract(contract)
 
     def visit_DictContract(self, contract):
+        return self.visit_Contract(contract)
+
+    def visit_SetContract(self, contract):
         return self.visit_Contract(contract)
 
     def visit_ClassContract(self, contract):
@@ -157,6 +163,11 @@ class Contract:
     ) -> Contract | None:
         return None
 
+    def binary_result_contract(
+        self, operator, other: Contract | None
+    ) -> Contract | None:
+        return None
+
     def requires_check(self, policy_checks: bool) -> bool:
         return policy_checks
 
@@ -192,6 +203,9 @@ class Contract:
         return True
 
     def dict_conflict(self, actual):
+        return True
+
+    def set_conflict(self, actual):
         return True
 
     def instance_conflict(self, actual):
@@ -694,6 +708,92 @@ class DictContract(Contract):
 
 
 @dataclass(frozen=True, slots=True)
+class SetContract(Contract):
+    name: str = "set"
+    identity: str = "mule_dict_set"
+    element: Contract | None = None
+
+    @property
+    def display_name(self):
+        if self.element is None:
+            return self.name
+        return f"{self.name}[{self.element.display_name}]"
+
+    @property
+    def fact(self):
+        base = FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+        if self.element is None:
+            return base
+        return SetType(self.identity, element=self.element.fact)
+
+    @property
+    def checked_type(self) -> ValueType:
+        return FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+
+    def speculative_parameter_type(self, fixnum_int: ValueType) -> ValueType:
+        return FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+
+    def accept(self, visitor):
+        return visitor.visit_SetContract(self)
+
+    def set_conflict(self, actual):
+        if actual.identity != self.identity:
+            return True
+        return (
+            self.element is not None
+            and actual.element is not UNKNOWN
+            and self.element.contradicts(actual.element)
+        )
+
+    def instance_conflict(self, actual):
+        return actual.identity != self.identity
+
+    def refine(self, actual):
+        return actual.annotated_set(self.fact)
+
+    def has_element_contracts(self) -> bool:
+        return self.element is not None
+
+    def iter_element_contract(self) -> Contract | None:
+        return self.element
+
+    def method_result_contract(
+        self, name: str, arg_types: tuple[ValueType, ...]
+    ) -> Contract | None:
+        if name == "pop" and not arg_types and self.identity == "mule_dict_set":
+            return self.element
+        if name == "copy" and not arg_types:
+            return self
+        if name == "difference" and len(arg_types) == 1:
+            return self
+        return None
+
+    def binary_result_contract(
+        self, operator, other: Contract | None
+    ) -> Contract | None:
+        from mule import ast
+
+        if operator == ast.BinaryOperator.SUBTRACT:
+            return self
+        if operator in {
+            ast.BinaryOperator.BIT_AND,
+            ast.BinaryOperator.BIT_OR,
+            ast.BinaryOperator.BIT_XOR,
+        }:
+            if self.element is None:
+                return self
+            if other is not None:
+                other_elem = other.iter_element_contract()
+                if other_elem is not None:
+                    return SetContract(
+                        self.name,
+                        self.identity,
+                        union_contract(self.element, other_elem),
+                    )
+        return None
+
+
+@dataclass(frozen=True, slots=True)
 class ClassContract(Contract):
     name: str
     identity: str
@@ -776,6 +876,9 @@ class UnionContract(Contract):
 
     def dict_conflict(self, actual):
         return all(m.dict_conflict(actual) for m in self.members)
+
+    def set_conflict(self, actual):
+        return all(m.set_conflict(actual) for m in self.members)
 
     def instance_conflict(self, actual):
         return all(m.instance_conflict(actual) for m in self.members)
@@ -944,6 +1047,11 @@ class _RuntimeCheckedReturnFact(ValueTypeVisitor):
     def visit_InstanceType(self, fact):
         return UNKNOWN if fact.may_be_unbound else fact.as_optional()
 
+    def visit_SetType(self, fact):
+        if fact.may_be_unbound or not fact.proven:
+            return UNKNOWN
+        return FROZENSET_TYPE if fact.identity == "mule_dict_frozenset" else SET_TYPE
+
     def visit_ImmortalType(self, fact):
         # Immortality is a physical ownership fact, not a Python value category.
         return UNKNOWN
@@ -971,6 +1079,8 @@ DECLARATIONS = {
     "str": TextContract(),
     "bytes": BytesContract(),
     "bytearray": ByteArrayContract(),
+    "set": SetContract("set", "mule_dict_set"),
+    "frozenset": SetContract("frozenset", "mule_dict_frozenset"),
 }
 
 

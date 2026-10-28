@@ -46,17 +46,21 @@ from .ctype import (
     CLASS_BYTES_TYPE,
     CLASS_DICT_TYPE,
     CLASS_FLOAT_TYPE,
+    CLASS_FROZENSET_TYPE,
     CLASS_INT_TYPE,
     CLASS_LIST_TYPE,
     CLASS_OBJECT_TYPE,
+    CLASS_SET_TYPE,
     CLASS_STR_TYPE,
     CLASS_TUPLE_TYPE,
     CLASS_TYPE_TYPE,
     DICT_TYPE,
     EMPTY_DICT_TYPE,
     FLOAT,
+    FROZENSET_TYPE,
     INTEGER,
     LIST_TYPE,
+    SET_TYPE,
     STORAGE_CLASS_TYPES,
     TEXT_TYPE,
     UNKNOWN,
@@ -1209,7 +1213,9 @@ class ClassConstructorTarget:
             )
             if derived is BOTTOM:
                 return BOTTOM
-            if derived is not UNKNOWN:
+            if derived is not UNKNOWN and (
+                derived != self.layout_type or self.base_type is UNKNOWN
+            ):
                 result_type = derived
         if self.init_target is not None:
             mutated = self.init_target.derive_self_type(
@@ -1219,7 +1225,7 @@ class ClassConstructorTarget:
                 return BOTTOM
             if mutated is not None and mutated is not UNKNOWN:
                 result_type = mutated
-        return result_type
+        return result_type.construct_type(arg_types, keywords)
 
     def derive_self_type(
         self,
@@ -1382,6 +1388,8 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[
     "tuple": ClassConstructorTarget(TupleType(), CLASS_TUPLE_TYPE),
     "list": ClassConstructorTarget(LIST_TYPE, CLASS_LIST_TYPE),
     "dict": ClassConstructorTarget(DICT_TYPE, CLASS_DICT_TYPE),
+    "set": ClassConstructorTarget(SET_TYPE, CLASS_SET_TYPE),
+    "frozenset": ClassConstructorTarget(FROZENSET_TYPE, CLASS_FROZENSET_TYPE),
     "object": ClassConstructorTarget(UNKNOWN, CLASS_OBJECT_TYPE),
     "type": ClassConstructorTarget(
         ANY_CLASS_TYPE, CLASS_TYPE_TYPE, records_type_origin=True

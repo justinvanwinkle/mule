@@ -44,6 +44,7 @@ from .ctype import (
     BytesType,
     DictType,
     ListType,
+    SetType,
     TextType,
     TupleType,
     ValueType,
@@ -621,6 +622,35 @@ class _UseClassifier(NodeVisitor):
             self.solver.allocation_only_escape(self.source)
             return
         if (
+            info
+            in (
+                fndb.PROTOCOLS["dict_contains"],
+                fndb.PROTOCOLS["dict_not_contains"],
+                fndb.PROTOCOLS["set_contains"],
+                fndb.PROTOCOLS["set_not_contains"],
+                fndb.PROTOCOLS["set_discard"],
+                fndb.PROTOCOLS["set_remove"],
+            )
+            and len(node.args) == 2
+            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
+            and self.solver.effective_lvar_type(node.args[0]).accept(
+                _SAFE_DICT_KEY_TYPE
+            )
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if (
+            index == 0
+            and info is fndb.PROTOCOLS["set_add"]
+            and len(node.args) == 2
+            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
+            and self.solver.effective_lvar_type(node.args[0]).accept(
+                _SAFE_DICT_KEY_TYPE
+            )
+        ):
+            self.solver.allocation_only_escape(self.source)
+            return
+        if (
             info is fndb.MATH_SQRT
             and len(node.args) == 1
             and not self.solver.effective_lvar_type(node.args[0]).may_run_user_code
@@ -894,6 +924,9 @@ class _BuiltinContainerType(ValueTypeVisitor):
     def visit_DictType(self, fact: DictType) -> bool:
         return fact.proven and not fact.may_be_unbound
 
+    def visit_SetType(self, fact: SetType) -> bool:
+        return fact.proven and not fact.may_be_unbound
+
 
 _BUILTIN_CONTAINER_TYPE = _BuiltinContainerType()
 
@@ -907,6 +940,13 @@ class _SafeDictKeyType(ValueTypeVisitor):
             fact.proven
             and not fact.may_be_unbound
             and (fact.key is BOTTOM or not fact.key.may_run_user_code)
+        )
+
+    def visit_SetType(self, fact: SetType) -> bool:
+        return (
+            fact.proven
+            and not fact.may_be_unbound
+            and (fact.element is BOTTOM or not fact.element.may_run_user_code)
         )
 
 
@@ -1147,6 +1187,8 @@ _ALLOCATION = _Allocation()
 _LOCAL_CONTAINER_READERS = frozenset(
     (
         fndb.LEN,
+        fndb.PROTOCOLS["dict_len"],
+        fndb.PROTOCOLS["table_len"],
         fndb.PROTOCOLS["getitem"],
         fndb.PROTOCOLS["setitem"],
         fndb.PROTOCOLS["unpack"],

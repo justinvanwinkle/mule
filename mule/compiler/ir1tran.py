@@ -47,6 +47,7 @@ from .annotation_types import (
     DictContract,
     ListContract,
     NoneContract,
+    SetContract,
     TupleContract,
     union_contract,
 )
@@ -5283,6 +5284,24 @@ class _DictTypeBinding(_CompilerBinding):
         return _DeclaredTypeBinding(DictContract("dict", key_contract, val_contract))
 
 
+class _SetTypeBinding(_CompilerBinding):
+    def __init__(self, name: str = "set", identity: str = "mule_dict_set"):
+        self.name = name
+        self.identity = identity
+
+    def declared_contract(self, converter, node):
+        return SetContract(self.name, self.identity)
+
+    def subscript_binding(self, element_binding):
+        items = element_binding.subscript_items()
+        if len(items) != 1 or items[0].is_ellipsis_binding():
+            return _OPAQUE_BINDING
+        element_contract = items[0].declared_contract(None, None)
+        return _DeclaredTypeBinding(
+            SetContract(self.name, self.identity, element_contract)
+        )
+
+
 class _OptimizeBinding(_CompilerBinding):
     def directive(self, converter, node):
         return None
@@ -5326,6 +5345,8 @@ _DECLARATION_BINDINGS: dict[str, _CompilerBinding] = {
     "list": _ListTypeBinding(),
     "tuple": _TupleTypeBinding(),
     "dict": _DictTypeBinding(),
+    "set": _SetTypeBinding("set", "mule_dict_set"),
+    "frozenset": _SetTypeBinding("frozenset", "mule_dict_frozenset"),
 }
 
 
@@ -6988,9 +7009,14 @@ class _TopLevelDeclaredClasses(ast.Visitor):
         ):
             return
         identity = self.converter.class_identity(node)
-        self.converter.declared_class_bindings[node.name] = _DeclaredTypeBinding(
-            ClassContract(node.name, identity)
-        )
+        if identity in ("mule_dict_set", "mule_dict_frozenset"):
+            self.converter.declared_class_bindings[node.name] = _SetTypeBinding(
+                node.name, identity
+            )
+        else:
+            self.converter.declared_class_bindings[node.name] = _DeclaredTypeBinding(
+                ClassContract(node.name, identity)
+            )
         if (
             not node.arguments
             and not node.decorators

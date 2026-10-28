@@ -205,14 +205,23 @@ def _table_resize(self, minimum):
     old_keys = _instance_field(self, "_keys")
     old_values = _instance_field(self, "_values")
     count = _storage_length(old_keys)
+    has_values = _storage_length(old_values) == count
     index = 0
-    while index < count:
-        key = _storage_read(old_keys, index)
-        if key is not _DELETED:
-            _storage_append(hashes, _storage_read(old_hashes, index))
-            _storage_append(keys, key)
-            _storage_append(values, _storage_read(old_values, index))
-        index += 1
+    if has_values:
+        while index < count:
+            key = _storage_read(old_keys, index)
+            if key is not _DELETED:
+                _storage_append(hashes, _storage_read(old_hashes, index))
+                _storage_append(keys, key)
+                _storage_append(values, _storage_read(old_values, index))
+            index += 1
+    else:
+        while index < count:
+            key = _storage_read(old_keys, index)
+            if key is not _DELETED:
+                _storage_append(hashes, _storage_read(old_hashes, index))
+                _storage_append(keys, key)
+            index += 1
     indices = _empty_indices(size * 2)
     new_indices = indices
     _set_instance_field(self, "_indices", new_indices)
@@ -464,12 +473,17 @@ def _representation(open, items, close):
 
 
 def _dict_update_table(self, other):
-    for index in _table_live(other):
-        _table_insert(
-            self,
-            _storage_read(_instance_field(other, "_keys"), index),
-            _storage_read(_instance_field(other, "_values"), index),
-        )
+    count = _storage_length(_instance_field(other, "_keys"))
+    index = 0
+    while index < count:
+        key = _storage_read(_instance_field(other, "_keys"), index)
+        if key is not _DELETED:
+            _table_insert(
+                self,
+                key,
+                _storage_read(_instance_field(other, "_values"), index),
+            )
+        index += 1
 
 
 def _dict_update_other(self, other):
@@ -519,12 +533,7 @@ class dict(_Table):
         if count == 1:
             other = _storage_read(args, 0)
             if _is_dict(other):
-                for index in _table_live(other):
-                    _table_insert(
-                        self,
-                        _storage_read(_instance_field(other, "_keys"), index),
-                        _storage_read(_instance_field(other, "_values"), index),
-                    )
+                _dict_update_table(self, other)
             elif _type_of(other) is list or _type_of(other) is tuple:
                 for item in other:
                     key, value = item
@@ -532,12 +541,7 @@ class dict(_Table):
             else:
                 _dict_update_other(self, other)
         if kwargs:
-            for index in _table_live(kwargs):
-                _table_insert(
-                    self,
-                    _storage_read(_instance_field(kwargs, "_keys"), index),
-                    _storage_read(_instance_field(kwargs, "_values"), index),
-                )
+            _dict_update_table(self, kwargs)
 
     @classmethod
     def fromkeys(cls, iterable, value=None):
@@ -587,18 +591,21 @@ class dict(_Table):
             return False
         if _instance_field(self, "_used") != _instance_field(other, "_used"):
             return False
-        for index in _table_live(self):
-            entry = _table_lookup(
-                other, _storage_read(_instance_field(self, "_keys"), index)
-            )
-            if entry < 0:
-                return False
-            mine, theirs = (
-                _storage_read(_instance_field(self, "_values"), index),
-                _storage_read(_instance_field(other, "_values"), entry),
-            )
-            if not (mine is theirs or mine == theirs):
-                return False
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                entry = _table_lookup(other, key)
+                if entry < 0:
+                    return False
+                mine, theirs = (
+                    _storage_read(_instance_field(self, "_values"), index),
+                    _storage_read(_instance_field(other, "_values"), entry),
+                )
+                if not (mine is theirs or mine == theirs):
+                    return False
+            index += 1
         return True
 
     def __ne__(self, other):
@@ -671,16 +678,15 @@ class dict(_Table):
 
     def popitem(self):
         _require_dict(self)
-        positions = _table_live(self)
-        if not positions:
-            raise KeyError("popitem(): dictionary is empty")
-        index = _storage_read(positions, _storage_length(positions) - 1)
-        key, value = (
-            _storage_read(_instance_field(self, "_keys"), index),
-            _storage_read(_instance_field(self, "_values"), index),
-        )
-        _table_remove(self, key)
-        return (key, value)
+        index = _storage_length(_instance_field(self, "_keys"))
+        while index > 0:
+            index -= 1
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                value = _storage_read(_instance_field(self, "_values"), index)
+                _table_remove(self, key)
+                return (key, value)
+        raise KeyError("popitem(): dictionary is empty")
 
     def keys(self):
         _require_dict(self)
@@ -879,13 +885,87 @@ class dict_items(_SetView):
         return self._repr_view("dict_items([", "])")
 
 
+def _set_insert(self, key):
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
+                if existing is key or existing == key:
+                    return
+        elif entry is _EMPTY:
+            break
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+    if (_storage_length(_instance_field(self, "_keys")) + 1) * 3 > _storage_length(
+        _instance_field(self, "_indices")
+    ) * 2:
+        _table_resize(self, _instance_field(self, "_used") + 1)
+        mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+        perturb = code & _PERTURB_MASK
+        slot = perturb & mask
+        while _storage_read(_instance_field(self, "_indices"), slot) is not _EMPTY:
+            perturb >>= 5
+            slot = (slot * 5 + perturb + 1) & mask
+    _storage_write(
+        _instance_field(self, "_indices"),
+        slot,
+        _storage_length(_instance_field(self, "_keys")),
+    )
+    _storage_append(_instance_field(self, "_hashes"), code)
+    _storage_append(_instance_field(self, "_keys"), key)
+    next_used = (_instance_field(self, "_used") + 1) & _MASK_LIMIT
+    _set_instance_field(self, "_used", next_used)
+    del next_used
+
+
+def _set_remove_entry(self, key):
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
+                if existing is key or existing == key:
+                    _storage_write(_instance_field(self, "_indices"), slot, _DUMMY)
+                    _storage_write(_instance_field(self, "_keys"), entry, _DELETED)
+                    remaining_used = (_instance_field(self, "_used") - 1) & _MASK_LIMIT
+                    _set_instance_field(self, "_used", remaining_used)
+                    del remaining_used
+                    return key
+        elif entry is _EMPTY:
+            return _MISSING
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
 def _set_fill(self, iterable):
     _table_clear(self)
+    if _is_set(iterable):
+        count = _storage_length(_instance_field(iterable, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(iterable, "_keys"), index)
+            if key is not _DELETED:
+                _set_insert(self, key)
+            index += 1
+        return
     for item in iterable:
-        _table_insert(self, item, None)
+        _set_insert(self, item)
 
 
-def _set_lookup(self, key):
+def _set_lookup_fallback(self, key):
     try:
         return _table_lookup(self, key)
     except TypeError:
@@ -894,13 +974,39 @@ def _set_lookup(self, key):
         raise
 
 
-def _set_remove(self, key):
+def _set_lookup(self, key):
+    code = _storage_hash(key)
+    if code is None:
+        return _set_lookup_fallback(self, key)
+    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    perturb = code & _PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(self, "_keys"), entry)
+                if existing is key or existing == key:
+                    return entry
+        elif entry is _EMPTY:
+            return _EMPTY
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def _set_remove_fallback(self, key):
     try:
-        return _table_remove(self, key)
+        return _set_remove_entry(self, key)
     except TypeError:
         if _is_mutable_set(key):
-            return _table_remove(self, frozenset(key))
+            return _set_remove_entry(self, frozenset(key))
         raise
+
+
+def _set_remove(self, key):
+    if _storage_hash(key) is not None:
+        return _set_remove_entry(self, key)
+    return _set_remove_fallback(self, key)
 
 
 class _SetBase(_Table):
@@ -1003,13 +1109,28 @@ class _SetBase(_Table):
         _require_any_set(self)
         if not _is_set(other):
             other = set(other)
-        for index in _table_live(self):
-            if _set_lookup(other, _instance_field(self, "_keys")[index]) < 0:
-                return False
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                if _set_lookup(other, key) < 0:
+                    return False
+            index += 1
         return True
 
     def issuperset(self, other):
         _require_any_set(self)
+        if _is_set(other):
+            count = _storage_length(_instance_field(other, "_keys"))
+            index = 0
+            while index < count:
+                key = _storage_read(_instance_field(other, "_keys"), index)
+                if key is not _DELETED:
+                    if _set_lookup(self, key) < 0:
+                        return False
+                index += 1
+            return True
         for item in other:
             if _set_lookup(self, item) < 0:
                 return False
@@ -1017,6 +1138,16 @@ class _SetBase(_Table):
 
     def isdisjoint(self, other):
         _require_any_set(self)
+        if _is_set(other):
+            count = _storage_length(_instance_field(other, "_keys"))
+            index = 0
+            while index < count:
+                key = _storage_read(_instance_field(other, "_keys"), index)
+                if key is not _DELETED:
+                    if _set_lookup(self, key) >= 0:
+                        return False
+                index += 1
+            return True
         for item in other:
             if _set_lookup(self, item) >= 0:
                 return False
@@ -1025,39 +1156,81 @@ class _SetBase(_Table):
     def union(self, *others):
         _require_any_set(self)
         result = self._same_kind()
-        for index in _table_live(self):
-            _table_insert(result, _instance_field(self, "_keys")[index], None)
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                _set_insert(result, key)
+            index += 1
         for other in others:
-            for item in other:
-                _table_insert(result, item, None)
+            if _is_set(other):
+                other_count = _storage_length(_instance_field(other, "_keys"))
+                other_index = 0
+                while other_index < other_count:
+                    key = _storage_read(_instance_field(other, "_keys"), other_index)
+                    if key is not _DELETED:
+                        _set_insert(result, key)
+                    other_index += 1
+            else:
+                for item in other:
+                    _set_insert(result, item)
         return result
 
     def intersection(self, *others):
         _require_any_set(self)
         result = self._same_kind()
-        for index in _table_live(self):
-            key = _instance_field(self, "_keys")[index]
-            kept = True
-            for other in others:
-                if key not in other:
-                    kept = False
-                    break
-            if kept:
-                _table_insert(result, key, None)
+        if _storage_length(others) == 1 and _is_set(_storage_read(others, 0)):
+            other = _storage_read(others, 0)
+            count = _storage_length(_instance_field(self, "_keys"))
+            index = 0
+            while index < count:
+                key = _storage_read(_instance_field(self, "_keys"), index)
+                if key is not _DELETED and _set_lookup(other, key) >= 0:
+                    _set_insert(result, key)
+                index += 1
+            return result
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                kept = True
+                for other in others:
+                    if key not in other:
+                        kept = False
+                        break
+                if kept:
+                    _set_insert(result, key)
+            index += 1
         return result
 
     def difference(self, *others):
         _require_any_set(self)
         result = self._same_kind()
-        for index in _table_live(self):
-            key = _instance_field(self, "_keys")[index]
-            kept = True
-            for other in others:
-                if key in other:
-                    kept = False
-                    break
-            if kept:
-                _table_insert(result, key, None)
+        if _storage_length(others) == 1 and _is_set(_storage_read(others, 0)):
+            other = _storage_read(others, 0)
+            count = _storage_length(_instance_field(self, "_keys"))
+            index = 0
+            while index < count:
+                key = _storage_read(_instance_field(self, "_keys"), index)
+                if key is not _DELETED and _set_lookup(other, key) < 0:
+                    _set_insert(result, key)
+                index += 1
+            return result
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                kept = True
+                for other in others:
+                    if key in other:
+                        kept = False
+                        break
+                if kept:
+                    _set_insert(result, key)
+            index += 1
         return result
 
     def symmetric_difference(self, other):
@@ -1065,14 +1238,20 @@ class _SetBase(_Table):
         if not _is_set(other):
             other = set(other)
         result = self._same_kind()
-        for index in _table_live(self):
-            key = _instance_field(self, "_keys")[index]
-            if _set_lookup(other, key) < 0:
-                _table_insert(result, key, None)
-        for index in _table_live(other):
-            key = _instance_field(other, "_keys")[index]
-            if _set_lookup(self, key) < 0:
-                _table_insert(result, key, None)
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED and _set_lookup(other, key) < 0:
+                _set_insert(result, key)
+            index += 1
+        other_count = _storage_length(_instance_field(other, "_keys"))
+        other_index = 0
+        while other_index < other_count:
+            key = _storage_read(_instance_field(other, "_keys"), other_index)
+            if key is not _DELETED and _set_lookup(self, key) < 0:
+                _set_insert(result, key)
+            other_index += 1
         return result
 
     def copy(self):
@@ -1178,7 +1357,7 @@ class set(_SetBase):
 
     def add(self, item):
         _require_mutable_set(self)
-        _table_insert(self, item, None)
+        _set_insert(self, item)
 
     def discard(self, item):
         _require_mutable_set(self)
@@ -1191,12 +1370,15 @@ class set(_SetBase):
 
     def pop(self):
         _require_mutable_set(self)
-        positions = _table_live(self)
-        if not positions:
-            raise KeyError("pop from an empty set")
-        key = _instance_field(self, "_keys")[positions[0]]
-        _table_remove(self, key)
-        return key
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                _set_remove_entry(self, key)
+                return key
+            index += 1
+        raise KeyError("pop from an empty set")
 
     def clear(self):
         _require_mutable_set(self)
@@ -1205,8 +1387,17 @@ class set(_SetBase):
     def update(self, *others):
         _require_mutable_set(self)
         for other in others:
-            for item in other:
-                _table_insert(self, item, None)
+            if _is_set(other):
+                count = _storage_length(_instance_field(other, "_keys"))
+                index = 0
+                while index < count:
+                    key = _storage_read(_instance_field(other, "_keys"), index)
+                    if key is not _DELETED:
+                        _set_insert(self, key)
+                    index += 1
+            else:
+                for item in other:
+                    _set_insert(self, item)
 
     def intersection_update(self, *others):
         _require_mutable_set(self)
@@ -1218,8 +1409,19 @@ class set(_SetBase):
     def difference_update(self, *others):
         _require_mutable_set(self)
         for other in others:
-            for item in other:
-                _set_remove(self, item)
+            if _is_set(other) and other is not self:
+                count = _storage_length(_instance_field(other, "_keys"))
+                index = 0
+                while index < count:
+                    key = _storage_read(_instance_field(other, "_keys"), index)
+                    if key is not _DELETED:
+                        _set_remove(self, key)
+                    index += 1
+            elif other is self:
+                _table_clear(self)
+            else:
+                for item in other:
+                    _set_remove(self, item)
 
     def symmetric_difference_update(self, other):
         _require_mutable_set(self)
@@ -1257,9 +1459,13 @@ class frozenset(_SetBase):
         _require_frozenset(self)
         # CPython's frozenset hash: an order-independent mix of element hashes.
         accumulator = 0
-        for index in _table_live(self):
-            code = _instance_field(self, "_hashes")[index] & _WORD
-            accumulator ^= ((code ^ 89869747) ^ (code << 16)) * 3644798167 & _WORD
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            if _storage_read(_instance_field(self, "_keys"), index) is not _DELETED:
+                code = _storage_read(_instance_field(self, "_hashes"), index) & _WORD
+                accumulator ^= ((code ^ 89869747) ^ (code << 16)) * 3644798167 & _WORD
+            index += 1
         accumulator ^= (_instance_field(self, "_used") + 1) * 1927868237 & _WORD
         accumulator ^= (accumulator >> 11) ^ (accumulator >> 25)
         accumulator = (accumulator * 69069 + 907133923) & _WORD
@@ -1271,6 +1477,29 @@ class frozenset(_SetBase):
 def _empty_table(cls):
     result = _allocate_instance(cls)
     _table_clear(result)
+    return result
+
+
+def _empty_set_sized(minimum):
+    size = _MINIMUM_SIZE
+    while size * 2 < minimum * 3:
+        size *= 2
+    result = _allocate_instance(set)
+    new_indices = _empty_indices(size)
+    _set_instance_field(result, "_indices", new_indices)
+    del new_indices
+    empty_hashes = []
+    _set_instance_field(result, "_hashes", empty_hashes)
+    del empty_hashes
+    empty_keys = []
+    _set_instance_field(result, "_keys", empty_keys)
+    del empty_keys
+    empty_values = []
+    _set_instance_field(result, "_values", empty_values)
+    del empty_values
+    cleared_used = 0
+    _set_instance_field(result, "_used", cleared_used)
+    del cleared_used
     return result
 
 
@@ -1295,5 +1524,5 @@ def build_dict(flat):
 def build_set(items):
     result = _empty_table(set)
     for item in items:
-        _table_insert(result, item, None)
+        _set_insert(result, item)
     return result

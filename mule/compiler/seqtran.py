@@ -25,8 +25,10 @@ from .ctype import (
     UNKNOWN,
     ByteArrayType,
     BytesType,
+    DictType,
     IntegerType,
     ListType,
+    SetType,
     TextType,
     TupleType,
     ValueType,
@@ -588,12 +590,148 @@ def _transform_empty_container_not(node: Combination) -> bool:
             return True
         return False
 
-    if splice_fun_args(arg, ("%build_tuple", "%build_list"), 0) is None:
+    if splice_fun_args(arg, ("%build_tuple", "%build_list", "%empty_set"), 0) is None:
         return False
     folded = ast.BooleanLiteral(True)
     folded.span = node.source.span if node.source is not None else None
     replace_combination_with_constant(node, folded)
     return True
+
+
+@deftransform("set", ())
+def _transform_empty_set(node: Combination) -> bool:
+    retarget_known_combination(node, fndb.PROTOCOLS["empty_set"], [])
+    return True
+
+
+@deftransform("%build_set")
+def _transform_empty_build_set(node: Combination) -> bool:
+    if len(node.args) != 1:
+        return False
+    items_lvar = node.args[0]
+    if is_pure_bound_ref(items_lvar):
+        literal = constant_lvar_value(items_lvar)
+        if literal is not None:
+            elements = literal.accept(_CONSTANT_TUPLE_ELEMENTS)
+            if elements is not None and len(elements) == 0:
+                retarget_known_combination(node, fndb.PROTOCOLS["empty_set"], [])
+                return True
+    if splice_fun_args(items_lvar, ("%build_tuple",), 0) is not None:
+        retarget_known_combination(node, fndb.PROTOCOLS["empty_set"], [])
+        return True
+    return False
+
+
+_SET_MUTATION_PROTOCOLS = {
+    "add": "set_add",
+    "discard": "set_discard",
+    "remove": "set_remove",
+}
+
+
+class _ResolveSetMethodProducer(NodeVisitor):
+    """Match a ``%resolve_method`` for ``add``, ``discard``, or ``remove`` on a mutable set."""
+
+    def __init__(self, block):
+        self.block = block
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is not CallKind.KNOWN
+            or node.fun_info is not fndb.RESOLVE_METHOD
+            or node.info is None
+            or node.info.name not in _SET_MUTATION_PROTOCOLS
+            or len(node.args) != 1
+            or node.prev is None
+            or node.block is not self.block
+            or node.lexenv.policy.safety >= 3
+        ):
+            return None
+        recv_lvar = node.args[0]
+        if not lvar_type(recv_lvar).fits_mutable_set():
+            return None
+        return node, _SET_MUTATION_PROTOCOLS[node.info.name]
+
+
+@deftransform("%call_resolved")
+def _transform_call_resolved_set_method(node: Combination) -> bool:
+    if (
+        len(node.args) != 2
+        or (node.info is not None and node.info.keywords)
+        or node.lexenv.policy.safety >= 3
+        or (
+            node.home_lambda is not None
+            and (
+                node.home_lambda.policy.safety >= 3
+                or node.home_lambda.name.startswith(_PROTOCOL_PREFIXES)
+            )
+        )
+    ):
+        return False
+    resolved, arg = node.args
+    if len(resolved.uses) != 1:
+        return False
+    matched = resolved.uses[0].accept(_ResolveSetMethodProducer(node.block))
+    if matched is None:
+        return False
+    resolve_node, protocol_name = matched
+    recv_lvar = resolve_node.args[0]
+    resolve_node.args = []
+    _flush_operand(resolve_node.fun)
+    unlink_node(resolve_node)
+    resolved.uses.clear()
+    resolved.dest = None
+    node.args = [recv_lvar, arg]
+    recv_lvar.dest = node
+    retarget_known_combination(node, fndb.PROTOCOLS[protocol_name], [recv_lvar, arg])
+    return True
+
+
+@deftransform("%bit_and")
+def _transform_set_and(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    if lvar_type(left).fits_mutable_set() and lvar_type(right).fits_set():
+        retarget_known_combination(node, fndb.PROTOCOLS["set_and"], [left, right])
+        return True
+    return False
+
+
+@deftransform("%bit_or")
+def _transform_set_or(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    if lvar_type(left).fits_mutable_set() and lvar_type(right).fits_set():
+        retarget_known_combination(node, fndb.PROTOCOLS["set_or"], [left, right])
+        return True
+    return False
+
+
+@deftransform("%subtract")
+def _transform_set_sub(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    if lvar_type(left).fits_mutable_set() and lvar_type(right).fits_set():
+        retarget_known_combination(node, fndb.PROTOCOLS["set_sub"], [left, right])
+        return True
+    return False
+
+
+@deftransform("%bit_xor")
+def _transform_set_xor(node: Combination) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = node.args
+    if lvar_type(left).fits_mutable_set() and lvar_type(right).fits_set():
+        retarget_known_combination(node, fndb.PROTOCOLS["set_xor"], [left, right])
+        return True
+    return False
 
 
 def _match_text_slice(lvar: Lvar) -> Combination | None:
@@ -721,6 +859,16 @@ class _KnownLengthPrimitive(ValueTypeVisitor):
         if fact.may_be_unbound:
             return None
         return KNOWN["_storage_length"]
+
+    def visit_DictType(self, fact: DictType) -> FunInfo | None:
+        if not fact.proven or fact.may_be_unbound:
+            return None
+        return fndb.PROTOCOLS["dict_len"]
+
+    def visit_SetType(self, fact: SetType) -> FunInfo | None:
+        if not fact.proven or fact.may_be_unbound:
+            return None
+        return fndb.PROTOCOLS["table_len"]
 
 
 _KNOWN_LENGTH_PRIMITIVE = _KnownLengthPrimitive()

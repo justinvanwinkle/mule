@@ -107,6 +107,9 @@ class ValueTypeVisitor:
     def visit_InstanceType(self, fact):
         return self.visit_ValueType(fact)
 
+    def visit_SetType(self, fact):
+        return self.visit_InstanceType(fact)
+
 
 @dataclass(frozen=True, slots=True)
 class ValueType:
@@ -265,6 +268,9 @@ class ValueType:
     def join_instance(self, left):
         return self.join_alternatives(left)
 
+    def join_set(self, left):
+        return self.join_alternatives(left)
+
     def join_unbound(self, left):
         return self.with_unbound()
 
@@ -281,6 +287,9 @@ class ValueType:
         return self
 
     def widen_dict(self, old, thresholds: tuple[int, ...] = ()):
+        return self
+
+    def widen_set(self, old, thresholds: tuple[int, ...] = ()):
         return self
 
     def widen_iterator(self, old, thresholds: tuple[int, ...] = ()):
@@ -307,6 +316,12 @@ class ValueType:
 
     def _update_as_nested_dict(self, key_type, val_type):
         return self.update_nested_dicts(key_type, val_type)
+
+    def update_nested_sets(self, elem_type):
+        return self
+
+    def _update_as_nested_set(self, elem_type):
+        return self.update_nested_sets(elem_type)
 
     def propagate_to_parent_container(self, parent):
         return parent
@@ -396,6 +411,12 @@ class ValueType:
 
     def binary_list(self, operator, left):
         return UNKNOWN
+
+    def binary_set(self, operator, left):
+        return UNKNOWN
+
+    def construct_type(self, arg_types: tuple, keywords: dict):
+        return self
 
     def unary(self, operator):
         return BOOLEAN if operator == ast.UnaryOperator.NOT else UNKNOWN
@@ -599,6 +620,11 @@ class ValueType:
     def annotated_dict(self, expected):
         return DICT_TYPE
 
+    def annotated_set(self, expected):
+        return (
+            FROZENSET_TYPE if expected.identity == "mule_dict_frozenset" else SET_TYPE
+        )
+
     def annotated_tuple(self, expected):
         return TupleType(expected.arity)
 
@@ -688,6 +714,15 @@ class ValueType:
 
     def fits_possible_dict(self, expected=None):
         return self.fits_dict(expected)
+
+    def fits_set(self, expected=None):
+        return False
+
+    def fits_mutable_set(self) -> bool:
+        return False
+
+    def fits_possible_set(self, expected=None):
+        return self.fits_set(expected)
 
     def fits_iterator(self, expected=None):
         return False
@@ -783,6 +818,11 @@ class UnknownType(ValueType):
     def fits_possible_dict(self, expected=None):
         return not self.may_be_unbound and (
             expected is None or (expected.key is UNKNOWN and expected.value is UNKNOWN)
+        )
+
+    def fits_possible_set(self, expected=None):
+        return not self.may_be_unbound and (
+            expected is None or expected.element is UNKNOWN
         )
 
     def fits_possible_instance(self, expected):
@@ -2533,6 +2573,17 @@ class TupleType(ValueType):
             return self
         return TupleType(self.arity, new_elems, self.may_be_unbound)
 
+    def update_nested_sets(self, elem_type):
+        if self.elements is None:
+            return self
+        new_elems = tuple(
+            el._update_as_nested_set(elem_type).limit_container_depth(2)
+            for el in self.elements
+        )
+        if new_elems == self.elements:
+            return self
+        return TupleType(self.arity, new_elems, self.may_be_unbound)
+
     def widen_mutable_containers(self):
         if self.elements is None:
             return self
@@ -2843,6 +2894,16 @@ class ListType(ValueType):
             return self
         return ListType(new_elem, self.may_be_unbound)
 
+    def update_nested_sets(self, elem_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
+            2
+        )
+        if new_elem == self.element:
+            return self
+        return ListType(new_elem, self.may_be_unbound)
+
     def propagate_to_parent_container(self, parent):
         return parent.update_nested_lists(self.element)
 
@@ -2982,6 +3043,16 @@ class ListType(ValueType):
             else self.element.join(elem).limit_container_depth(2)
         )
         return ListType(new_elem, self.may_be_unbound)
+
+    def construct_type(self, arg_types: tuple, keywords: dict):
+        if keywords or len(arg_types) > 1:
+            return LIST_TYPE
+        if not arg_types:
+            return EMPTY_LIST_TYPE
+        iter_type = arg_types[0].flow_iterate_type()
+        if iter_type.fits_iterator():
+            return EMPTY_LIST_TYPE.with_element(iter_type.element)
+        return LIST_TYPE
 
     def binary(self, operator, right):
         if self.may_be_unbound:
@@ -3208,6 +3279,14 @@ class DictType(ValueType):
         return self.update_nested_dicts(key_type, val_type).with_entry(
             key_type, val_type
         )
+
+    def update_nested_sets(self, elem_type):
+        if self.value is BOTTOM or self.value is UNKNOWN:
+            return self
+        new_val = self.value._update_as_nested_set(elem_type).limit_container_depth(2)
+        if new_val == self.value:
+            return self
+        return DictType(self.key, new_val, self.may_be_unbound, self.proven)
 
     def propagate_to_parent_container(self, parent):
         return parent.update_nested_dicts(self.key, self.value)
@@ -3544,6 +3623,16 @@ class IteratorType(ValueType):
             return self
         return IteratorType(new_elem, self.may_be_unbound)
 
+    def update_nested_sets(self, elem_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
+            2
+        )
+        if new_elem == self.element:
+            return self
+        return IteratorType(new_elem, self.may_be_unbound)
+
     def widen_mutable_containers(self):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
@@ -3653,6 +3742,7 @@ class BottomType(ValueType):
     join_tuple = join_unknown
     join_list = join_unknown
     join_dict = join_unknown
+    join_set = join_unknown
     join_iterator = join_unknown
     join_class = join_unknown
     join_unique_object = join_unknown
@@ -3685,6 +3775,7 @@ class BottomType(ValueType):
     binary_bytearray = binary_unknown
     binary_tuple = binary_unknown
     binary_list = binary_unknown
+    binary_set = binary_unknown
 
     def unary(self, operator):
         return BOOLEAN if operator == ast.UnaryOperator.NOT else self
@@ -3733,6 +3824,7 @@ class UnboundType(ValueType):
     join_tuple = join_unknown
     join_list = join_unknown
     join_dict = join_unknown
+    join_set = join_unknown
     join_iterator = join_unknown
     join_class = join_unknown
     join_unique_object = join_unknown
@@ -3889,6 +3981,14 @@ class UnionType(ValueType):
     def fits_dict(self, expected=None):
         return self._fits_family(expected, lambda member: member.fits_dict(member))
 
+    def fits_set(self, expected=None):
+        return self._fits_family(expected, lambda member: member.fits_set())
+
+    def fits_mutable_set(self) -> bool:
+        return not self.may_be_unbound and all(
+            member.fits_mutable_set() for member in self.members
+        )
+
     def fits_iterator(self, expected=None):
         return self._fits_family(expected, lambda member: member.fits_iterator(member))
 
@@ -3963,6 +4063,11 @@ class UnionType(ValueType):
             expected, lambda member: member.fits_possible_dict(member)
         )
 
+    def fits_possible_set(self, expected=None):
+        return self._may_fit_family(
+            expected, lambda member: member.fits_possible_set(expected)
+        )
+
     def fits_possible_instance(self, expected):
         return self._may_fit_family(
             expected, lambda member: member.fits_possible_instance(member)
@@ -4034,6 +4139,7 @@ class UnionType(ValueType):
     binary_bytearray = binary_unknown
     binary_tuple = binary_unknown
     binary_list = binary_unknown
+    binary_set = binary_unknown
 
     def unary(self, operator):
         return UNKNOWN if self.may_be_unbound else self.map(lambda m: m.unary(operator))
@@ -4164,6 +4270,9 @@ class UnionType(ValueType):
 
     def update_nested_dicts(self, key_type, val_type):
         return self.map(lambda m: m._update_as_nested_dict(key_type, val_type))
+
+    def update_nested_sets(self, elem_type):
+        return self.map(lambda m: m._update_as_nested_set(elem_type))
 
     def widen_mutable_containers(self):
         return self.map(lambda m: m.widen_mutable_containers())
@@ -4299,6 +4408,31 @@ class InstanceType(ValueType):
             return left
         return self
 
+    def join_set(self, left):
+        if left.identity != self.identity:
+            return self.join_alternatives(left)
+        may_be_unbound = left.may_be_unbound or self.may_be_unbound
+        slots = self.fixed_slots or left.fixed_slots
+        if not may_be_unbound and left.proven and slots == _TABLE_FIXED_SLOTS:
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        return SetType(self.identity, may_be_unbound, slots, UNKNOWN, left.proven)
+
+    def fits_set(self, expected=None):
+        if self.identity not in ("mule_dict_set", "mule_dict_frozenset"):
+            return False
+        if expected is None:
+            return not self.may_be_unbound
+        if self.may_be_unbound and not expected.may_be_unbound:
+            return False
+        if self.identity != expected.identity:
+            return False
+        return expected.element is UNKNOWN
+
+    def fits_mutable_set(self) -> bool:
+        return not self.may_be_unbound and self.identity == "mule_dict_set"
+
     def compare_identity_with(self, left, operator):
         # Two values of one class may still be distinct objects; only None
         # can be ruled out.
@@ -4342,6 +4476,563 @@ class InstanceType(ValueType):
         if self.may_be_unbound or storage_methods is None or not self.identity:
             return UNKNOWN
         return storage_methods.get((self.identity, name), UNKNOWN)
+
+
+_TABLE_FIXED_SLOTS: tuple[str, ...] = (
+    "_indices",
+    "_hashes",
+    "_keys",
+    "_values",
+    "_used",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SetType(InstanceType):
+    """Exact builtin set or frozenset instance with element type information."""
+
+    identity: str = "mule_dict_set"
+    may_be_unbound: bool = False
+    fixed_slots: tuple[str, ...] = _TABLE_FIXED_SLOTS
+    element: ValueType = UNKNOWN
+    proven: bool = True
+
+    def accept(self, visitor):
+        return visitor.visit_SetType(self)
+
+    @property
+    def is_heap_object(self):
+        return self.proven and not self.may_be_unbound
+
+    @property
+    def may_run_user_code(self):
+        return self.may_be_unbound or not self.proven or self.element.may_run_user_code
+
+    def instance_class(self) -> str | None:
+        return None if (self.may_be_unbound or not self.proven) else self.identity
+
+    def fixed_slot_index(self, name: str) -> int | None:
+        if self.may_be_unbound or not self.proven or name not in self.fixed_slots:
+            return None
+        return self.fixed_slots.index(name)
+
+    def runtime_class_type(self):
+        if self.may_be_unbound or not self.proven:
+            return UNKNOWN
+        return (
+            CLASS_FROZENSET_TYPE
+            if self.identity == "mule_dict_frozenset"
+            else CLASS_SET_TYPE
+        )
+
+    def runtime_parent_class_type(self):
+        return (
+            UNKNOWN if (self.may_be_unbound or not self.proven) else CLASS_OBJECT_TYPE
+        )
+
+    def same_runtime_class(self, other) -> bool:
+        return self.proven and other.fits_set(SetType(self.identity))
+
+    def exact_length(self) -> int | None:
+        return (
+            0
+            if (self.proven and not self.may_be_unbound and self.element is BOTTOM)
+            else None
+        )
+
+    def truth_value(self) -> bool | None:
+        if self.proven and not self.may_be_unbound and self.element is BOTTOM:
+            return False
+        return None
+
+    def annotation_conflict(self, contract):
+        return (
+            False
+            if (self.may_be_unbound or not self.proven)
+            else contract.set_conflict(self)
+        )
+
+    def annotated_set(self, expected):
+        if not self.proven and self.identity == expected.identity:
+            return SetType(
+                self.identity,
+                self.may_be_unbound,
+                self.fixed_slots,
+                self.element,
+                True,
+            )
+        return self if self.identity == expected.identity else expected
+
+    def dispatch_domain(self):
+        if self.may_be_unbound or not self.proven:
+            return None
+        return FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+
+    def dispatch_rank(self) -> int:
+        return 2**64 if (self.may_be_unbound or not self.proven) else 0
+
+    def as_bound(self):
+        if not self.may_be_unbound:
+            if (
+                self.element is UNKNOWN
+                and self.proven
+                and self.fixed_slots == _TABLE_FIXED_SLOTS
+            ):
+                return (
+                    FROZENSET_TYPE
+                    if self.identity == "mule_dict_frozenset"
+                    else SET_TYPE
+                )
+            return self
+        if (
+            self.element is UNKNOWN
+            and self.proven
+            and self.fixed_slots == _TABLE_FIXED_SLOTS
+        ):
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        return SetType(
+            self.identity, False, self.fixed_slots, self.element, self.proven
+        )
+
+    def with_unbound(self):
+        if self.may_be_unbound:
+            return self
+        return SetType(self.identity, True, self.fixed_slots, self.element, self.proven)
+
+    def limit_container_depth(self, max_depth: int = 3):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        if max_depth <= 0:
+            if not self.proven:
+                return SetType(
+                    self.identity,
+                    self.may_be_unbound,
+                    self.fixed_slots,
+                    UNKNOWN,
+                    False,
+                )
+            if not self.may_be_unbound and self.fixed_slots == _TABLE_FIXED_SLOTS:
+                return (
+                    FROZENSET_TYPE
+                    if self.identity == "mule_dict_frozenset"
+                    else SET_TYPE
+                )
+            return SetType(
+                self.identity, self.may_be_unbound, self.fixed_slots, UNKNOWN, True
+            )
+        limited = self.element.limit_container_depth(max_depth - 1)
+        if (
+            limited is UNKNOWN
+            and not self.may_be_unbound
+            and self.proven
+            and self.fixed_slots == _TABLE_FIXED_SLOTS
+        ):
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        if limited == self.element:
+            return self
+        return SetType(
+            self.identity, self.may_be_unbound, self.fixed_slots, limited, self.proven
+        )
+
+    def update_nested_lists(self, elem_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
+            2
+        )
+        if new_elem == self.element:
+            return self
+        return SetType(
+            self.identity, self.may_be_unbound, self.fixed_slots, new_elem, self.proven
+        )
+
+    def update_nested_dicts(self, key_type, val_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_dict(
+            key_type, val_type
+        ).limit_container_depth(2)
+        if new_elem == self.element:
+            return self
+        return SetType(
+            self.identity, self.may_be_unbound, self.fixed_slots, new_elem, self.proven
+        )
+
+    def update_nested_sets(self, elem_type):
+        if self.element is BOTTOM or self.element is UNKNOWN:
+            return self
+        new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
+            2
+        )
+        if new_elem == self.element:
+            return self
+        return SetType(
+            self.identity, self.may_be_unbound, self.fixed_slots, new_elem, self.proven
+        )
+
+    def _update_as_nested_set(self, elem_type):
+        return self.update_nested_sets(elem_type).with_element(elem_type)
+
+    def propagate_to_parent_container(self, parent):
+        return parent.update_nested_sets(self.element)
+
+    def widen_constant(self):
+        if not self.proven:
+            return SetType(
+                self.identity, self.may_be_unbound, self.fixed_slots, UNKNOWN, False
+            )
+        if not self.may_be_unbound and self.fixed_slots == _TABLE_FIXED_SLOTS:
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        return SetType(
+            self.identity, self.may_be_unbound, self.fixed_slots, UNKNOWN, True
+        )
+
+    def widen_mutable_containers(self):
+        if self.identity == "mule_dict_frozenset":
+            if self.element is BOTTOM or self.element is UNKNOWN:
+                return self
+            new_elem = self.element.widen_mutable_containers()
+            if new_elem == self.element:
+                return self
+            return SetType(
+                self.identity,
+                self.may_be_unbound,
+                self.fixed_slots,
+                new_elem,
+                self.proven,
+            )
+        return self.widen_constant()
+
+    def join(self, other):
+        return other.join_set(self)
+
+    def join_instance(self, left):
+        if left.identity != self.identity:
+            return self.join_alternatives(left)
+        may_be_unbound = left.may_be_unbound or self.may_be_unbound
+        slots = self.fixed_slots or left.fixed_slots
+        if not may_be_unbound and self.proven and slots == _TABLE_FIXED_SLOTS:
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        return SetType(self.identity, may_be_unbound, slots, UNKNOWN, self.proven)
+
+    def join_set(self, left):
+        if left is self:
+            return self
+        if left.identity != self.identity:
+            return self.join_alternatives(left)
+        may_be_unbound = left.may_be_unbound or self.may_be_unbound
+        proven = left.proven and self.proven
+        slots = self.fixed_slots or left.fixed_slots
+        if left.element is BOTTOM:
+            element = self.element
+        elif self.element is BOTTOM:
+            element = left.element
+        else:
+            element = left.element.join(self.element).limit_container_depth(2)
+        if (
+            element is UNKNOWN
+            and not may_be_unbound
+            and proven
+            and slots == _TABLE_FIXED_SLOTS
+        ):
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        if (
+            element == self.element
+            and may_be_unbound == self.may_be_unbound
+            and proven == self.proven
+            and slots == self.fixed_slots
+        ):
+            return self
+        if (
+            element == left.element
+            and may_be_unbound == left.may_be_unbound
+            and proven == left.proven
+            and slots == left.fixed_slots
+        ):
+            return left
+        return SetType(self.identity, may_be_unbound, slots, element, proven)
+
+    def widen(self, new, thresholds: tuple[int, ...] = ()):
+        return new.widen_set(self, thresholds)
+
+    def widen_set(self, old, thresholds: tuple[int, ...] = ()):
+        if old.identity != self.identity:
+            return self
+        element = widen_fact(
+            old.element, self.element, thresholds
+        ).limit_container_depth(2)
+        may_be_unbound = old.may_be_unbound or self.may_be_unbound
+        proven = old.proven and self.proven
+        slots = self.fixed_slots or old.fixed_slots
+        if (
+            element == self.element
+            and may_be_unbound == self.may_be_unbound
+            and proven == self.proven
+            and slots == self.fixed_slots
+        ):
+            return self
+        if (
+            element is UNKNOWN
+            and not may_be_unbound
+            and proven
+            and slots == _TABLE_FIXED_SLOTS
+        ):
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        return SetType(self.identity, may_be_unbound, slots, element, proven)
+
+    def accepts(self, actual):
+        return actual.fits_set(self)
+
+    def accepts_dispatch(self, actual):
+        return (
+            not self.may_be_unbound
+            and self.proven
+            and self.element is UNKNOWN
+            and actual.fits_set(self)
+        )
+
+    def accepts_possible_dispatch(self, actual):
+        return (
+            not self.may_be_unbound
+            and self.proven
+            and self.element is UNKNOWN
+            and actual.fits_possible_set(self)
+        )
+
+    def fits_instance(self, expected):
+        if not self.proven:
+            return False
+        return self.identity == expected.identity and (
+            expected.may_be_unbound or not self.may_be_unbound
+        )
+
+    def fits_set(self, expected=None):
+        if not self.proven:
+            return False
+        if expected is None:
+            return not self.may_be_unbound
+        if self.may_be_unbound and not expected.may_be_unbound:
+            return False
+        if self.identity != expected.identity:
+            return False
+        return (
+            expected.element is UNKNOWN
+            or self.element is BOTTOM
+            or self.element.fits(expected.element)
+        )
+
+    def fits_mutable_set(self) -> bool:
+        return (
+            self.proven and not self.may_be_unbound and self.identity == "mule_dict_set"
+        )
+
+    def fits_possible_set(self, expected=None):
+        if expected is None:
+            return not self.may_be_unbound
+        if self.may_be_unbound and not expected.may_be_unbound:
+            return False
+        return self.identity == expected.identity
+
+    def iterate_type(self):
+        if self.may_be_unbound:
+            return UNKNOWN
+        return IteratorType(UNKNOWN if self.element is BOTTOM else self.element)
+
+    def flow_iterate_type(self):
+        if self.may_be_unbound or not self.proven:
+            return UNKNOWN
+        return IteratorType(self.element)
+
+    def with_element(self, element):
+        elem = element.as_bound().limit_container_depth(2)
+        new_elem = (
+            elem
+            if self.element is BOTTOM
+            else self.element.join(elem).limit_container_depth(2)
+        )
+        return (
+            SetType(
+                self.identity,
+                self.may_be_unbound,
+                self.fixed_slots,
+                new_elem,
+                self.proven,
+            ).as_bound()
+            if not self.may_be_unbound
+            else SetType(self.identity, True, self.fixed_slots, new_elem, self.proven)
+        )
+
+    def construct_type(self, arg_types: tuple, keywords: dict):
+        if keywords or len(arg_types) > 1:
+            return (
+                FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+            )
+        empty = (
+            EMPTY_FROZENSET_TYPE
+            if self.identity == "mule_dict_frozenset"
+            else EMPTY_SET_TYPE
+        )
+        if not arg_types:
+            return empty
+        iter_type = arg_types[0].flow_iterate_type()
+        if iter_type.fits_iterator():
+            return empty.with_element(iter_type.element)
+        return FROZENSET_TYPE if self.identity == "mule_dict_frozenset" else SET_TYPE
+
+    def binary(self, operator, right):
+        if self.may_be_unbound:
+            return right.binary_unknown(operator, self)
+        return right.binary_set(operator, self)
+
+    def binary_set(self, operator, left):
+        if left.may_be_unbound or self.may_be_unbound:
+            return UNKNOWN
+        proven = left.proven and self.proven
+        if operator == ast.BinaryOperator.SUBTRACT:
+            return SetType(
+                left.identity, False, left.fixed_slots, left.element, proven
+            ).as_bound()
+        if operator in {
+            ast.BinaryOperator.BIT_AND,
+            ast.BinaryOperator.BIT_OR,
+            ast.BinaryOperator.BIT_XOR,
+        }:
+            if operator == ast.BinaryOperator.BIT_AND and (
+                left.element is BOTTOM or self.element is BOTTOM
+            ):
+                joined_elem = BOTTOM
+            elif left.element is BOTTOM:
+                joined_elem = self.element
+            elif self.element is BOTTOM:
+                joined_elem = left.element
+            else:
+                joined_elem = left.element.join(self.element).limit_container_depth(2)
+            return SetType(
+                left.identity, False, left.fixed_slots, joined_elem, proven
+            ).as_bound()
+        return UNKNOWN
+
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound:
+            return UNKNOWN
+        if not has_keywords:
+            if self.identity == "mule_dict_set":
+                if name in ("add", "discard", "remove") and arity == 1:
+                    return NONE_TYPE
+                if name == "clear" and arity == 0:
+                    return NONE_TYPE
+                if (
+                    name
+                    in (
+                        "update",
+                        "intersection_update",
+                        "difference_update",
+                        "symmetric_difference_update",
+                    )
+                    and arity == 1
+                ):
+                    return NONE_TYPE
+                if name == "pop" and arity == 0 and self.element is not BOTTOM:
+                    return self.element
+            if name == "copy" and arity == 0:
+                return SetType(
+                    self.identity, False, self.fixed_slots, self.element
+                ).as_bound()
+            if name == "difference" and arity == 1:
+                return SetType(
+                    self.identity, False, self.fixed_slots, self.element
+                ).as_bound()
+            if name in ("issubset", "issuperset", "isdisjoint") and arity == 1:
+                return BOOLEAN
+        if storage_methods is not None:
+            res = storage_methods.get((self.identity, name), UNKNOWN)
+            if res is not UNKNOWN:
+                return res
+            short_name = (
+                "frozenset" if self.identity == "mule_dict_frozenset" else "set"
+            )
+            return storage_methods.get((short_name, name), UNKNOWN)
+        return UNKNOWN
+
+    def method_call(
+        self, name: str, arg_types: tuple, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound:
+            return UNKNOWN, None, None, False, True
+        arity = len(arg_types)
+        if not has_keywords:
+            if self.identity == "mule_dict_set":
+                if name == "add" and arity == 1:
+                    may_call = arg_types[0].may_run_user_code
+                    return (
+                        NONE_TYPE if not arg_types[0].may_be_unbound else UNKNOWN,
+                        self.with_element(arg_types[0]),
+                        0,
+                        False,
+                        may_call,
+                    )
+                if name in ("discard", "remove") and arity == 1:
+                    may_call = arg_types[0].may_run_user_code
+                    return (
+                        NONE_TYPE if not arg_types[0].may_be_unbound else UNKNOWN,
+                        None,
+                        None,
+                        False,
+                        may_call,
+                    )
+                if name == "pop" and arity == 0:
+                    res = self.element if self.element is not BOTTOM else UNKNOWN
+                    return res, None, None, True, True
+                if name == "clear" and arity == 0:
+                    return NONE_TYPE, None, None, False, False
+                if name == "update" and arity == 1:
+                    elem_type = arg_types[0].iterate_type().next_item_type()
+                    return (
+                        NONE_TYPE,
+                        self.with_element(elem_type),
+                        None,
+                        False,
+                        True,
+                    )
+            if name == "copy" and arity == 0:
+                res = SetType(
+                    self.identity, False, self.fixed_slots, self.element
+                ).as_bound()
+                return res, None, None, False, False
+            if name == "difference" and arity == 1:
+                res = SetType(
+                    self.identity, False, self.fixed_slots, self.element
+                ).as_bound()
+                return res, None, None, False, True
+            if name in ("union", "intersection", "symmetric_difference") and arity == 1:
+                other_elem = arg_types[0].iterate_type().next_item_type()
+                base = SetType(
+                    self.identity, False, self.fixed_slots, self.element
+                ).as_bound()
+                return base.with_element(other_elem), None, None, False, True
+            if name in ("issubset", "issuperset", "isdisjoint") and arity == 1:
+                return BOOLEAN, None, None, False, True
+        return (
+            self.method_return_type(name, arity, has_keywords, storage_methods),
+            None,
+            None,
+            False,
+            True,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -4633,8 +5324,10 @@ LIST_TYPE = ListType()
 EMPTY_LIST_TYPE = ListType(BOTTOM)
 DICT_TYPE = DictType()
 EMPTY_DICT_TYPE = DictType(BOTTOM, BOTTOM)
-SET_TYPE = InstanceType("mule_dict_set")
-FROZENSET_TYPE = InstanceType("mule_dict_frozenset")
+SET_TYPE = SetType("mule_dict_set")
+EMPTY_SET_TYPE = SetType("mule_dict_set", element=BOTTOM)
+FROZENSET_TYPE = SetType("mule_dict_frozenset")
+EMPTY_FROZENSET_TYPE = SetType("mule_dict_frozenset", element=BOTTOM)
 ITERATOR_TYPE = IteratorType()
 _FIXNUM_INTEGER = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
 OPTIONAL_FIXNUM = union_type(_FIXNUM_INTEGER, NONE_TYPE)
@@ -5054,6 +5747,15 @@ class _SerializeValueType(ValueTypeVisitor):
             "fixed_slots": list(fact.fixed_slots),
         }
 
+    def visit_SetType(self, fact):
+        return {
+            "kind": "set",
+            "class": fact.identity,
+            "element": fact.element.to_dict(),
+            "unbound": fact.may_be_unbound,
+            "fixed_slots": list(fact.fixed_slots),
+        }
+
 
 _SERIALIZE_VALUE_TYPE = _SerializeValueType()
 
@@ -5156,9 +5858,29 @@ def value_type_from_dict(data: dict | None) -> ValueType:
     if kind == "unique_obj":
         return UniqueObjectType(data.get("id"), may_be_unbound=unbound)
     if kind == "instance":
+        cls_id = data["class"]
+        slots = tuple(data.get("fixed_slots", ()))
+        if cls_id in ("mule_dict_set", "mule_dict_frozenset"):
+            slots = slots or _TABLE_FIXED_SLOTS
+            if not unbound and slots == _TABLE_FIXED_SLOTS:
+                return FROZENSET_TYPE if cls_id == "mule_dict_frozenset" else SET_TYPE
+            return SetType(cls_id, may_be_unbound=unbound, fixed_slots=slots)
         return InstanceType(
-            data["class"],
+            cls_id,
             may_be_unbound=unbound,
-            fixed_slots=tuple(data.get("fixed_slots", ())),
+            fixed_slots=slots,
         )
+    if kind == "set":
+        cls_id = data.get("class", "mule_dict_set")
+        elem = value_type_from_dict(data.get("element"))
+        slots = tuple(data.get("fixed_slots", ())) or _TABLE_FIXED_SLOTS
+        if elem is UNKNOWN and not unbound and slots == _TABLE_FIXED_SLOTS:
+            return FROZENSET_TYPE if cls_id == "mule_dict_frozenset" else SET_TYPE
+        if elem is BOTTOM and not unbound and slots == _TABLE_FIXED_SLOTS:
+            return (
+                EMPTY_FROZENSET_TYPE
+                if cls_id == "mule_dict_frozenset"
+                else EMPTY_SET_TYPE
+            )
+        return SetType(cls_id, may_be_unbound=unbound, fixed_slots=slots, element=elem)
     return UNKNOWN

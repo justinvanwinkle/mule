@@ -477,6 +477,19 @@ def _transform_small_containment(
 
 @deftransform("%compare_in")
 def _transform_compare_in(node: Combination) -> bool:
+    if node.lvar is not None and len(node.args) == 2:
+        left_lvar, right_lvar = node.args
+        right_type = lvar_type(right_lvar)
+        if right_type.fits_dict():
+            retarget_known_combination(
+                node, fndb.PROTOCOLS["dict_contains"], [right_lvar, left_lvar]
+            )
+            return True
+        if right_type.fits_set():
+            retarget_known_combination(
+                node, fndb.PROTOCOLS["set_contains"], [right_lvar, left_lvar]
+            )
+            return True
     return _transform_small_containment(
         node,
         empty_result=False,
@@ -486,6 +499,19 @@ def _transform_compare_in(node: Combination) -> bool:
 
 @deftransform("%compare_not_in")
 def _transform_compare_not_in(node: Combination) -> bool:
+    if node.lvar is not None and len(node.args) == 2:
+        left_lvar, right_lvar = node.args
+        right_type = lvar_type(right_lvar)
+        if right_type.fits_dict():
+            retarget_known_combination(
+                node, fndb.PROTOCOLS["dict_not_contains"], [right_lvar, left_lvar]
+            )
+            return True
+        if right_type.fits_set():
+            retarget_known_combination(
+                node, fndb.PROTOCOLS["set_not_contains"], [right_lvar, left_lvar]
+            )
+            return True
     return _transform_small_containment(
         node,
         empty_result=True,

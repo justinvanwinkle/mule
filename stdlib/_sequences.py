@@ -39,11 +39,15 @@ from _dict import build_dict as _build_dict
 from _dict import build_set as _build_set
 from _dict import _MISSING as _DICT_MISSING
 from _dict import (
+    _DELETED as _TABLE_DELETED,
     _DUMMY as _TABLE_DUMMY,
     _EMPTY as _TABLE_EMPTY,
     _MASK_LIMIT as _TABLE_MASK_LIMIT,
     _PERTURB_MASK as _TABLE_PERTURB_MASK,
+    _empty_set_sized,
+    _empty_table,
     _set_lookup,
+    _set_remove,
     _table_hash_fallback,
     _table_insert,
     _table_lookup,
@@ -837,6 +841,388 @@ def dict_not_contains(table, key):
             return True
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
+
+
+def dict_len(table):
+    return _instance_field(table, "_used")
+
+
+def table_len(table):
+    return _instance_field(table, "_used")
+
+
+def empty_set():
+    return _empty_table(set)
+
+
+def set_add(table, key):
+    code = _storage_hash(key)
+    if code is None:
+        code = _table_hash_fallback(key)
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
+                if existing is key or existing == key:
+                    return
+        elif entry is _TABLE_EMPTY:
+            break
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+    if (_storage_length(_instance_field(table, "_keys")) + 1) * 3 > _storage_length(
+        _instance_field(table, "_indices")
+    ) * 2:
+        _table_resize(table, _instance_field(table, "_used") + 1)
+        mask = (
+            _storage_length(_instance_field(table, "_indices")) - 1
+        ) & _TABLE_MASK_LIMIT
+        perturb = code & _TABLE_PERTURB_MASK
+        slot = perturb & mask
+        while (
+            _storage_read(_instance_field(table, "_indices"), slot) is not _TABLE_EMPTY
+        ):
+            perturb >>= 5
+            slot = (slot * 5 + perturb + 1) & mask
+    _storage_write(
+        _instance_field(table, "_indices"),
+        slot,
+        _storage_length(_instance_field(table, "_keys")),
+    )
+    _storage_append(_instance_field(table, "_hashes"), code)
+    _storage_append(_instance_field(table, "_keys"), key)
+    next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
+    _set_instance_field(table, "_used", next_used)
+    del next_used
+
+
+def set_discard(table, key):
+    code = _storage_hash(key)
+    if code is None:
+        _set_remove(table, key)
+        return
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
+                if existing is key or existing == key:
+                    _storage_write(
+                        _instance_field(table, "_indices"), slot, _TABLE_DUMMY
+                    )
+                    _storage_write(
+                        _instance_field(table, "_keys"), entry, _TABLE_DELETED
+                    )
+                    remaining_used = (
+                        _instance_field(table, "_used") - 1
+                    ) & _TABLE_MASK_LIMIT
+                    _set_instance_field(table, "_used", remaining_used)
+                    del remaining_used
+                    return
+        elif entry is _TABLE_EMPTY:
+            return
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def set_remove(table, key):
+    code = _storage_hash(key)
+    if code is None:
+        if _set_remove(table, key) is _DICT_MISSING:
+            raise KeyError(key)
+        return
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
+                if existing is key or existing == key:
+                    _storage_write(
+                        _instance_field(table, "_indices"), slot, _TABLE_DUMMY
+                    )
+                    _storage_write(
+                        _instance_field(table, "_keys"), entry, _TABLE_DELETED
+                    )
+                    remaining_used = (
+                        _instance_field(table, "_used") - 1
+                    ) & _TABLE_MASK_LIMIT
+                    _set_instance_field(table, "_used", remaining_used)
+                    del remaining_used
+                    return
+        elif entry is _TABLE_EMPTY:
+            raise KeyError(key)
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def set_contains(table, key):
+    code = _storage_hash(key)
+    if code is None:
+        return _set_lookup(table, key) >= 0
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
+                if existing is key or existing == key:
+                    return True
+        elif entry is _TABLE_EMPTY:
+            return False
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def set_not_contains(table, key):
+    code = _storage_hash(key)
+    if code is None:
+        return _set_lookup(table, key) < 0
+    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
+    perturb = code & _TABLE_PERTURB_MASK
+    slot = perturb & mask
+    while True:
+        entry = _storage_read(_instance_field(table, "_indices"), slot)
+        if entry >= 0:
+            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
+                existing = _storage_read(_instance_field(table, "_keys"), entry)
+                if existing is key or existing == key:
+                    return False
+        elif entry is _TABLE_EMPTY:
+            return True
+        perturb >>= 5
+        slot = (slot * 5 + perturb + 1) & mask
+
+
+def set_and(left, right):
+    left_used = _instance_field(left, "_used")
+    right_used = _instance_field(right, "_used")
+    result = _empty_set_sized(left_used if left_used < right_used else right_used)
+    res_indices = _instance_field(result, "_indices")
+    res_hashes = _instance_field(result, "_hashes")
+    res_keys = _instance_field(result, "_keys")
+    res_mask = (_storage_length(res_indices) - 1) & _TABLE_MASK_LIMIT
+    count = _storage_length(_instance_field(left, "_keys"))
+    index = 0
+    while index < count:
+        key = _storage_read(_instance_field(left, "_keys"), index)
+        if key is not _TABLE_DELETED:
+            code = _storage_read(_instance_field(left, "_hashes"), index)
+            mask = (
+                _storage_length(_instance_field(right, "_indices")) - 1
+            ) & _TABLE_MASK_LIMIT
+            perturb = code & _TABLE_PERTURB_MASK
+            slot = perturb & mask
+            while True:
+                entry = _storage_read(_instance_field(right, "_indices"), slot)
+                if entry >= 0:
+                    if _storage_read(_instance_field(right, "_hashes"), entry) == code:
+                        existing = _storage_read(_instance_field(right, "_keys"), entry)
+                        if existing is key or existing == key:
+                            res_perturb = code & _TABLE_PERTURB_MASK
+                            res_slot = res_perturb & res_mask
+                            while (
+                                _storage_read(res_indices, res_slot)
+                                is not _TABLE_EMPTY
+                            ):
+                                res_perturb >>= 5
+                                res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                            _storage_write(
+                                res_indices, res_slot, _storage_length(res_keys)
+                            )
+                            _storage_append(res_hashes, code)
+                            _storage_append(res_keys, key)
+                            break
+                elif entry is _TABLE_EMPTY:
+                    break
+                perturb >>= 5
+                slot = (slot * 5 + perturb + 1) & mask
+        index += 1
+    used = _storage_length(res_keys)
+    _set_instance_field(result, "_used", used)
+    del used
+    return result
+
+
+def set_or(left, right):
+    result = _empty_set_sized(
+        _instance_field(left, "_used") + _instance_field(right, "_used")
+    )
+    res_indices = _instance_field(result, "_indices")
+    res_hashes = _instance_field(result, "_hashes")
+    res_keys = _instance_field(result, "_keys")
+    res_mask = (_storage_length(res_indices) - 1) & _TABLE_MASK_LIMIT
+    count = _storage_length(_instance_field(left, "_keys"))
+    index = 0
+    while index < count:
+        key = _storage_read(_instance_field(left, "_keys"), index)
+        if key is not _TABLE_DELETED:
+            code = _storage_read(_instance_field(left, "_hashes"), index)
+            res_perturb = code & _TABLE_PERTURB_MASK
+            res_slot = res_perturb & res_mask
+            while _storage_read(res_indices, res_slot) is not _TABLE_EMPTY:
+                res_perturb >>= 5
+                res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+            _storage_write(res_indices, res_slot, _storage_length(res_keys))
+            _storage_append(res_hashes, code)
+            _storage_append(res_keys, key)
+        index += 1
+    right_count = _storage_length(_instance_field(right, "_keys"))
+    right_index = 0
+    while right_index < right_count:
+        key = _storage_read(_instance_field(right, "_keys"), right_index)
+        if key is not _TABLE_DELETED:
+            code = _storage_read(_instance_field(right, "_hashes"), right_index)
+            res_perturb = code & _TABLE_PERTURB_MASK
+            res_slot = res_perturb & res_mask
+            while True:
+                entry = _storage_read(res_indices, res_slot)
+                if entry >= 0:
+                    if _storage_read(res_hashes, entry) == code:
+                        existing = _storage_read(res_keys, entry)
+                        if existing is key or existing == key:
+                            break
+                elif entry is _TABLE_EMPTY:
+                    _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                    _storage_append(res_hashes, code)
+                    _storage_append(res_keys, key)
+                    break
+                res_perturb >>= 5
+                res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+        right_index += 1
+    used = _storage_length(res_keys)
+    _set_instance_field(result, "_used", used)
+    del used
+    return result
+
+
+def set_sub(left, right):
+    result = _empty_set_sized(_instance_field(left, "_used"))
+    res_indices = _instance_field(result, "_indices")
+    res_hashes = _instance_field(result, "_hashes")
+    res_keys = _instance_field(result, "_keys")
+    res_mask = (_storage_length(res_indices) - 1) & _TABLE_MASK_LIMIT
+    count = _storage_length(_instance_field(left, "_keys"))
+    index = 0
+    while index < count:
+        key = _storage_read(_instance_field(left, "_keys"), index)
+        if key is not _TABLE_DELETED:
+            code = _storage_read(_instance_field(left, "_hashes"), index)
+            mask = (
+                _storage_length(_instance_field(right, "_indices")) - 1
+            ) & _TABLE_MASK_LIMIT
+            perturb = code & _TABLE_PERTURB_MASK
+            slot = perturb & mask
+            while True:
+                entry = _storage_read(_instance_field(right, "_indices"), slot)
+                if entry >= 0:
+                    if _storage_read(_instance_field(right, "_hashes"), entry) == code:
+                        existing = _storage_read(_instance_field(right, "_keys"), entry)
+                        if existing is key or existing == key:
+                            break
+                elif entry is _TABLE_EMPTY:
+                    res_perturb = code & _TABLE_PERTURB_MASK
+                    res_slot = res_perturb & res_mask
+                    while _storage_read(res_indices, res_slot) is not _TABLE_EMPTY:
+                        res_perturb >>= 5
+                        res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                    _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                    _storage_append(res_hashes, code)
+                    _storage_append(res_keys, key)
+                    break
+                perturb >>= 5
+                slot = (slot * 5 + perturb + 1) & mask
+        index += 1
+    used = _storage_length(res_keys)
+    _set_instance_field(result, "_used", used)
+    del used
+    return result
+
+
+def set_xor(left, right):
+    result = _empty_set_sized(
+        _instance_field(left, "_used") + _instance_field(right, "_used")
+    )
+    res_indices = _instance_field(result, "_indices")
+    res_hashes = _instance_field(result, "_hashes")
+    res_keys = _instance_field(result, "_keys")
+    res_mask = (_storage_length(res_indices) - 1) & _TABLE_MASK_LIMIT
+    count = _storage_length(_instance_field(left, "_keys"))
+    index = 0
+    while index < count:
+        key = _storage_read(_instance_field(left, "_keys"), index)
+        if key is not _TABLE_DELETED:
+            code = _storage_read(_instance_field(left, "_hashes"), index)
+            mask = (
+                _storage_length(_instance_field(right, "_indices")) - 1
+            ) & _TABLE_MASK_LIMIT
+            perturb = code & _TABLE_PERTURB_MASK
+            slot = perturb & mask
+            while True:
+                entry = _storage_read(_instance_field(right, "_indices"), slot)
+                if entry >= 0:
+                    if _storage_read(_instance_field(right, "_hashes"), entry) == code:
+                        existing = _storage_read(_instance_field(right, "_keys"), entry)
+                        if existing is key or existing == key:
+                            break
+                elif entry is _TABLE_EMPTY:
+                    res_perturb = code & _TABLE_PERTURB_MASK
+                    res_slot = res_perturb & res_mask
+                    while _storage_read(res_indices, res_slot) is not _TABLE_EMPTY:
+                        res_perturb >>= 5
+                        res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                    _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                    _storage_append(res_hashes, code)
+                    _storage_append(res_keys, key)
+                    break
+                perturb >>= 5
+                slot = (slot * 5 + perturb + 1) & mask
+        index += 1
+    right_count = _storage_length(_instance_field(right, "_keys"))
+    right_index = 0
+    while right_index < right_count:
+        key = _storage_read(_instance_field(right, "_keys"), right_index)
+        if key is not _TABLE_DELETED:
+            code = _storage_read(_instance_field(right, "_hashes"), right_index)
+            mask = (
+                _storage_length(_instance_field(left, "_indices")) - 1
+            ) & _TABLE_MASK_LIMIT
+            perturb = code & _TABLE_PERTURB_MASK
+            slot = perturb & mask
+            while True:
+                entry = _storage_read(_instance_field(left, "_indices"), slot)
+                if entry >= 0:
+                    if _storage_read(_instance_field(left, "_hashes"), entry) == code:
+                        existing = _storage_read(_instance_field(left, "_keys"), entry)
+                        if existing is key or existing == key:
+                            break
+                elif entry is _TABLE_EMPTY:
+                    res_perturb = code & _TABLE_PERTURB_MASK
+                    res_slot = res_perturb & res_mask
+                    while _storage_read(res_indices, res_slot) is not _TABLE_EMPTY:
+                        res_perturb >>= 5
+                        res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                    _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                    _storage_append(res_hashes, code)
+                    _storage_append(res_keys, key)
+                    break
+                perturb >>= 5
+                slot = (slot * 5 + perturb + 1) & mask
+        right_index += 1
+    used = _storage_length(res_keys)
+    _set_instance_field(result, "_used", used)
+    del used
+    return result
 
 
 def bytearray_getitem(array, index):

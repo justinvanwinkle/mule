@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from mule import ast
 
 from . import fndb
-from .annotation_types import InferredReturnContract, ListContract
+from .annotation_types import InferredReturnContract, ListContract, SetContract
 from .ctype import (
     ANY_CLASS_TYPE,
     BOOLEAN,
@@ -50,7 +50,9 @@ from .ctype import (
     CLASS_TYPE_TYPE,
     DICT_TYPE,
     EMPTY_DICT_TYPE,
+    EMPTY_FROZENSET_TYPE,
     EMPTY_LIST_TYPE,
+    EMPTY_SET_TYPE,
     FIXNUM_MAX,
     FIXNUM_MIN,
     FLOAT,
@@ -151,6 +153,20 @@ class _InstanceFieldType(ValueTypeVisitor):
             return UNKNOWN
         return self.storage_methods.get((identity, self.name), UNKNOWN)
 
+    def visit_SetType(self, fact):
+        if not fact.proven or fact.may_be_unbound or self.name not in fact.fixed_slots:
+            return UNKNOWN
+        res = self.visit_InstanceType(fact)
+        if res is not UNKNOWN:
+            return res
+        short_name = "frozenset" if fact.identity == "mule_dict_frozenset" else "set"
+        for cf in self.class_facts.values():
+            if cf.public_name == short_name:
+                return cf.fields.get(self.name, UNKNOWN)
+        if self.storage_methods is not None:
+            return self.storage_methods.get((short_name, self.name), UNKNOWN)
+        return UNKNOWN
+
     def visit_UnionType(self, fact):
         if fact.may_be_unbound:
             return UNKNOWN
@@ -201,6 +217,10 @@ LIST_FACT = Fact(LIST_TYPE)
 EMPTY_LIST_FACT = Fact(EMPTY_LIST_TYPE)
 DICT_FACT = Fact(DICT_TYPE)
 EMPTY_DICT_FACT = Fact(EMPTY_DICT_TYPE)
+SET_FACT = Fact(SET_TYPE)
+EMPTY_SET_FACT = Fact(EMPTY_SET_TYPE)
+FROZENSET_FACT = Fact(FROZENSET_TYPE)
+EMPTY_FROZENSET_FACT = Fact(EMPTY_FROZENSET_TYPE)
 IMMORTAL_FACT = Fact(IMMORTAL)
 IMMORTAL_UNBOUND_FACT = Fact(IMMORTAL_UNBOUND)
 _EMPTY_ITERATOR_TYPE = IteratorType(BOTTOM)
@@ -229,6 +249,10 @@ _CANONICAL_FACTS: dict[int, Fact] = {
         EMPTY_LIST_FACT,
         DICT_FACT,
         EMPTY_DICT_FACT,
+        SET_FACT,
+        EMPTY_SET_FACT,
+        FROZENSET_FACT,
+        EMPTY_FROZENSET_FACT,
         IMMORTAL_FACT,
         IMMORTAL_UNBOUND_FACT,
         _EMPTY_ITERATOR_FACT,
@@ -1130,6 +1154,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
         recv_type = self.type_of(lvar)
         if recv_type.fits_list(LIST_TYPE):
             self.mutate_list(recv_var, recv_type, elem_type)
+        elif recv_type.fits_mutable_set():
+            self.mutate_set(recv_var, recv_type, elem_type)
 
     def resolve_call_target(self, node: Combination):
         callee_fact = self.fact_of(node.fun)
@@ -1240,6 +1266,30 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     updated_nested = current_fact.type.update_nested_dicts(
                         key_type, val_type
                     )
+                    if updated_nested != current_fact.type:
+                        self.assign(parent_var, _fact(updated_nested))
+
+    def mutate_set(self, recv_var, recv_type: ValueType, elem_type: ValueType):
+        if recv_var is not None and recv_var not in self.walk.indirect:
+            if self.state.get(recv_var) is not UNBOUND_FACT:
+                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
+            all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
+            for member in all_vars:
+                self._invalidate_seq_len(member)
+            for alias_var in all_vars - {recv_var}:
+                if alias_var in self.state and alias_var not in self.walk.indirect:
+                    alias_type = self.state[alias_var].type
+                    if alias_type.fits_mutable_set():
+                        self.assign(
+                            alias_var, _fact(alias_type.with_element(elem_type))
+                        )
+            parents = set()
+            for member in all_vars:
+                parents.update(self.walk.parent_containers.get(member, ()))
+            for parent_var in parents:
+                if parent_var in self.state and parent_var not in self.walk.indirect:
+                    current_fact = self.state[parent_var]
+                    updated_nested = current_fact.type.update_nested_sets(elem_type)
                     if updated_nested != current_fact.type:
                         self.assign(parent_var, _fact(updated_nested))
 
@@ -1377,14 +1427,36 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     self.walk.var_contracts[key] = contract
                 else:
                     self.walk.var_contracts.pop(key, None)
-            elif node.var.accept(_SINGLE_ASSIGNED_LAMBDA_VAR):
+            elif key in self.walk.local_vars_set and not key.indirect:
+                is_single = node.var.accept(_SINGLE_ASSIGNED_LAMBDA_VAR)
+                is_non_param = key not in self.walk.lambda_.vars
                 val_contract = self.walk.lvar_contracts.get(node.value)
-                if val_contract is not None:
+                if val_contract is not None and (
+                    is_single
+                    or (
+                        is_non_param
+                        and all(
+                            s.value is not None
+                            and self.walk.lvar_contracts.get(s.value) == val_contract
+                            for s in key.sets
+                        )
+                    )
+                ):
                     self.walk.var_contracts[key] = val_contract
                 else:
                     self.walk.var_contracts.pop(key, None)
                 iter_contract = self.walk.iter_contracts.get(node.value)
-                if iter_contract is not None:
+                if iter_contract is not None and (
+                    is_single
+                    or (
+                        is_non_param
+                        and all(
+                            s.value is not None
+                            and self.walk.iter_contracts.get(s.value) == iter_contract
+                            for s in key.sets
+                        )
+                    )
+                ):
                     self.walk.iter_contracts[key] = iter_contract
                 else:
                     self.walk.iter_contracts.pop(key, None)
@@ -1689,19 +1761,16 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 if builtin_type is BOTTOM:
                     return NO_FACT
                 resolved = builtin_type
-            if (
-                len(node.args) == 1
-                and not info.keywords
-                and node.lvar is not None
-                and self.walk.is_element_preserving_builtin(node.fun)
-            ):
+            if len(node.args) == 1 and not info.keywords and node.lvar is not None:
                 arg_contract = self.walk.lvar_contracts.get(node.args[0])
                 if arg_contract is not None:
                     iter_elem = arg_contract.iter_element_contract()
                     if iter_elem is not None:
-                        self.walk.lvar_contracts[node.lvar] = ListContract(
-                            "list", iter_elem
+                        preserved = self.walk.element_preserving_builtin_contract(
+                            node.fun, iter_elem
                         )
+                        if preserved is not None:
+                            self.walk.lvar_contracts[node.lvar] = preserved
             if target is not None:
                 mutated = None
                 if node.args:
@@ -1712,8 +1781,10 @@ class _Propagation(NodeVisitor, LeafVisitor):
                         and recv_var not in self.walk.indirect
                     ):
                         recv_type = self.state[recv_var].type
-                        if recv_type.fits_list(LIST_TYPE) or recv_type.fits_dict(
-                            DICT_TYPE
+                        if (
+                            recv_type.fits_list(LIST_TYPE)
+                            or recv_type.fits_dict(DICT_TYPE)
+                            or recv_type.fits_set()
                         ):
                             mutated = target.derive_self_type(
                                 arg_types, info.keywords, receiver_type=recv_type
@@ -1912,6 +1983,39 @@ class _BuildDictType(ValueTypeVisitor):
 
 
 _BUILD_DICT_TYPE = _BuildDictType()
+
+
+class _BuildSetType(ValueTypeVisitor):
+    def visit_ValueType(self, fact):
+        return SET_TYPE, True
+
+    def visit_TupleType(self, fact):
+        if fact.may_be_unbound:
+            return SET_TYPE, True
+        if fact.arity == 0:
+            return EMPTY_SET_TYPE, False
+        if fact.elements is not None:
+            set_type = EMPTY_SET_TYPE
+            may_call = False
+            for elem_t in fact.elements:
+                set_type = set_type.with_element(elem_t)
+                if elem_t.may_run_user_code:
+                    may_call = True
+            return set_type, may_call
+        return SET_TYPE, True
+
+    def visit_ListType(self, fact):
+        if fact.may_be_unbound:
+            return SET_TYPE, True
+        if fact.element is BOTTOM:
+            return EMPTY_SET_TYPE, False
+        return (
+            EMPTY_SET_TYPE.with_element(fact.element),
+            fact.element.may_run_user_code,
+        )
+
+
+_BUILD_SET_TYPE = _BuildSetType()
 
 
 class _SequenceIteratorVar(NodeVisitor, LeafVisitor):
@@ -2138,6 +2242,15 @@ def _make_binary_propagator(operator: ast.BinaryOperator):
         if left is BOTTOM or right is BOTTOM:
             return NO_FACT
         res_type = left.binary(operator, right)
+        if node.lvar is not None:
+            left_contract = visitor.walk.lvar_contracts.get(args[0])
+            if left_contract is not None:
+                right_contract = visitor.walk.lvar_contracts.get(args[1])
+                res_contract = left_contract.binary_result_contract(
+                    operator, right_contract
+                )
+                if res_contract is not None:
+                    visitor.walk.lvar_contracts[node.lvar] = res_contract
         if (
             operator is ast.BinaryOperator.SUBTRACT
             and visitor.relations
@@ -2610,6 +2723,114 @@ def _propagate_build_dict(visitor: _Propagation, node: Combination):
     return _fact(dict_type)
 
 
+@defpropagate("%build_set")
+def _propagate_build_set(visitor: _Propagation, node: Combination):
+    args = node.args
+    if not args:
+        return EMPTY_SET_FACT
+    if len(args) == 1:
+        set_type, may_call = visitor.type_of(args[0]).accept(_BUILD_SET_TYPE)
+        if may_call:
+            visitor.invalidate()
+        return _fact(set_type)
+    set_type = EMPTY_SET_TYPE
+    for arg in args:
+        set_type = set_type.with_element(visitor.type_of(arg))
+    if any(visitor.type_of(arg).may_run_user_code for arg in args):
+        visitor.invalidate()
+    return _fact(set_type)
+
+
+@defpropagate("%empty_set")
+def _propagate_empty_set(visitor: _Propagation, node: Combination):
+    return EMPTY_SET_FACT
+
+
+@defpropagate("%set_add")
+def _propagate_set_add(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 2:
+        return None
+    recv_var = visitor.origins.get(args[0])
+    elem_var = visitor.origins.get(args[1])
+    visitor.record_container_child(recv_var, elem_var)
+    recv_type = visitor.type_of(args[0])
+    elem_type = visitor.type_of(args[1])
+    if recv_type is BOTTOM or elem_type is BOTTOM:
+        return NO_FACT
+    if elem_type.may_run_user_code:
+        visitor.invalidate()
+    visitor.mutate_set(recv_var, recv_type, elem_type)
+    return NONE_FACT
+
+
+@defpropagate("%set_discard")
+@defpropagate("%set_remove")
+def _propagate_set_discard_or_remove(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 2:
+        return None
+    recv_type = visitor.type_of(args[0])
+    elem_type = visitor.type_of(args[1])
+    if recv_type is BOTTOM or elem_type is BOTTOM:
+        return NO_FACT
+    if elem_type.may_run_user_code:
+        visitor.invalidate()
+    return NONE_FACT
+
+
+for _set_op_name, _set_op_enum in (
+    ("%set_and", ast.BinaryOperator.BIT_AND),
+    ("%set_or", ast.BinaryOperator.BIT_OR),
+    ("%set_sub", ast.BinaryOperator.SUBTRACT),
+    ("%set_xor", ast.BinaryOperator.BIT_XOR),
+):
+    defpropagate(_set_op_name)(_make_binary_propagator(_set_op_enum))
+
+
+def _make_table_containment_propagator(operator: ast.ComparisonOperator):
+    def _prop(visitor: _Propagation, node: Combination):
+        if len(node.args) != 2:
+            return BOOLEAN_FACT
+        table_type = visitor.type_of(node.args[0])
+        key_type = visitor.type_of(node.args[1])
+        if table_type is BOTTOM or key_type is BOTTOM:
+            return NO_FACT
+        if table_type.may_run_user_code or key_type.may_run_user_code:
+            visitor.invalidate()
+        return _fact(key_type.comparison(operator, table_type))
+
+    return _prop
+
+
+defpropagate("%dict_contains")(
+    _make_table_containment_propagator(ast.ComparisonOperator.IN)
+)
+defpropagate("%dict_not_contains")(
+    _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
+)
+defpropagate("%set_contains")(
+    _make_table_containment_propagator(ast.ComparisonOperator.IN)
+)
+defpropagate("%set_not_contains")(
+    _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
+)
+
+
+@defpropagate("%dict_len")
+@defpropagate("%table_len")
+def _propagate_table_len(visitor: _Propagation, node: Combination):
+    if len(node.args) != 1:
+        return _SEQ_LEN_BOUND_FACT
+    table_type = visitor.type_of(node.args[0])
+    if table_type is BOTTOM:
+        return NO_FACT
+    exact_len = table_type.exact_length()
+    if exact_len is not None:
+        return _fact(IntegerType(exact_len, exact_len))
+    return _SEQ_LEN_BOUND_FACT
+
+
 @defpropagate("%range_prepare")
 def _propagate_range_prepare(visitor: _Propagation, node: Combination):
     if visitor.is_proven_fixnum_range(node):
@@ -2837,7 +3058,9 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             if not any(kw is None for kw in call_info.keywords):
                 receiver_class = receiver_type.instance_class()
                 seeded_receiver = (
-                    InstanceType(
+                    (receiver_type.dispatch_domain() or receiver_type)
+                    if receiver_type.fits_set()
+                    else InstanceType(
                         receiver_class,
                         fixed_slots=visitor.walk.class_facts[
                             receiver_class
@@ -2858,8 +3081,9 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                     )
                 )
             visitor.walk.method_targets[node] = method
-            visitor.invalidate()
-            return UNKNOWN_FACT
+            if not receiver_type.fits_set():
+                visitor.invalidate()
+                return UNKNOWN_FACT
         if (
             len(receiver_lvar.uses) == 1
             and visitor.walk.lambda_.policy.safety < 3
@@ -3620,16 +3844,22 @@ class _Walk:
             return self.builtin_return_types.get(name, UNKNOWN)
         return UNKNOWN
 
-    def is_element_preserving_builtin(self, fun_lvar) -> bool:
+    def element_preserving_builtin_contract(self, fun_lvar, elem_contract):
         if (
             self.lambda_.kind is FunctionalKind.TOPLEVEL
             or self.lambda_.policy.safety >= 3
         ):
-            return False
+            return None
         name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
-        if name not in ("list", "sorted"):
-            return False
-        return name not in self.rebound_globals and name not in self.global_targets
+        if name is None or name in self.rebound_globals or name in self.global_targets:
+            return None
+        if name in ("list", "sorted"):
+            return ListContract("list", elem_contract)
+        if name == "set":
+            return SetContract("set", "mule_dict_set", elem_contract)
+        if name == "frozenset":
+            return SetContract("frozenset", "mule_dict_frozenset", elem_contract)
+        return None
 
     def invalidate_globals(self, state):
         """Forget facts that user code may change."""

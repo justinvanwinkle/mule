@@ -80,6 +80,7 @@ from .ctype import (
 )
 from .dfo import find_dfo
 from .fndb import (
+    BINARY,
     BUILD_LIST,
     BUILD_TUPLE,
     CALL_RESOLVED,
@@ -92,6 +93,7 @@ from .fndb import (
     HAS_BINDING,
     IMPORT,
     IMPORT_STAR,
+    INPLACE_BINARY,
     LEN,
     MAKE_CLASS,
     MAKE_FUNCTION,
@@ -160,6 +162,16 @@ _SPECIALIZABLE_CONTAINER_OPS = frozenset(
         DELITEM,
         RESOLVE_METHOD,
         ITERATE,
+        COMPARE[ast.ComparisonOperator.IN],
+        COMPARE[ast.ComparisonOperator.NOT_IN],
+        BINARY[ast.BinaryOperator.BIT_AND],
+        BINARY[ast.BinaryOperator.BIT_OR],
+        BINARY[ast.BinaryOperator.SUBTRACT],
+        BINARY[ast.BinaryOperator.BIT_XOR],
+        INPLACE_BINARY[ast.BinaryOperator.BIT_AND],
+        INPLACE_BINARY[ast.BinaryOperator.BIT_OR],
+        INPLACE_BINARY[ast.BinaryOperator.SUBTRACT],
+        INPLACE_BINARY[ast.BinaryOperator.BIT_XOR],
     }
 )
 
@@ -448,17 +460,40 @@ class _SpecializesBody(NodeVisitor):
                 or node.fun_info is UNPACK_REF
             )
             and node.args
-            and len(node.args[0].uses) == 1
         ):
-            arg_use = node.args[0].uses[0]
-            cand_recv = self.candidate.get(arg_use, UNKNOWN)
-            gen_recv = self.general.get(arg_use, UNKNOWN)
-            if (
-                cand_recv != gen_recv
-                and cand_recv is not UNKNOWN
-                and not gen_recv.fits(cand_recv)
-            ):
-                return True
+            recv_idx = (
+                1
+                if node.fun_info
+                in (
+                    COMPARE[ast.ComparisonOperator.IN],
+                    COMPARE[ast.ComparisonOperator.NOT_IN],
+                )
+                else 0
+            )
+            if recv_idx < len(node.args) and len(node.args[recv_idx].uses) == 1:
+                arg_use = node.args[recv_idx].uses[0]
+                cand_recv = self.candidate.get(arg_use, UNKNOWN)
+                gen_recv = self.general.get(arg_use, UNKNOWN)
+                if (
+                    cand_recv != gen_recv
+                    and cand_recv is not UNKNOWN
+                    and not gen_recv.fits(cand_recv)
+                    and (
+                        node.fun_info
+                        not in (
+                            BINARY[ast.BinaryOperator.BIT_AND],
+                            BINARY[ast.BinaryOperator.BIT_OR],
+                            BINARY[ast.BinaryOperator.SUBTRACT],
+                            BINARY[ast.BinaryOperator.BIT_XOR],
+                            INPLACE_BINARY[ast.BinaryOperator.BIT_AND],
+                            INPLACE_BINARY[ast.BinaryOperator.BIT_OR],
+                            INPLACE_BINARY[ast.BinaryOperator.SUBTRACT],
+                            INPLACE_BINARY[ast.BinaryOperator.BIT_XOR],
+                        )
+                        or cand_recv.fits_set()
+                    )
+                ):
+                    return True
         if (
             node.kind in (CallKind.FULL, CallKind.GUARDED)
             and len(node.fun.uses) == 1
@@ -3956,7 +3991,13 @@ def analyze(
                         if fix_params is not None
                         and (
                             (fix_param := fix_params[idx])
-                            in (LIST_TYPE, TEXT_TYPE, BYTES_TYPE, BYTEARRAY_TYPE)
+                            in (
+                                LIST_TYPE,
+                                DICT_TYPE,
+                                TEXT_TYPE,
+                                BYTES_TYPE,
+                                BYTEARRAY_TYPE,
+                            )
                             or fix_param.instance_class() is not None
                         )
                         else UNKNOWN
@@ -4362,11 +4403,7 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
             or (info.optimizer is not None and info is not GETITEM)
         ):
             return
-        checked_args = (
-            (*node.args, *node.info.arguments)
-            if info is RANGE_PREPARE and node.info is not None and not node.info.direct
-            else node.args
-        )
+        checked_args = _checked_transform_args(info, node)
         if any(
             (new_type := _recompute_lvar_type(arg)) != self.old_lvar_types.get(arg)
             and new_type is not UNKNOWN
@@ -4383,6 +4420,30 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
             if self.lambda_.component is not None:
                 self.lambda_.component.reoptimize = True
             self.reoptimized = True
+
+
+class _ResolveMethodReceiverLvar(NodeVisitor):
+    def visit_Node(self, node):
+        return ()
+
+    def visit_Combination(self, node: Combination):
+        if node.fun_info is RESOLVE_METHOD and node.args:
+            return (node.args[0],)
+        return ()
+
+
+_RESOLVE_METHOD_RECEIVER_LVAR = _ResolveMethodReceiverLvar()
+
+
+def _checked_transform_args(info, node: Combination):
+    if info is RANGE_PREPARE and node.info is not None and not node.info.direct:
+        return (*node.args, *node.info.arguments)
+    if info is CALL_RESOLVED and node.args and len(node.args[0].uses) == 1:
+        return (
+            *node.args[0].uses[0].accept(_RESOLVE_METHOD_RECEIVER_LVAR),
+            *node.args,
+        )
+    return node.args
 
 
 class _ReoptimizeConsumer(NodeVisitor, LeafVisitor):
@@ -4480,11 +4541,7 @@ class _NodeHasContextTransform(NodeVisitor):
             )
         ):
             return False
-        checked_args = (
-            (*node.args, *node.info.arguments)
-            if info is RANGE_PREPARE and node.info is not None and not node.info.direct
-            else node.args
-        )
+        checked_args = _checked_transform_args(info, node)
         for arg in checked_args:
             if not arg.uses:
                 continue

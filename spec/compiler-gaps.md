@@ -21,11 +21,13 @@ argument propagation (`propagate-to-args`) and structural method-receiver typing
 slice-comparison/int-parse transforms (Section 6C), symbolic sequence-length
 constraints and dead-allocation flushing (Section 6E), general tuple delivery
 with per-store liveness (Section 6G), general fixed-slot layout access and
-singleton-list fill (Section 6J), and pre-representation calling-convention
-selection and inline Latin-1 string equality (Section 6L); **proposed** for
+singleton-list fill (Section 6J), pre-representation calling-convention
+selection and inline Latin-1 string equality (Section 6L), and `SetType`
+lattice, IR1 set/dict transforms, and pre-sized `_Table` set operations
+(Section 6M); **proposed** for
 Sections 1C, 2, the remaining items in Sections 1D and 5, Sections 6D, 6F, 6H,
 6I, 6K, and the remaining SBCL parity gaps identified in the 24-workload suite
-review (Sections 6M–6Q).
+review (Sections 6N–6Q).
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`,
@@ -1244,64 +1246,61 @@ describe the Python mutation and ownership adaptations to SBCL.
     equality uses the `alwaysinline` `@mule.fast.text.eq` /
     `@mule.fast.text.ne` helpers before falling back to `@mule_text_eq`.
 
-### 6M. `SetType` / `FrozenSetType` lattice, IR1 set transforms, and compact `_Table` storage (`target-hash-table.lisp` / `containtran.py`) (proposed)
+### 6M. `SetType` lattice, IR1 set/dict transforms, and pre-sized `_Table` set operations (`target-hash-table.lisp` / `containtran.py`) — Implemented
 
-- **Observed benchmark impact**: `set_operations` (`1.4211s` Mule vs `0.1184s`
-  CPython = `12.00x`, `0.1975s` SBCL = `7.20x`), `log_aggregation` (`2.43x`
-  CPython), `lru_simulation` (`1.69x` CPython), `expression_tree` (`1.34x`
-  CPython), and `graph_paths` (`1.33x` CPython).
-- **Current Mule defects**:
-  1. **No `SetType` or `FrozenSetType` in `ctype.py`**: `SET_TYPE` and
-     `FROZENSET_TYPE` (`mule/compiler/ctype.py:2165`) are plain
-     `InstanceType("$mule_set:set")` and `InstanceType("$mule_set:frozenset")`
-     singletons. Unlike `ListType` and `DictType`, sets do not track element
-     `ValueType` (`set[int]`), are not recognized by `annotation_types.py`
-     (`set[T]`), and have no IR1 transforms in `containtran.py` or `seqtran.py`
-     for `key in s`, `s.add(x)`, `s.discard(x)`, `s & other`, `s | other`,
-     `s - other`, `s ^ other`, `len(s)`, or `for x in s:`.
-  2. **Four-list `_Table` indirection and unused `_values` list on sets
-     (`stdlib/_dict.py`)**: `_table_clear` (`stdlib/_dict.py:132-147`) and
-     `_table_resize` (`stdlib/_dict.py:199-240`) allocate four separate Python
-     `list` objects per table (`_indices = [-1] * size`, `_hashes = []`,
-     `_keys = []`, `_values = []`), and every `set.add` / `frozenset` insertion
-     calls `_table_insert(self, item, None)` (`stdlib/_dict.py:278, 885, 1181`),
-     allocating and appending `None` into an unused `_values` list on every set!
-  3. **Exception handler frame (`try/except TypeError`) around every `_set_lookup`
-     and `_set_remove` (`stdlib/_dict.py:888-903`)**: `_set_lookup` and
-     `_set_remove` enter a `try: return _table_lookup(self, key) except TypeError:`
-     handler on every `key in s` and `s.discard(key)` solely to convert an
-     unhashable `set` key into `frozenset` for membership/removal, paying
-     exception-handler setup (`enter-handler` / `leave-handler`) on every lookup
-     even when `key` is a proven `int` or `str`.
-  4. **`_table_live(self)` list allocation on every set/dict bulk operation
-     (`stdlib/_dict.py:312-322, 998-1076`)**: `_table_live(self)` allocates and
-     populates a fresh `list[int]` of non-tombstone entry indices on every
-     `s | other`, `s & other`, `s - other`, `s ^ other`, `issubset`, `__eq__`,
-     and `dict.copy`/`update`, and `intersection` / `difference` index
-     `_instance_field(self, "_keys")[index]` via generic subscripting instead of
-     `_storage_read` and test `key in other` through generic `__contains__`
-     instead of `_set_lookup`.
 - **SBCL reference**: `src/code/target-hash-table.lisp` (`make-hash-table`,
-  `define-ht-getter`, `define-gethash/flat`, `puthash`, `remhash`, `maphash`),
-  where hash-table storage uses flat typed vectors without per-operation
-  intermediate list allocations or handler frames.
-- **Required implementation**:
-  1. Add `SetType(element)` and `FrozenSetType(element)` to `ctype.py` and
-     `SetContract` to `annotation_types.py`, propagating element types through
-     `set()`, `{...}`, `s.add`, `s | other`, `s & other`, `s - other`,
-     `s ^ other`, and `for x in s:`.
-  2. Add IR1 `@deftransform`s in `containtran.py` and `seqtran.py` for
-     `key in s`, `key not in s`, `s.add(x)`, `s.discard(x)`, `len(s)`, and
-     indexed `for x in s:` iteration over `_keys` (skipping `_TOMBSTONE`
-     entries directly without allocating a `_TableIterator` or `_table_live`
-     list).
-  3. In `stdlib/_dict.py`, eliminate the `try ... except TypeError:` wrapper from
-     the hot path of `_set_lookup` and `_set_remove` (only attempting the
-     `set -> frozenset` conversion when `key` is actually an instance of `set`),
-     omit `_values` allocation/writes for `set`/`frozenset` tables, and replace
-     `_table_live(self)` list allocations in `union`, `intersection`,
-     `difference`, `symmetric_difference`, `issubset`, and `__eq__` with direct
-     indexed loops over `0.._storage_length(keys)` using `_storage_read`.
+  `define-ht-getter`, `define-gethash/flat`, `puthash`, `remhash`, `maphash`)
+  and `src/compiler/seqtran.lisp`.
+- **Implemented architecture**:
+  1. **`SetType(InstanceType)` and `SetContract` (`mule/compiler/ctype.py`,
+     `annotation_types.py`, `ir1tran.py`, `constraint.py`, `locall.py`)**:
+     - Added `SetType(element, frozen=False, may_be_unbound=False)` (`SET_TYPE`,
+       `EMPTY_SET_TYPE`, `FROZENSET_TYPE`, `EMPTY_FROZENSET_TYPE`) to `ctype.py`
+       with element-preserving `join`, `fits`, `with_set_element`,
+       `iter_element_type`, binary `&`/`|`/`-`/`^` result propagation, and
+       interface serialization.
+     - Added `SetContract(element, frozen=False)` and `"set"` / `"frozenset"`
+       declarations to `annotation_types.py` and `_SetTypeBinding` to `ir1tran.py`
+       so `set[T]` and `frozenset[T]` parameter, local, and return annotations
+       and element contracts propagate through `s.add`, `s | other`, `s & other`,
+       `s - other`, `s ^ other`, and `for x in s:`.
+     - Updated `constraint.py` (`visit_Set`) so multi-assigned local variables
+       whose every assignment preserves the same container element contract
+       retain their element contract across reassignments (`current = current | s`
+       / `current = current & s`).
+  2. **IR1 `@deftransform`s for `set`, `frozenset`, and `dict` operations
+     (`mule/compiler/containtran.py`, `seqtran.py`, `fndb.py`, `codegen.py`,
+     `vops.py`, `ir2tran.py`, `escape.py`)**:
+     - Added known sequence-protocol intrinsics and IR1 transforms for:
+       - `key in d` / `key not in d` on `DictType` -> `dict_contains` /
+         `dict_not_contains`
+       - `key in s` / `key not in s` on `SetType` -> `set_contains` /
+         `set_not_contains`
+       - `set()` / `set` literal `{}` -> `empty_set`
+       - `s.add(x)`, `s.discard(x)`, `s.remove(x)` on mutable `SetType` ->
+         `set_add`, `set_discard`, `set_remove`
+       - `s & other`, `s | other`, `s - other`, `s ^ other` on `SetType` ->
+         `set_and`, `set_or`, `set_sub`, `set_xor`
+       - `len(d)` on `DictType` -> `dict_len` and `len(s)` on `SetType` ->
+         `table_len` (reading `_instance_field(table, "_used")` directly).
+  3. **Fast `_Table` set helpers and pre-sized known-hash binary set operations
+     (`stdlib/_dict.py`, `stdlib/_sequences.py`)**:
+     - Eliminated the `try ... except TypeError:` handler frame from the hot path
+       of `_set_lookup` and `_set_remove` in `stdlib/_dict.py` (probing directly
+       when `_storage_hash(key)` is non-`None` and only converting `set -> frozenset`
+       when `_is_mutable_set(key)` is true).
+     - Added `_set_insert` and `_set_remove_entry` (and updated `_table_resize`
+       and `set_add`) so sets never append `None` into `_values`.
+     - Replaced `_table_live(self)` intermediate list allocations across
+       `stdlib/_dict.py` with direct indexed `_storage_read` loops over `_keys`.
+     - Added `_empty_set_sized(minimum)` and specialized `set_and`, `set_or`,
+       `set_sub`, and `set_xor` in `stdlib/_sequences.py` to pre-size the output
+       `_indices` table once and probe/insert using the already-stored fixnum hash
+       `_storage_read(_instance_field(..., "_hashes"), index)` without
+       re-hashing keys or intermediate table resizes.
+- **Measured benchmark result**: `set_operations` (`mule-o2`) improved from
+  **`2.473s` (`24.78x` CPython)** to **`0.244s` (`2.05x` CPython, vs `0.198s`
+  SBCL)** — a **10.1x** speedup.
 
 ### 6N. Generator IR1 loop fusion and non-escaping state-machine lowering (`seqtran.lisp` / `stdlib/_generators.py`) (proposed)
 

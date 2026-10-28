@@ -15,8 +15,12 @@ from .ctype import (
     BUILTIN_CLASS_TYPES,
     DICT_TYPE,
     EMPTY_DICT_TYPE,
+    EMPTY_FROZENSET_TYPE,
     EMPTY_LIST_TYPE,
+    EMPTY_SET_TYPE,
+    FROZENSET_TYPE,
     LIST_TYPE,
+    SET_TYPE,
     STORAGE_CLASS_TYPES,
     UNKNOWN,
     InstanceType,
@@ -433,6 +437,10 @@ class ModuleCompiler:
                     ret_type = LIST_TYPE
                 elif ret_type == EMPTY_DICT_TYPE:
                     ret_type = DICT_TYPE
+                elif ret_type == EMPTY_SET_TYPE:
+                    ret_type = SET_TYPE
+                elif ret_type == EMPTY_FROZENSET_TYPE:
+                    ret_type = FROZENSET_TYPE
                 if ret_type is not UNKNOWN:
                     self.exported_types[namespace, pub_name] = ret_type
         class_names: dict[str, str] = {}
@@ -454,11 +462,24 @@ class ModuleCompiler:
             methods = method_defs.get(class_id, {})
             for method_name, target in methods.items():
                 if target in facts:
-                    ret_type = facts[target].method_return_type(InstanceType(class_id))
+                    recv = (
+                        SET_TYPE
+                        if class_id == "mule_dict_set"
+                        else (
+                            FROZENSET_TYPE
+                            if class_id == "mule_dict_frozenset"
+                            else InstanceType(class_id)
+                        )
+                    )
+                    ret_type = facts[target].method_return_type(recv)
                     if ret_type == EMPTY_LIST_TYPE:
                         ret_type = LIST_TYPE
                     elif ret_type == EMPTY_DICT_TYPE:
                         ret_type = DICT_TYPE
+                    elif ret_type == EMPTY_SET_TYPE:
+                        ret_type = SET_TYPE
+                    elif ret_type == EMPTY_FROZENSET_TYPE:
+                        ret_type = FROZENSET_TYPE
                     self.storage_methods[class_name, method_name] = ret_type
                     self.storage_methods[class_id, method_name] = ret_type
             for field_name, field_type in class_fields.get(class_id, {}).items():

@@ -158,6 +158,19 @@ _BORROWING_VOPS = frozenset(
         "protocol-getitem",
         "protocol-getslice",
         "protocol-setitem",
+        "protocol-dict_contains",
+        "protocol-dict_not_contains",
+        "protocol-dict_len",
+        "protocol-table_len",
+        "protocol-set_add",
+        "protocol-set_discard",
+        "protocol-set_remove",
+        "protocol-set_contains",
+        "protocol-set_not_contains",
+        "protocol-set_and",
+        "protocol-set_or",
+        "protocol-set_sub",
+        "protocol-set_xor",
         "fast-len",
         "text-slice-compare",
         "text-slice2-compare",
@@ -302,7 +315,8 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
             or info.reuse_local != source.leaf.name
         )
     if name in ("compare-in", "compare-not_in") and len(vop.args) == 2:
-        return (vop.args[1].tn.type or UNKNOWN).fits_dict()
+        rhs_type = vop.args[1].tn.type or UNKNOWN
+        return rhs_type.fits_dict() or rhs_type.fits_set()
     if name in ("full-call", "local-extent-call") and vop.args:
         return ref is vop.args[0] or any(
             ref is vop.args[index + 1]

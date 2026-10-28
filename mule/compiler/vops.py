@@ -648,6 +648,9 @@ class _ContractAssertion(ContractVisitor):
     def visit_DictContract(self, contract):
         self.check_contract_type(contract)
 
+    def visit_SetContract(self, contract):
+        self.check_contract_type(contract)
+
     def visit_ClassContract(self, contract):
         self.check_contract_type(contract)
 
@@ -1839,14 +1842,18 @@ def _define_compare(operator, opcode):
         left, right = vop.args
         lhs, rhs = gen.take(left), gen.take(right)
         if opcode in (8, 9):
-            is_dict = (right.tn.type or UNKNOWN).fits_dict()
+            rhs_type = right.tn.type or UNKNOWN
+            is_dict = rhs_type.fits_dict()
+            is_set = rhs_type.fits_set()
             if is_dict:
                 name = "dict_contains" if opcode == 8 else "dict_not_contains"
+            elif is_set:
+                name = "set_contains" if opcode == 8 else "set_not_contains"
             else:
                 name = "contains" if opcode == 8 else "not_contains"
             value = gen.sequence_call(name, [rhs, lhs])
             gen.publish(result, value)
-            if is_dict:
+            if is_dict or is_set:
                 gen.release(lhs)
                 gen.release(rhs)
             gen.check_pointer(value)
@@ -3017,9 +3024,34 @@ _SUSPENSION_PROTOCOLS = frozenset(
     {"yield_from", "await_value", "async_generator_yield"}
 )
 
+_BORROWED_PROTOCOL_NAMES = frozenset(
+    {
+        "dict_get",
+        "dict_getitem",
+        "dict_setitem",
+        "dict_contains",
+        "dict_not_contains",
+        "dict_len",
+        "table_len",
+        "set_add",
+        "set_discard",
+        "set_remove",
+        "set_contains",
+        "set_not_contains",
+        "set_and",
+        "set_or",
+        "set_sub",
+        "set_xor",
+        "bytearray_getitem",
+        "bytearray_setitem",
+        "bytearray_append",
+    }
+)
+
 
 def _define_protocol(name, info):
     suspends = name in _SUSPENSION_PROTOCOLS
+    borrowed = name in _BORROWED_PROTOCOL_NAMES
 
     @define_vop(f"protocol-{name}", translate=info, results=(OBJECT,))
     def protocol(gen, vop):
@@ -3027,6 +3059,9 @@ def _define_protocol(name, info):
         if suspends:
             gen.sync_coroutine_locals()
         result = gen.sequence_call(name, arguments)
+        if borrowed:
+            for argument in arguments:
+                gen.release(argument)
         gen.publish(vop.results[0], result)
         gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)

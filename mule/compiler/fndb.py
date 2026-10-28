@@ -23,6 +23,7 @@ from .ctype import (
     BYTES_TYPE,
     DICT_TYPE,
     EMPTY_LIST_TYPE,
+    EMPTY_SET_TYPE,
     FLOAT,
     FUNCTION_TYPE,
     INTEGER,
@@ -30,6 +31,7 @@ from .ctype import (
     NONE_TYPE,
     PYTHON_INTEGER,
     REAL,
+    SET_TYPE,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -656,6 +658,7 @@ MAX2 = defknown(
 MIN_BUILTIN = defknown("min", "call", "unsafe")
 MAX_BUILTIN = defknown("max", "call", "unsafe")
 INT_BUILTIN = defknown("int", "call", "unsafe")
+SET_BUILTIN = defknown("set", "call", "unsafe")
 PARSE_INT_TEXT = defknown(
     "%parse_int_text",
     "unsafe",
@@ -713,6 +716,36 @@ _PROTOCOL_DERIVE_TYPES = {
     ),
     "setitem": lambda node: NONE_TYPE,
     "dict_setitem": lambda node: NONE_TYPE,
+    "dict_contains": lambda node: BOOLEAN,
+    "dict_not_contains": lambda node: BOOLEAN,
+    "dict_len": lambda node: IntegerType(0, (1 << 60) - 1),
+    "table_len": lambda node: IntegerType(0, (1 << 60) - 1),
+    "empty_set": lambda node: EMPTY_SET_TYPE,
+    "set_add": lambda node: NONE_TYPE,
+    "set_discard": lambda node: NONE_TYPE,
+    "set_remove": lambda node: NONE_TYPE,
+    "set_contains": lambda node: BOOLEAN,
+    "set_not_contains": lambda node: BOOLEAN,
+    "set_and": lambda node: (
+        None
+        if _DERIVATION_MODE.active
+        else _arg_type(node.args[0]).binary("&", _arg_type(node.args[1]))
+    ),
+    "set_or": lambda node: (
+        None
+        if _DERIVATION_MODE.active
+        else _arg_type(node.args[0]).binary("|", _arg_type(node.args[1]))
+    ),
+    "set_sub": lambda node: (
+        None
+        if _DERIVATION_MODE.active
+        else _arg_type(node.args[0]).binary("-", _arg_type(node.args[1]))
+    ),
+    "set_xor": lambda node: (
+        None
+        if _DERIVATION_MODE.active
+        else _arg_type(node.args[0]).binary("^", _arg_type(node.args[1]))
+    ),
     "unpack": _derive_unpack,
 }
 
@@ -725,6 +758,19 @@ _NON_INTEGER_FIRST_PROTOCOLS = frozenset(
         "iterate",
         "next_item",
         "unpack",
+        "dict_contains",
+        "dict_not_contains",
+        "dict_len",
+        "table_len",
+        "set_add",
+        "set_discard",
+        "set_remove",
+        "set_contains",
+        "set_not_contains",
+        "set_and",
+        "set_or",
+        "set_sub",
+        "set_xor",
     }
 )
 _INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
@@ -733,6 +779,19 @@ _PROTOCOL_ARGUMENT_TYPES = {
     "dict_get": (DICT_TYPE, UNKNOWN, UNKNOWN),
     "dict_getitem": (DICT_TYPE, UNKNOWN),
     "dict_setitem": (DICT_TYPE, UNKNOWN, UNKNOWN),
+    "dict_contains": (DICT_TYPE, UNKNOWN),
+    "dict_not_contains": (DICT_TYPE, UNKNOWN),
+    "dict_len": (DICT_TYPE,),
+    "table_len": (SET_TYPE,),
+    "set_add": (SET_TYPE, UNKNOWN),
+    "set_discard": (SET_TYPE, UNKNOWN),
+    "set_remove": (SET_TYPE, UNKNOWN),
+    "set_contains": (SET_TYPE, UNKNOWN),
+    "set_not_contains": (SET_TYPE, UNKNOWN),
+    "set_and": (SET_TYPE, SET_TYPE),
+    "set_or": (SET_TYPE, SET_TYPE),
+    "set_sub": (SET_TYPE, SET_TYPE),
+    "set_xor": (SET_TYPE, SET_TYPE),
 }
 
 
@@ -754,6 +813,13 @@ def _flushable_make_slice(node) -> bool:
 _PROTOCOL_FLUSHABLE_TESTS = {
     "_list_fill": _flushable_list_fill,
     "make_slice": _flushable_make_slice,
+    "empty_set": lambda node: not node.args,
+    "dict_len": lambda node: (
+        len(node.args) == 1 and not _arg_type(node.args[0]).may_be_unbound
+    ),
+    "table_len": lambda node: (
+        len(node.args) == 1 and not _arg_type(node.args[0]).may_be_unbound
+    ),
 }
 
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
@@ -776,6 +842,20 @@ PROTOCOLS = {
         "dict_get",
         "dict_getitem",
         "dict_setitem",
+        "dict_contains",
+        "dict_not_contains",
+        "dict_len",
+        "table_len",
+        "empty_set",
+        "set_add",
+        "set_discard",
+        "set_remove",
+        "set_contains",
+        "set_not_contains",
+        "set_and",
+        "set_or",
+        "set_sub",
+        "set_xor",
         "iterate",
         "next_item",
         "getitem",

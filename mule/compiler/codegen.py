@@ -534,6 +534,17 @@ _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
         "dict_setitem",
         "dict_contains",
         "dict_not_contains",
+        "dict_len",
+        "table_len",
+        "set_add",
+        "set_discard",
+        "set_remove",
+        "set_contains",
+        "set_not_contains",
+        "set_and",
+        "set_or",
+        "set_sub",
+        "set_xor",
         "bytearray_getitem",
         "bytearray_setitem",
         "bytearray_append",
@@ -4068,6 +4079,11 @@ class _ArgumentGuard(ValueTypeVisitor):
         known = self.gen.operation(f"icmp ne i64 {expected}, 0")
         same = self.gen.operation(f"icmp eq i64 {layout}, {expected}")
         return self.gen.operation(f"and i1 {known}, {same}")
+
+    def visit_SetType(self, fact) -> str:
+        if not fact.proven or fact.element != UNKNOWN or fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        return self.visit_InstanceType(fact)
 
     def visit_NoneType(self, fact: ValueType) -> str:
         return self.gen.operation(f"icmp eq ptr {self.value}, @mule.none")
