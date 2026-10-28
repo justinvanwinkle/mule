@@ -98,3 +98,46 @@ def main(mod):
     assert "call ptr @mule_storage_append_move" in llvm
     assert "call ptr @mule_fast_iterate_move" in llvm
     assert "call ptr @mule.fast.unpack.slots.2" in llvm
+
+
+def test_nested_list_unpack_avoids_temporary_tuple_snapshot(tmp_path):
+    source = """
+def pair_deltas(pairs):
+    total = 0.0
+    for (([x1, y1, z1], v1, m1), ([x2, y2, z2], v2, m2)) in pairs:
+        dx = x1 - x2
+        dy = y1 - y2
+        dz = z1 - z2
+        v1[0] -= dx * m2
+        v2[0] += dx * m1
+        total += dx + dy + dz
+    return total
+
+b1 = ([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], 2.0)
+b2 = ([0.5, 1.0, 1.5], [0.0, 0.0, 0.0], 4.0)
+print(pair_deltas([(b1, b2)]), b1[1][0], b2[1][0])
+"""
+    llvm = emit_llvm(source)
+    assert "@mule_list_shape_matches" in llvm
+    assert "@mule_storage_tuple" not in llvm
+    compare(tmp_path, source)
+
+
+def test_unannotated_range_loop_parameter_specializes_fixnum_entry():
+    llvm = emit_llvm(
+        """
+def accumulate(n):
+    counts = [0] * n
+    total = 0
+    for i in range(1, n):
+        counts[i] = i
+        total += counts[i]
+    return total
+"""
+    )
+    assert 'define internal ptr @"mule_fn_accumulate.spec.0"' in llvm
+    spec_start = llvm.index('define internal ptr @"mule_fn_accumulate.spec.0"')
+    spec_end = llvm.index("\n}", spec_start)
+    spec_body = llvm[spec_start:spec_end]
+    assert 'call ptr @"mule.protocol._list_fill"' in spec_body
+    assert "icmp slt i64" in spec_body
