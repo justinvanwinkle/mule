@@ -14,7 +14,7 @@ pytestmark = pytest.mark.integration
             entry,
             id=entry.name,
             marks=[]
-            if entry.name == "test_int_literal"
+            if entry.name in {"test_int_literal", "test_longexp"}
             else pytest.mark.xfail(
                 reason="Mule does not fully support this upstream stdlib suite yet",
                 strict=True,
