@@ -21,7 +21,11 @@ class OptimizationPolicy:
 
     @property
     def records_traceback(self) -> bool:
-        return not self.builtin_implementation
+        return self.debug >= 1 and not self.builtin_implementation
+
+    @property
+    def records_frame(self) -> bool:
+        return self.debug >= 2 or self.builtin_implementation
 
     @property
     def checks_contracts(self) -> bool:
@@ -30,7 +34,7 @@ class OptimizationPolicy:
 
     @property
     def prevents_inlining(self) -> bool:
-        return self.debug == 3
+        return self.debug >= 2
 
     @property
     def disables_optimization(self) -> bool:

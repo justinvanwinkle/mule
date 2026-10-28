@@ -64,6 +64,7 @@ from .ltn import EntryContext, FixnumGuard, ltn_analyze, primitive_type_of
 from .node import (
     CallKind,
     CodeInfo,
+    Combination,
     FunctionalKind,
     Lambda,
     NodeVisitor,
@@ -808,6 +809,34 @@ class TupleConstant:
     borrowed_entry: str = ""
 
 
+class _CallTargetCollector(NodeVisitor):
+    def __init__(self, owned: set[Lambda]):
+        self.owned = owned
+        self.callees: set[Lambda] = set()
+        self.may_call_unknown = False
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is CallKind.KNOWN:
+            name = linked(node.fun_info, node, "known function").name
+            if name in (
+                "%call_resolved",
+                "%current_frame",
+                "%current_globals",
+                "%eval_source",
+                "%exec_source",
+                "%locals_dict",
+            ):
+                self.may_call_unknown = True
+            return
+        if node.predicted is not None:
+            if node.predicted in self.owned:
+                self.callees.add(node.predicted)
+            else:
+                self.may_call_unknown = True
+            return
+        self.may_call_unknown = True
+
+
 class ModuleGenerator:
     def __init__(self, program: Program):
         self.program = program
@@ -934,6 +963,43 @@ class ModuleGenerator:
             for target in external_targets:
                 if target not in targets:
                     targets.append(target)
+        call_edges: dict[Lambda, set[Lambda]] = {l: set() for l in lambdas}
+        may_call_external: set[Lambda] = set()
+        for l in lambdas:
+            call_collector = _CallTargetCollector(self.owned)
+            for block in linked(l.component, l, "component").blocks():
+                for node in block.nodes():
+                    node.accept(call_collector)
+            call_edges[l] = call_collector.callees
+            if call_collector.may_call_unknown:
+                may_call_external.add(l)
+        self.may_call_external: set[Lambda] = set()
+        self.may_recurse: set[Lambda] = set()
+        for start in lambdas:
+            if start in may_call_external:
+                self.may_call_external.add(start)
+                self.may_recurse.add(start)
+            visited: set[Lambda] = set()
+            stack = list(call_edges[start])
+            while stack:
+                cur = stack.pop()
+                if cur is start:
+                    self.may_recurse.add(start)
+                if cur in may_call_external:
+                    self.may_call_external.add(start)
+                    self.may_recurse.add(start)
+                if cur not in visited:
+                    visited.add(cur)
+                    stack.extend(call_edges[cur])
+
+    def needs_frame_depth_check(self, function: Function) -> bool:
+        if function not in self.owned:
+            return True
+        if function.policy.debug >= 2:
+            return True
+        if function.policy.safety >= 2:
+            return function in self.may_recurse
+        return False
 
     def bodies_by_name(self, name: str) -> str:
         return self.bodies[self.by_name[name]]
@@ -1750,6 +1816,15 @@ class ModuleGenerator:
         self.protocol_helpers[key] = symbol
         body = self.bodies[function]
         params = ", ".join(["ptr %globals", *(f"ptr %arg.{i}" for i in range(arity))])
+        if not self.needs_frame_depth_check(function):
+            self.auxiliary.append(
+                f"define internal ptr {symbol}({params}) {{\n"
+                "entry:\n"
+                f"  %result = call ptr {body}({params})\n"
+                "  ret ptr %result\n"
+                "}"
+            )
+            return symbol
         releases = "\n".join(
             f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
         )
@@ -2050,20 +2125,23 @@ class ModuleGenerator:
                     f"{variant_index}.pop",
                 )
                 return
-            need_failed_block = True
+            check_depth = self.needs_frame_depth_check(function)
+            if check_depth:
+                need_failed_block = True
 
             def emit_step_invoke(context: EntryContext | None, step_idx: int) -> None:
                 tag = f"{variant_index}.{step_idx}"
-                entered_label = f"entered.{tag}"
-                builder.lines.extend(
-                    [
-                        f"  %frame.{tag} = call i32 @mule_enter_frame()",
-                        f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0",
-                        f"  br i1 %rejected.{tag}, label %failed, label %{entered_label}",
-                        f"{entered_label}:",
-                        f"  %globals.{tag} = load ptr, ptr %fn.globals.slot",
-                    ]
-                )
+                if check_depth:
+                    entered_label = f"entered.{tag}"
+                    builder.lines.extend(
+                        [
+                            f"  %frame.{tag} = call i32 @mule_enter_frame()",
+                            f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0",
+                            f"  br i1 %rejected.{tag}, label %failed, label %{entered_label}",
+                            f"{entered_label}:",
+                        ]
+                    )
+                builder.line(f"  %globals.{tag} = load ptr, ptr %fn.globals.slot")
                 owned = []
                 for pos, idx in enumerate(order):
                     if idx == -1:
@@ -2093,12 +2171,9 @@ class ModuleGenerator:
                         *(f"ptr {v}" for v in owned),
                     ]
                 )
-                builder.lines.extend(
-                    [
-                        f"  %direct.res.{tag} = call ptr {body_sym}({body_args})",
-                        "  call void @mule_leave_frame()",
-                    ]
-                )
+                builder.line(f"  %direct.res.{tag} = call ptr {body_sym}({body_args})")
+                if check_depth:
+                    builder.line("  call void @mule_leave_frame()")
                 emit_return(f"%direct.res.{tag}", context, function, tag)
 
             for step_idx, (context, needed) in enumerate(steps):
@@ -2298,17 +2373,22 @@ class ModuleGenerator:
                 ]
             builder.line("  %callee.globals = load ptr, ptr %fn.globals.slot")
 
+        check_depth = self.needs_frame_depth_check(function)
+
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
             if borrowed_arguments:
                 borrowed_params = frozenset(
                     pos for pos, idx in enumerate(order) if idx in borrowed_arguments
                 )
                 context = self.borrowed_context(function, context, borrowed_params)
-            entered = f"entered.{tag}"
-            builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
-            builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
-            builder.line(f"  br i1 %rejected.{tag}, label %failed, label %{entered}")
-            builder.lines.append(f"{entered}:")
+            if check_depth:
+                entered = f"entered.{tag}"
+                builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
+                builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
+                builder.line(
+                    f"  br i1 %rejected.{tag}, label %failed, label %{entered}"
+                )
+                builder.lines.append(f"{entered}:")
             owned = []
             for pos, idx in enumerate(order):
                 if idx >= 0:
@@ -2339,7 +2419,8 @@ class ModuleGenerator:
                 [f"ptr {body_globals}", *closure_ops, *(f"ptr {v}" for v in owned)]
             )
             builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
-            builder.line("  call void @mule_leave_frame()")
+            if check_depth:
+                builder.line("  call void @mule_leave_frame()")
             returned = (
                 (
                     self.facts[function].return_type
@@ -2398,11 +2479,12 @@ class ModuleGenerator:
             emit_invoke(context, step_idx)
             builder.lines.append(f"{next_label}:")
 
-        builder.lines.append("failed:")
-        for i in range(arity):
-            if i not in borrowed_arguments:
-                builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
-        builder.line("  ret ptr null")
+        if check_depth:
+            builder.lines.append("failed:")
+            for i in range(arity):
+                if i not in borrowed_arguments:
+                    builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+            builder.line("  ret ptr null")
         if not proven:
             builder.lines.append("fallback:")
             for index in borrowed_arguments:
@@ -2536,12 +2618,17 @@ class ModuleGenerator:
                 "  %callee.globals = load ptr, ptr %fn.globals.slot",
             ]
 
+        check_depth = self.needs_frame_depth_check(function)
+
         def emit_invoke(context: EntryContext | None, tag: int) -> None:
-            entered = f"entered.{tag}"
-            builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
-            builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
-            builder.line(f"  br i1 %rejected.{tag}, label %failed, label %{entered}")
-            builder.lines.append(f"{entered}:")
+            if check_depth:
+                entered = f"entered.{tag}"
+                builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
+                builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
+                builder.line(
+                    f"  br i1 %rejected.{tag}, label %failed, label %{entered}"
+                )
+                builder.lines.append(f"{entered}:")
             owned = []
             for pos, idx in enumerate(order):
                 if idx >= 0:
@@ -2573,7 +2660,8 @@ class ModuleGenerator:
                 ]
             )
             builder.line(f"  %res.{tag} = call ptr {body}({body_args})")
-            builder.line("  call void @mule_leave_frame()")
+            if check_depth:
+                builder.line("  call void @mule_leave_frame()")
             returned = (
                 (
                     self.facts[function].return_type
@@ -2630,10 +2718,11 @@ class ModuleGenerator:
             emit_invoke(context, step_idx)
             builder.lines.append(f"{next_label}:")
 
-        builder.lines.append("failed:")
-        for i in range(arity):
-            builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
-        builder.line("  ret ptr null")
+        if check_depth:
+            builder.lines.append("failed:")
+            for i in range(arity):
+                builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+            builder.line("  ret ptr null")
         if not proven:
             builder.lines.extend(
                 [
@@ -2797,6 +2886,7 @@ class ModuleGenerator:
         zero = "0.0" if convention.returned is DOUBLE else "0"
         fallback_helper = self.positional_call_helper(arity)
         builder = _HelperBuilder(self)
+        check_depth = self.needs_frame_depth_check(entry.function)
         has_descriptors = any(sc is DESCRIPTOR for sc in convention.parameters)
         frame_fail_label = "frame.failed" if has_descriptors else "failed"
         builder.lines = [
@@ -2807,24 +2897,25 @@ class ModuleGenerator:
             f"  %matching = icmp eq ptr %callee.entry, {self.functions[entry.function]}",
             "  br i1 %matching, label %direct, label %fallback",
             "direct:",
-            "  %frame = call i32 @mule_enter_frame()",
-            "  %frame.bad = icmp slt i32 %frame, 0",
-            f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered",
         ]
-        if has_descriptors:
-            builder.lines.append("frame.failed:")
-            for i, sc in enumerate(convention.parameters):
-                if sc is DESCRIPTOR:
-                    builder.lines.append(
-                        f"  call void @mule.fast.release(ptr %arg.{i})"
-                    )
-            builder.lines.append("  br label %failed")
-        builder.lines.extend(
-            [
-                "entered:",
-                "  %callee.globals = load ptr, ptr %fn.globals.slot",
-            ]
-        )
+        if check_depth:
+            builder.lines.extend(
+                [
+                    "  %frame = call i32 @mule_enter_frame()",
+                    "  %frame.bad = icmp slt i32 %frame, 0",
+                    f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered",
+                ]
+            )
+            if has_descriptors:
+                builder.lines.append("frame.failed:")
+                for i, sc in enumerate(convention.parameters):
+                    if sc is DESCRIPTOR:
+                        builder.lines.append(
+                            f"  call void @mule.fast.release(ptr %arg.{i})"
+                        )
+                builder.lines.append("  br label %failed")
+            builder.lines.append("entered:")
+        builder.lines.append("  %callee.globals = load ptr, ptr %fn.globals.slot")
         closure_args = []
         if self.closure_of(entry.function):
             builder.lines.append(
@@ -2837,10 +2928,13 @@ class ModuleGenerator:
             *closure_args,
             *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
         ]
+        builder.lines.append(
+            f"  %direct.res = call {ret_type} {entry.symbol}({', '.join(direct_args)})"
+        )
+        if check_depth:
+            builder.lines.append("  call void @mule_leave_frame()")
         builder.lines.extend(
             [
-                f"  %direct.res = call {ret_type} {entry.symbol}({', '.join(direct_args)})",
-                "  call void @mule_leave_frame()",
                 f"  ret {ret_type} %direct.res",
                 "fallback:",
             ]
@@ -4541,7 +4635,9 @@ class FunctionGenerator:
             self.lines.insert(
                 self.lines.index("entry:") + 1, "  %activation = alloca i8"
             )
-        code = self.module.code_descriptor(self.lambda_)
+            code = self.module.code_descriptor(self.lambda_)
+        else:
+            code = ""
         owned_sets = list(
             dict.fromkeys(
                 (base, owned)
@@ -5017,8 +5113,10 @@ class FunctionGenerator:
                 if self.module.closure_of(entry.function)
                 else None
             )
-        status = self.operation("call i32 @mule_enter_frame()")
-        self.check_status(status)
+        check_depth = self.module.needs_frame_depth_check(entry.function)
+        if check_depth:
+            status = self.operation("call i32 @mule_enter_frame()")
+            self.check_status(status)
         self.uses_numeric_error = True
         self.line("store i1 false, ptr %numeric.error")
         self.take(callable_ref)
@@ -5041,7 +5139,8 @@ class FunctionGenerator:
         value = self.operation(
             f"call {convention.returned.llvm_type} {entry.symbol}({', '.join(operands)})"
         )
-        self.line("call void @mule_leave_frame()")
+        if check_depth:
+            self.line("call void @mule_leave_frame()")
         for owned in raw_owned:
             self.release(owned)
         if not local_environment:
@@ -5662,21 +5761,33 @@ class FunctionGenerator:
                 f"call void @mule_coroutine_set_locals(ptr %coroutine.locals, i64 {n_locals})"
             )
         self.entry_end = len(self.lines)
-        # Publish only a fully initialized stack record, before any operation
-        # that can enter cleanup. Globals remain borrowed from the callable.
-        self.line("%frame = alloca {ptr, ptr, ptr}, align 8")
-        self.line("%frame.slot = call ptr @mule_frame_head_slot()")
-        self.line("%frame.parent = load atomic ptr, ptr %frame.slot acquire, align 8")
-        self.line("store ptr %frame.parent, ptr %frame")
-        self.line(
-            "%frame.code = getelementptr {ptr, ptr, ptr}, ptr %frame, i32 0, i32 1"
+        records_frame = lambda_.policy.records_frame or (
+            lambda_.policy.debug >= 1
+            and (
+                (lambda_.code is not None and bool(lambda_.code.flags & 0x2A0))
+                or lambda_ in self.module.may_call_external
+            )
         )
-        self.line(f"store ptr {self.module.code_descriptor(lambda_)}, ptr %frame.code")
-        self.line(
-            "%frame.globals = getelementptr {ptr, ptr, ptr}, ptr %frame, i32 0, i32 2"
-        )
-        self.line("store ptr %globals, ptr %frame.globals")
-        self.line("store atomic ptr %frame, ptr %frame.slot release, align 8")
+        if records_frame:
+            # Publish only a fully initialized stack record, before any operation
+            # that can enter cleanup. Globals remain borrowed from the callable.
+            self.line("%frame = alloca {ptr, ptr, ptr}, align 8")
+            self.line("%frame.slot = call ptr @mule_frame_head_slot()")
+            self.line(
+                "%frame.parent = load atomic ptr, ptr %frame.slot acquire, align 8"
+            )
+            self.line("store ptr %frame.parent, ptr %frame")
+            self.line(
+                "%frame.code = getelementptr {ptr, ptr, ptr}, ptr %frame, i32 0, i32 1"
+            )
+            self.line(
+                f"store ptr {self.module.code_descriptor(lambda_)}, ptr %frame.code"
+            )
+            self.line(
+                "%frame.globals = getelementptr {ptr, ptr, ptr}, ptr %frame, i32 0, i32 2"
+            )
+            self.line("store ptr %globals, ptr %frame.globals")
+            self.line("store atomic ptr %frame, ptr %frame.slot release, align 8")
         if lambda_ is self.module.program.entry and self.context.id is None:
             # The runtime creates the main program's globals and enters its
             # top-level body once, before any function it defines can exist.
@@ -5727,13 +5838,14 @@ class FunctionGenerator:
             loaded = self.operation(f"load ptr, ptr {tn.slot}")
             self.record_facts(tn, loaded)
             self.release(loaded)
-        # Suspension can change both the thread and the bottom record's parent.
-        # Neither value may be reused from entry when the activation returns.
-        self.line("%frame.exit.slot = call ptr @mule_frame_head_slot()")
-        self.line("%frame.exit.parent = load ptr, ptr %frame")
-        self.line(
-            "store atomic ptr %frame.exit.parent, ptr %frame.exit.slot release, align 8"
-        )
+        if records_frame:
+            # Suspension can change both the thread and the bottom record's parent.
+            # Neither value may be reused from entry when the activation returns.
+            self.line("%frame.exit.slot = call ptr @mule_frame_head_slot()")
+            self.line("%frame.exit.parent = load ptr, ptr %frame")
+            self.line(
+                "store atomic ptr %frame.exit.parent, ptr %frame.exit.slot release, align 8"
+            )
         value = self.operation(f"load {returned.llvm_type}, ptr %return")
         self.line(f"ret {returned.llvm_type} {value}")
         self.lines.append("}")

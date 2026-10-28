@@ -71,8 +71,74 @@ def invoke(function):
     assert native.stderr == oracle.stderr
 
 
-def test_debug_zero_retains_ordinary_source_tracebacks():
-    llvm = emit_llvm(
-        "__debug_level__ = 0\nraise ValueError('problem')\n", "ordinary.py"
+def test_debug_levels_control_tracebacks_and_frames():
+    llvm_debug0 = emit_llvm(
+        "__debug_level__ = 0\n"
+        "def leaf(x: int) -> int:\n"
+        "    return x + 1\n"
+        "def caller(n: int) -> int:\n"
+        "    return leaf(n)\n"
+        "raise ValueError('problem')\n",
+        "ordinary0.py",
     )
-    assert "call void @mule_traceback_here" in llvm
+    assert "call void @mule_traceback_here" not in llvm_debug0
+    assert "call ptr @mule_frame_head_slot()" not in llvm_debug0
+    assert 'define internal ptr @"mule.direct.mule_fn_leaf' in llvm_debug0
+    leaf_helper = llvm_debug0.split(
+        'define internal ptr @"mule.direct.mule_fn_leaf', 1
+    )[1].split("}", 1)[0]
+    assert "call i32 @mule_enter_frame()" not in leaf_helper
+
+    llvm_debug1 = emit_llvm(
+        "__debug_level__ = 1\n"
+        "def leaf(x: int) -> int:\n"
+        "    return x + 1\n"
+        "def caller(n: int) -> int:\n"
+        "    return leaf(n)\n"
+        "raise ValueError('problem')\n",
+        "ordinary1.py",
+    )
+    assert "call void @mule_traceback_here" in llvm_debug1
+    leaf_helper1 = llvm_debug1.split(
+        'define internal ptr @"mule.direct.mule_fn_leaf', 1
+    )[1].split("}", 1)[0]
+    assert "call i32 @mule_enter_frame()" not in leaf_helper1
+
+    llvm_debug2 = emit_llvm(
+        "__debug_level__ = 2\n"
+        "def leaf(x: int) -> int:\n"
+        "    return x + 1\n"
+        "def caller(n: int) -> int:\n"
+        "    return leaf(n)\n"
+        "raise ValueError('problem')\n",
+        "ordinary2.py",
+    )
+    assert "call void @mule_traceback_here" in llvm_debug2
+    assert "call ptr @mule_frame_head_slot()" in llvm_debug2
+    assert "call i32 @mule_enter_frame()" in llvm_debug2
+
+    llvm_rec_default = emit_llvm(
+        "__debug_level__ = 1\n"
+        "def fib(n: int) -> int:\n"
+        "    if n < 2:\n"
+        "        return n\n"
+        "    return fib(n - 1) + fib(n - 2)\n",
+        "rec_default.py",
+    )
+    assert "call i32 @mule_enter_frame()" in llvm_rec_default
+    assert "call ptr @mule_frame_head_slot()" not in llvm_rec_default
+
+    llvm_rec_safety1 = emit_llvm(
+        "from mule_types import optimize\n"
+        "@optimize(debug=1, safety=1)\n"
+        "def fib(n: int) -> int:\n"
+        "    if n < 2:\n"
+        "        return n\n"
+        "    return fib(n - 1) + fib(n - 2)\n",
+        "rec_safety1.py",
+    )
+    fib_helper = llvm_rec_safety1.split(
+        'define internal ptr @"mule.direct.mule_fn_fib', 1
+    )[1].split("}", 1)[0]
+    assert "call i32 @mule_enter_frame()" not in fib_helper
+    assert "call ptr @mule_frame_head_slot()" not in llvm_rec_safety1

@@ -322,14 +322,13 @@ contracted operations may use `nsw` and require the promised range to hold.
 
 | Debug | Target behavior |
 | --- | --- |
-| 0 | Minimum debug metadata and no additional debug constraints on optimization. |
-| 1 | Source positions and function identities sufficient for basic diagnostics. |
-| 2 | Debug information for source stepping and recoverable local values where practical; transformations may lose some locals. |
-| 3 | Preserve source stepping and declared local observability; constrain inlining and transformations that prevent it. |
+| 0 | Nothing that is not free: no exception traceback landing blocks (`@mule_traceback_here`), no active-frame or call-depth tracking (unless `safety >= 2` on recursive calls), and no debug constraints on inlining or optimization. |
+| 1 | Python tracebacks on optimized code (default): emit `@mule_traceback_here` on cold error edges for frames that exist, omit call-depth tracking (unless `safety >= 2` on recursive calls) and omit active-frame records on functions that cannot reach external frame inspection, and allow inlining and return-contract inference (inlined or eliminated calls do not appear as separate frames). |
+| 2 | Full CPython-identical call frames and tracebacks: preserve every Python call frame and active-frame record, and constrain inlining (`prevents_inlining`) and transformations that would alter call stack frames. |
+| 3 | Everything in `debug=2` plus source stepping and declared local variable observability. |
 
 Debug affects optimization and code size, but not the class's field layout or
-allowed mutations. Current `debug=3` only prevents body inlining; frames, source
-tracebacks and debug metadata still require implementation.
+allowed mutations.
 
 ## Implementation and acceptance
 
@@ -388,4 +387,5 @@ separates native debug metadata from Python traceback visibility. The explicit
 implementation declaration records that adaptation without recognizing library
 names or filtering source filenames. Native active-frame diagnostics retain the
 implementation frames; error edges omit only their Python traceback append.
-Ordinary source modules keep traceback entries even at debug level zero.
+Ordinary source modules emit traceback entries at `debug >= 1` and omit them at
+`debug = 0`.
