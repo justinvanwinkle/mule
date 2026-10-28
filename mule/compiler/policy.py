@@ -11,8 +11,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class OptimizationPolicy:
     speed: int = 1
-    # Safety 3 preserves dynamic builtin lookup. Safety 2 adds recursion-depth
-    # and strict return/local checks; safety 1 is the default; safety 0 drops
+    # Safety 3 preserves dynamic builtin lookup. Safety 2 adds strict
+    # return/local checks; safety 1 is the default; safety 0 drops
     # optional runtime contract and unbound checks.
     safety: int = 1
     debug: int = 1

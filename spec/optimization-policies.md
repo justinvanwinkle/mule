@@ -322,13 +322,18 @@ contracted operations may use `nsw` and require the promised range to hold.
 
 | Debug | Target behavior |
 | --- | --- |
-| 0 | Nothing that is not free: no exception traceback landing blocks (`@mule_traceback_here`), no active-frame or call-depth tracking (unless `safety >= 2` on recursive calls), and no debug constraints on inlining or optimization. |
-| 1 | Python tracebacks on optimized code (default): emit `@mule_traceback_here` on cold error edges for frames that exist, omit call-depth tracking (unless `safety >= 2` on recursive calls) and omit active-frame records on functions that cannot reach external frame inspection, and allow inlining and return-contract inference (inlined or eliminated calls do not appear as separate frames). |
+| 0 | No exception traceback landing blocks (`@mule_traceback_here`) or active-frame records, and no debug constraints on inlining or optimization. Potentially recursive calls retain depth checks; proven acyclic calls can omit them. |
+| 1 | Python tracebacks on optimized code (default): emit `@mule_traceback_here` on cold error edges for frames that exist, retain depth checks for potentially recursive calls, omit active-frame records on functions that cannot reach external frame inspection, and allow inlining and return-contract inference (inlined or eliminated calls do not appear as separate frames). |
 | 2 | Full CPython-identical call frames and tracebacks: preserve every Python call frame and active-frame record, and constrain inlining (`prevents_inlining`) and transformations that would alter call stack frames. |
 | 3 | Everything in `debug=2` plus source stepping and declared local variable observability. |
 
 Debug affects optimization and code size, but not the class's field layout or
 allowed mutations.
+
+Recursion protection does not depend on safety. SBCL handles control-stack
+exhaustion independently of compiler policy in `src/runtime/interrupt.c:1625–1682`.
+Mule retains its existing counter-based depth guard rather than adding SBCL's
+guard-page machinery.
 
 ## Implementation and acceptance
 

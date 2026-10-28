@@ -127,7 +127,7 @@ def test_debug_levels_control_tracebacks_and_frames():
     fib_helper = llvm_rec_default.split(
         'define internal ptr @"mule.direct.mule_fn_fib', 1
     )[1].split("}", 1)[0]
-    assert "call i32 @mule_enter_frame()" not in fib_helper
+    assert "call i32 @mule_enter_frame()" in fib_helper
     assert "call ptr @mule_frame_head_slot()" not in llvm_rec_default
 
     llvm_rec_safety2 = emit_llvm(

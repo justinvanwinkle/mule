@@ -1041,9 +1041,7 @@ class ModuleGenerator:
             return True
         if function.policy.debug >= 2:
             return True
-        if function.policy.safety >= 2:
-            return function in self.may_recurse
-        return False
+        return function in self.may_recurse
 
     def bodies_by_name(self, name: str) -> str:
         return self.bodies[self.by_name[name]]
