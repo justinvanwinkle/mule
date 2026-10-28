@@ -122,6 +122,49 @@ def py_scanstring(s: str, end: int, strict: bool = True,
     begin: int = end - 1
     if end < 0:
         raise JSONDecodeError("Unterminated string starting at", s, begin)
+    if _m is not STRINGCHUNK.match:
+        chunks_custom: list[str] = []
+        _append_custom = chunks_custom.append
+        while True:
+            chunk = _m(s, end)
+            if chunk is None:
+                raise JSONDecodeError("Unterminated string starting at", s, begin)
+            end = chunk.end()
+            content, terminator = chunk.groups()
+            if content:
+                _append_custom(content)
+            if terminator == '"':
+                break
+            elif terminator != '\\':
+                if is_strict:
+                    msg = f"Invalid control character {terminator!r} at"
+                    raise JSONDecodeError(msg, s, end - 1)
+                else:
+                    _append_custom(terminator)
+                    continue
+            try:
+                esc = s[end]
+            except IndexError:
+                raise JSONDecodeError("Unterminated string starting at", s, begin) from None
+            if esc != 'u':
+                try:
+                    char = _b[esc]
+                except KeyError:
+                    msg = f"Invalid \\escape: {esc!r}"
+                    raise JSONDecodeError(msg, s, end) from None
+                end += 1
+            else:
+                uni = _decode_uXXXX(s, end)
+                end += 5
+                if 0xd800 <= uni <= 0xdbff and s[end:end + 2] == '\\u':
+                    uni2 = _decode_uXXXX(s, end + 1)
+                    if 0xdc00 <= uni2 <= 0xdfff:
+                        uni = 0x10000 + (((uni - 0xd800) << 10) | (uni2 - 0xdc00))
+                        end += 6
+                char = chr(uni)
+            _append_custom(char)
+        return ''.join(chunks_custom), end
+
     first_pos: int = _scan_clean_string(s, end, n, is_strict)
     if first_pos >= 0:
         return s[end:first_pos], first_pos + 1

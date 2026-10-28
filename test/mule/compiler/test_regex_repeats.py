@@ -37,3 +37,32 @@ print(len(value['key']), value['escaped'], value['number'])
 """,
     )
     assert native.stderr == ""
+
+
+def test_regex_search_prefilter_invariants(tmp_path):
+    native = compare(
+        tmp_path,
+        r"""
+import re
+import json
+
+cases = [
+    (r"[a-z]+ofoo\d", "!ofoofoo1"),
+    (r"\d[a-z]+ofoo\d", "!1ofoofoo2"),
+    (r"(?s)\b.*foo", " a\nfoo"),
+    (r"(?s).*foo", " a\nfoo"),
+    (r".*foo", " a\nfoo"),
+    (r"(?m)^$|foo", "abc\n\ndef"),
+    (r"(?:^|\s+)foo", "bar foo\nbaz"),
+    (r"(^|[^\\])/foo/", r"\/foo/ /foo/"),
+]
+for pat, text in cases:
+    m = re.search(pat, text)
+    print(pat, None if m is None else (m.span(), m.groups()))
+
+custom_b = dict(json.decoder.BACKSLASH)
+custom_b["x"] = "X"
+print(json.decoder.py_scanstring(r'"a\xb"', 1, True, custom_b))
+""",
+    )
+    assert native.stderr == ""

@@ -1015,13 +1015,19 @@ def _extract_required_literal(code, first_pc, is_bytes):
     max_pre = 0
     pred_pc = -1
     fixed_before = 0
+    has_anchor = False
     best_fixed_lit = None
     while pc < n:
         op = code[pc]
-        if op == _MARK or op == _AT:
+        if op == _MARK:
+            pc += 2
+            continue
+        if op == _AT:
+            has_anchor = True
             pc += 2
             continue
         if op == _ASSERT or op == _ASSERT_NOT:
+            has_anchor = True
             pc = pc + 1 + code[pc + 1]
             continue
         if (op == _REPEAT or op == _POSSESSIVE_REPEAT) and code[pc + 2] == 1:
@@ -1061,15 +1067,15 @@ def _extract_required_literal(code, first_pc, is_bytes):
                 max_pre += lo
                 pc = pc + 1 + code[pc + 1]
                 continue
-            if min_pre == max_pre and best_fixed_lit is None:
+            if min_pre == max_pre and hi == MAXREPEAT and best_fixed_lit is None:
                 body_pc = pc + 4
                 body_op = code[body_pc]
                 fixed_before = min_pre
                 min_pre = fixed_before + lo
-                max_pre = MAXREPEAT if hi == MAXREPEAT else fixed_before + hi
+                max_pre = MAXREPEAT
                 if (
-                    (body_op == _ANY or body_op == _ANY_ALL)
-                    and hi == MAXREPEAT
+                    body_op == _ANY
+                    and not has_anchor
                     and fixed_before == 0
                 ):
                     pred_pc = -1
@@ -1077,54 +1083,6 @@ def _extract_required_literal(code, first_pc, is_bytes):
                     pred_pc = body_pc
                 pc = pc + 1 + code[pc + 1]
                 continue
-            break
-        if op == _BRANCH and min_pre == 0 and max_pre == 0:
-            # Handle leading (?:^|\s+)lit or (^|\s)lit or (^|[^\\])lit
-            at0 = pc + 1
-            if at0 >= n or code[at0] == _FAILURE:
-                break
-            at1 = at0 + code[at0]
-            if at1 >= n or code[at1] == _FAILURE:
-                break
-            at2 = at1 + code[at1]
-            if at2 >= n or code[at2] != _FAILURE:
-                break
-            arm0 = at0 + 1
-            while arm0 < at1 and code[arm0] == _MARK:
-                arm0 += 2
-            if arm0 + 2 >= at1 or code[arm0] != _AT or code[arm0 + 2] != _JUMP:
-                break
-            arm1 = at1 + 1
-            while arm1 < at2 and code[arm1] == _MARK:
-                arm1 += 2
-            arm1_op = code[arm1]
-            if _is_single_char_op(arm1_op):
-                after_arm1 = _advance_single_char_op(code, arm1)
-                if after_arm1 < at2 and code[after_arm1] == _JUMP:
-                    min_pre = 0
-                    max_pre = 1
-                    pred_pc = arm1
-                    fixed_before = 0
-                    pc = at2 + 1
-                    continue
-            elif (
-                arm1_op == _REPEAT_ONE
-                or arm1_op == _MIN_REPEAT_ONE
-                or arm1_op == _POSSESSIVE_REPEAT_ONE
-            ):
-                after_arm1 = arm1 + 1 + code[arm1 + 1]
-                if (
-                    code[arm1 + 2] == 1
-                    and code[arm1 + 3] == MAXREPEAT
-                    and after_arm1 < at2
-                    and code[after_arm1] == _JUMP
-                ):
-                    min_pre = 0
-                    max_pre = MAXREPEAT
-                    pred_pc = arm1 + 4
-                    fixed_before = 0
-                    pc = at2 + 1
-                    continue
             break
         break
     if best_fixed_lit is not None:
@@ -1300,9 +1258,9 @@ def _fill_pc_start_chars(code, pc, allowed, non_ascii_box, depth):
             continue
         if op == _AT:
             atcode = code[pc + 1]
-            if atcode == 0 or atcode == 6 or atcode == 7:
+            if atcode == 0 or atcode == 2 or atcode == 7:
                 return True
-            if atcode == 5:
+            if atcode == 5 or atcode == 6:
                 allowed[10] = 1
                 return True
             pc += 2
@@ -1655,38 +1613,34 @@ class Pattern:
                         start += 1
                 return None
             else:
-                # Variable-length prefix with known single-char predicate (e.g. (?:^|\s+)lit or (^|[^\\])lit)
-                while start + min_w <= engine_end:
-                    idx = string.find(lit, start + min_pre, engine_end)
+                # Variable-length prefix with unbounded single-char repeat pred_pc
+                min_start = start
+                lit_search_from = start + min_pre
+                while min_start + min_w <= engine_end:
+                    if lit_search_from < min_start + min_pre:
+                        lit_search_from = min_start + min_pre
+                    idx = string.find(lit, lit_search_from, engine_end)
                     if idx < 0:
                         return None
-                    if max_pre == 1:
-                        cand0 = idx - 1
-                        if cand0 >= start:
-                            found = self._match_at_engine(engine, cand0)
-                            if found is not None:
-                                return found
-                        if min_pre == 0 and idx >= start:
-                            found = self._match_at_engine(engine, idx)
-                            if found is not None:
-                                return found
-                        start = idx + 1
-                    else:
-                        # Back up while pred_pc matches (e.g. \s+ or [a-z0-9]*)
-                        cand = idx
-                        limit_cand = start + fixed_before
-                        while cand > limit_cand and engine._match_one(pred_pc, cand - 1):
-                            cand -= 1
-                        cand -= fixed_before
-                        if cand < start:
-                            cand = start
-                        tried_end = idx if min_pre == 0 else idx - min_pre
-                        while cand <= tried_end:
-                            found = self._match_at_engine(engine, cand)
-                            if found is not None:
-                                return found
-                            cand += 1
-                        start = idx + 1
+                    var_start = idx
+                    limit_var = min_start + fixed_before
+                    while var_start > limit_var and engine._match_one(pred_pc, var_start - 1):
+                        var_start -= 1
+                    cand = var_start - fixed_before
+                    if cand < min_start:
+                        cand = min_start
+                    max_cand = idx - min_pre
+                    while cand <= max_cand:
+                        found = self._match_at_engine(engine, cand)
+                        if found is not None:
+                            return found
+                        cand += 1
+                    next_min_start = var_start - fixed_before
+                    if max_cand + 1 > next_min_start:
+                        next_min_start = max_cand + 1
+                    if next_min_start > min_start:
+                        min_start = next_min_start
+                    lit_search_from = idx + 1
                 return None
         branch_lits = self._branch_lits
         if branch_lits is not None and engine.is_str_or_bytes:
