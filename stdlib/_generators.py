@@ -13,8 +13,11 @@ coroutine rather than a single function.
 from _attributes import getattr
 from _descriptors import property
 from _mule_native import coroutine_abandon
+from _mule_native import coroutine_delegate
+from _mule_native import coroutine_has_yieldfrom
 from _mule_native import coroutine_locals
 from _mule_native import coroutine_new
+from _mule_native import coroutine_next
 from _mule_native import coroutine_resume
 from _mule_native import coroutine_set_yieldfrom
 from _mule_native import coroutine_state
@@ -23,6 +26,7 @@ from _mule_native import coroutine_yield
 from _mule_native import coroutine_yieldfrom
 from _mule_native import is_class
 from _mule_native import is_instance
+from _mule_native import type_of
 from _object import frame
 from _object import framelocalsproxy
 
@@ -87,8 +91,7 @@ class generator:
     def __iter__(self):
         return self
 
-    def __next__(self):
-        return self.send(None)
+    __next__ = coroutine_next
 
     def _resume(self, value, exception):
         try:
@@ -180,7 +183,38 @@ class generator:
 
 def yield_from(iterable):
     """Delegate to a subiterator until it finishes; return its result."""
-    iterator = iter(iterable)
+    if type_of(iterable) is generator:
+        iterator = iterable
+    else:
+        iterator = iter(iterable)
+    if type_of(iterator) is generator:
+        handle = iterator._handle
+        sent = None
+        has_value = False
+        value = None
+        while True:
+            try:
+                if has_value:
+                    has_value = False
+                    sent = coroutine_yield(value)
+                    value = None
+                return coroutine_delegate(handle, sent, iterator, False)
+            except GeneratorExit:
+                if not coroutine_has_yieldfrom():
+                    raise
+                coroutine_set_yieldfrom(None)
+                iterator.close()
+                raise
+            except BaseException as error:
+                if not coroutine_has_yieldfrom():
+                    raise
+                coroutine_set_yieldfrom(None)
+                try:
+                    value = iterator.throw(error)
+                except StopIteration as stop:
+                    return stop.value
+                coroutine_set_yieldfrom(iterator)
+                has_value = True
     try:
         value = next(iterator)
     except StopIteration as stop:
@@ -257,7 +291,10 @@ class coroutine(generator):
 
     @property
     def cr_await(self):
-        return self.gi_yieldfrom
+        awaited = self.gi_yieldfrom
+        if type_of(awaited) is _CoroutineIterator:
+            return awaited.target
+        return awaited
 
     def __repr__(self):
         return f"<coroutine object {self.__qualname__}>"
@@ -306,6 +343,34 @@ def _awaitable_iterator(awaitable):
 
 def await_value(awaitable):
     """``await``: delegate to the awaitable's iterator; return its result."""
+    if type_of(awaitable) is coroutine:
+        handle = awaitable._handle
+        sent = None
+        has_value = False
+        value = None
+        while True:
+            try:
+                if has_value:
+                    has_value = False
+                    sent = coroutine_yield(value)
+                    value = None
+                return coroutine_delegate(handle, sent, awaitable, True)
+            except GeneratorExit:
+                if not coroutine_has_yieldfrom():
+                    raise
+                coroutine_set_yieldfrom(None)
+                awaitable.close()
+                raise
+            except BaseException as error:
+                if not coroutine_has_yieldfrom():
+                    raise
+                coroutine_set_yieldfrom(None)
+                try:
+                    value = awaitable.throw(error)
+                except StopIteration as stop:
+                    return stop.value
+                coroutine_set_yieldfrom(awaitable)
+                has_value = True
     return yield_from(_awaitable_iterator(awaitable))
 
 

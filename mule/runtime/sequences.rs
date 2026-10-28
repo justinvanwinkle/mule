@@ -9,6 +9,7 @@ thread_local! {
     static STORAGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
     static RANGE_ITERATOR: Cell<Value> = const { Cell::new(null_mut()) };
     static BYTEARRAY_CLASS: Cell<Value> = const { Cell::new(null_mut()) };
+    static GENERATOR_CLASS: Cell<Value> = const { Cell::new(null_mut()) };
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
@@ -122,6 +123,7 @@ pub unsafe fn finish() {
         STORAGE_ITERATOR.with(|value| value.set(null_mut()));
         RANGE_ITERATOR.with(|value| value.set(null_mut()));
         BYTEARRAY_CLASS.with(|value| value.set(null_mut()));
+        GENERATOR_CLASS.with(|value| value.set(null_mut()));
         GLOBALS.with(|value| object::release(value.replace(null_mut())));
     }
 }
@@ -1849,13 +1851,19 @@ pub unsafe extern "C" fn mule_leave_handler() {
 pub fn enter_coroutine_handlers(handlers: &mut Vec<Value>) -> usize {
     ACTIVE.with_borrow_mut(|active| {
         let boundary = active.len();
-        active.append(handlers);
+        if !handlers.is_empty() {
+            active.append(handlers);
+        }
         boundary
     })
 }
 
-pub fn leave_coroutine_handlers(boundary: usize) -> Vec<Value> {
-    ACTIVE.with_borrow_mut(|active| active.split_off(boundary))
+pub fn leave_coroutine_handlers(boundary: usize, out: &mut Vec<Value>) {
+    ACTIVE.with_borrow_mut(|active| {
+        if active.len() > boundary {
+            out.extend(active.drain(boundary..));
+        }
+    });
 }
 /// The exception being handled by the innermost active handler, or None.
 #[unsafe(no_mangle)]
@@ -2022,6 +2030,113 @@ unsafe fn cached_bytearray_class() -> Value {
 
 #[cold]
 #[inline(never)]
+unsafe fn resolve_generator_class() -> Value {
+    unsafe {
+        let resolved = object::lookup(mule_protocol_globals(), "_generator");
+        GENERATOR_CLASS.with(|slot| slot.set(resolved));
+        resolved
+    }
+}
+
+#[inline(always)]
+unsafe fn cached_generator_class() -> Value {
+    let cached = GENERATOR_CLASS.with(Cell::get);
+    if !cached.is_null() {
+        return cached;
+    }
+    unsafe { resolve_generator_class() }
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn convert_stop_iteration_to_runtime_error() {
+    unsafe {
+        let pending = PENDING.with(Cell::get);
+        let stop_class = object::lookup(mule_protocol_globals(), "StopIteration");
+        if pending.is_null() || stop_class.is_null() {
+            return;
+        }
+        let raised = mule_raised_class(pending);
+        let is_stop = crate::classes::is_subclass(raised, stop_class);
+        object::release(raised);
+        if !is_stop {
+            return;
+        }
+        let error = mule_catch_exception();
+        let runtime_class = object::lookup(mule_protocol_globals(), "RuntimeError");
+        if !error.is_null() && !runtime_class.is_null() {
+            let msg = object::new_value(Data::Text(
+                crate::text::Text::from_rust_str("generator raised StopIteration"),
+                null_mut(),
+                null_mut(),
+            ));
+            let runtime_err = object::call(runtime_class, &[msg]);
+            object::release(msg);
+            if !runtime_err.is_null() {
+                let _ = crate::classes::mule_set_attr(runtime_err, c"_cause".as_ptr(), error);
+                let _ = crate::classes::mule_set_attr(runtime_err, c"_context".as_ptr(), error);
+                let _ = crate::classes::mule_set_attr(
+                    runtime_err,
+                    c"_suppress_context".as_ptr(),
+                    object::bool_value(true),
+                );
+                let _ = mule_raise_pending(runtime_err);
+                object::release(runtime_err);
+            }
+        }
+        object::release(error);
+    }
+}
+
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn raise_stop_iteration_value(value: Value) {
+    unsafe {
+        if value == object::none_value() {
+            object::release(value);
+            object::error("StopIteration", "");
+            return;
+        }
+        let stop_class = object::lookup(mule_protocol_globals(), "StopIteration");
+        if !stop_class.is_null() {
+            let stop_inst = object::call(stop_class, &[value]);
+            if !stop_inst.is_null() {
+                let _ = mule_raise_pending(stop_inst);
+                object::release(stop_inst);
+            }
+        } else {
+            object::error("StopIteration", "");
+        }
+        object::release(value);
+    }
+}
+
+/// Advance an exact builtin `generator` instance for `for`-loop iteration,
+/// avoiding `StopIteration` construction when the generator returns normally.
+/// When the generator body itself raises `StopIteration`, PEP 479 converts it
+/// to `RuntimeError` with `from error` cause chaining.
+#[inline]
+unsafe fn advance_generator_fast(handle: Value, out: *mut Value) -> i32 {
+    unsafe {
+        let status = crate::coroutine::step_coroutine_none(handle, out);
+        if status == 1 {
+            return 1;
+        }
+        if status == 0 {
+            let returned = *out;
+            *out = null_mut();
+            object::release(returned);
+            return 0;
+        }
+        if crate::coroutine::is_coroutine_finished(handle) {
+            convert_stop_iteration_to_runtime_error();
+        }
+        -1
+    }
+}
+
+#[cold]
+#[inline(never)]
 unsafe fn resolve_storage_iterator() -> Value {
     unsafe {
         let resolved = object::lookup(mule_protocol_globals(), "StorageIterator");
@@ -2080,50 +2195,54 @@ pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -
             }
             Data::Instance { ty, fields, .. } => {
                 let storage_iterator = cached_storage_iterator();
-                if storage_iterator.is_null() || *ty != storage_iterator || fields.len() < 3 {
-                    return -1;
+                if !storage_iterator.is_null() && *ty == storage_iterator && fields.len() >= 3 {
+                    let sequence = fields[0];
+                    let index = fields[1];
+                    let exhausted = fields[2];
+                    if exhausted != object::bool_value(false)
+                        || !object::is_fixnum(index)
+                        || sequence.is_null()
+                        || object::is_fixnum(sequence)
+                    {
+                        return -1;
+                    }
+                    let pos = object::fixnum(index);
+                    if pos < 0 {
+                        return -1;
+                    }
+                    let values = match &(*sequence).data {
+                        Data::List(values, ..) | Data::Args(values, ..) => values,
+                        _ => return -1,
+                    };
+                    let len = values.len() as i64;
+                    if pos >= len {
+                        let old = fields[2];
+                        fields[2] = object::bool_value(true);
+                        object::release(old);
+                        return 0;
+                    }
+                    let Some(next_pos) = pos.checked_add(1) else {
+                        return -1;
+                    };
+                    if !(numeric::MIN..=numeric::MAX).contains(&next_pos) {
+                        return -1;
+                    }
+                    fields[1] = object::small(next_pos);
+                    *out = object::retain(*values.get_unchecked(pos as usize));
+                    return 1;
                 }
-                let sequence = fields[0];
-                let index = fields[1];
-                let exhausted = fields[2];
-                if exhausted != object::bool_value(false)
-                    || !object::is_fixnum(index)
-                    || sequence.is_null()
-                    || object::is_fixnum(sequence)
-                {
-                    return -1;
+                if !fields.is_empty() && *ty == cached_generator_class() {
+                    let handle = fields[0];
+                    return advance_generator_fast(handle, out);
                 }
-                let pos = object::fixnum(index);
-                if pos < 0 {
-                    return -1;
-                }
-                let values = match &(*sequence).data {
-                    Data::List(values, ..) | Data::Args(values, ..) => values,
-                    _ => return -1,
-                };
-                let len = values.len() as i64;
-                if pos >= len {
-                    let old = fields[2];
-                    fields[2] = object::bool_value(true);
-                    object::release(old);
-                    return 0;
-                }
-                let Some(next_pos) = pos.checked_add(1) else {
-                    return -1;
-                };
-                if !(numeric::MIN..=numeric::MAX).contains(&next_pos) {
-                    return -1;
-                }
-                fields[1] = object::small(next_pos);
-                *out = object::retain(*values.get_unchecked(pos as usize));
-                1
+                -1
             }
             _ => -1,
         }
     }
 }
 
-/// Fast path for `iterate(value)` on exact builtin `list`, `tuple`, `bytes`, and `bytearray` objects.
+/// Fast path for `iterate(value)` on exact builtin `list`, `tuple`, `bytes`, `bytearray`, and `generator` objects.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_fast_iterate(value: Value) -> Value {
     unsafe {
@@ -2137,17 +2256,22 @@ pub unsafe extern "C" fn mule_fast_iterate(value: Value) -> Value {
             {
                 value
             }
-            Data::Instance { ty, fields, .. }
-                if !fields.is_empty() && *ty == cached_bytearray_class() =>
-            {
-                let inner = fields[0];
-                if inner.is_null()
-                    || object::is_fixnum(inner)
-                    || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
-                {
+            Data::Instance { ty, fields, .. } => {
+                if *ty == cached_generator_class() {
+                    return object::retain(value);
+                }
+                if !fields.is_empty() && *ty == cached_bytearray_class() {
+                    let inner = fields[0];
+                    if inner.is_null()
+                        || object::is_fixnum(inner)
+                        || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
+                    {
+                        return null_mut();
+                    }
+                    inner
+                } else {
                     return null_mut();
                 }
-                inner
             }
             _ => return null_mut(),
         };
@@ -2159,7 +2283,7 @@ pub unsafe extern "C" fn mule_fast_iterate(value: Value) -> Value {
 }
 
 /// Fast path for `iterate(value)` that consumes the caller's owned `value` reference
-/// when `value` is an exact builtin `list`, `tuple`, `bytes`, `bytearray`, or `SeqIter`.
+/// when `value` is an exact builtin `list`, `tuple`, `bytes`, `bytearray`, `generator`, or `SeqIter`.
 /// Leaves `value` unconsumed when returning NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_fast_iterate_move(value: Value) -> Value {
@@ -2171,22 +2295,26 @@ pub unsafe extern "C" fn mule_fast_iterate_move(value: Value) -> Value {
             Data::SeqIter { .. } => return value,
             Data::List(_, ty, ..) | Data::Args(_, ty, ..) | Data::Bytes(_, ty, ..)
                 if ty.is_null() => {}
-            Data::Instance { ty, fields, .. }
-                if !fields.is_empty() && *ty == cached_bytearray_class() =>
-            {
-                let inner = fields[0];
-                if inner.is_null()
-                    || object::is_fixnum(inner)
-                    || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
-                {
-                    return null_mut();
+            Data::Instance { ty, fields, .. } => {
+                if *ty == cached_generator_class() {
+                    return value;
                 }
-                let seq = object::retain(inner);
-                object::release(value);
-                return object::new_untracked_value(Data::SeqIter {
-                    sequence: seq,
-                    index: 0,
-                });
+                if !fields.is_empty() && *ty == cached_bytearray_class() {
+                    let inner = fields[0];
+                    if inner.is_null()
+                        || object::is_fixnum(inner)
+                        || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
+                    {
+                        return null_mut();
+                    }
+                    let seq = object::retain(inner);
+                    object::release(value);
+                    return object::new_untracked_value(Data::SeqIter {
+                        sequence: seq,
+                        index: 0,
+                    });
+                }
+                return null_mut();
             }
             _ => return null_mut(),
         }
@@ -2304,6 +2432,34 @@ pub unsafe extern "C" fn mule_fast_next_unpack(
                 1
             }
             Data::Instance { ty, fields, .. } => {
+                if !fields.is_empty() && *ty == cached_generator_class() {
+                    let status = advance_generator_fast(fields[0], out);
+                    if status <= 0 {
+                        return status;
+                    }
+                    let item = *out;
+                    if !item.is_null() && !object::is_fixnum(item) {
+                        match &(*item).data {
+                            Data::Args(tuple_vals, item_ty, ..)
+                            | Data::List(tuple_vals, item_ty, ..)
+                                if item_ty.is_null() && tuple_vals.len() == count =>
+                            {
+                                for i in 0..count {
+                                    let elem = *tuple_vals.get_unchecked(i);
+                                    if !object::is_fixnum(elem) {
+                                        object::retain(elem);
+                                    }
+                                    *unpack_out.add(i) = elem;
+                                }
+                                *out = null_mut();
+                                object::release(item);
+                                return 1;
+                            }
+                            _ => (),
+                        }
+                    }
+                    return 1;
+                }
                 let storage_iterator = cached_storage_iterator();
                 if storage_iterator.is_null() || *ty != storage_iterator || fields.len() < 3 {
                     return -1;

@@ -13,16 +13,19 @@
 //! and a switch. The context switch saves the System V AMD64 callee-saved
 //! registers and the floating-point control state.
 use crate::object::{self, Data, Value};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::io::Write;
 use std::ptr::null_mut;
+use std::sync::Mutex;
 
 #[cfg(not(target_arch = "x86_64"))]
 compile_error!("Mule generators currently implement the x86-64 context switch only");
 
 const STACK_SIZE: usize = 8 << 20;
 const GUARD_SIZE: usize = 4096;
+const LOCAL_STACK_POOL_CAP: usize = 32;
+const GLOBAL_STACK_POOL_CAP: usize = 64;
 
 const CREATED: u8 = 0;
 const SUSPENDED: u8 = 1;
@@ -91,8 +94,105 @@ unsafe extern "C" {
     fn mule_coroutine_start();
 }
 
+static GLOBAL_STACK_POOL: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+struct LocalStackPool {
+    stacks: Vec<*mut u8>,
+}
+
+impl Drop for LocalStackPool {
+    fn drop(&mut self) {
+        if self.stacks.is_empty() {
+            return;
+        }
+        let mut remaining = std::mem::take(&mut self.stacks);
+        if let Ok(mut global) = GLOBAL_STACK_POOL.lock() {
+            while global.len() < GLOBAL_STACK_POOL_CAP {
+                let Some(stack) = remaining.pop() else {
+                    break;
+                };
+                global.push(stack as usize);
+            }
+        }
+        for stack in remaining {
+            unsafe {
+                munmap(stack.cast(), STACK_SIZE);
+            }
+        }
+    }
+}
+
 thread_local! {
     static CURRENT: Cell<*mut Coroutine> = const { Cell::new(null_mut()) };
+    static LOCAL_STACK_POOL: RefCell<LocalStackPool> = const {
+        RefCell::new(LocalStackPool { stacks: Vec::new() })
+    };
+}
+
+/// Acquire a coroutine control stack from the thread-local or global recycle bin,
+/// falling back to `mmap` + `mprotect` on a miss, following SBCL's
+/// `get_recyclebin_item` (`src/runtime/thread.c`).
+unsafe fn get_recyclebin_stack() -> *mut u8 {
+    if let Some(stack) = LOCAL_STACK_POOL
+        .try_with(|pool| pool.borrow_mut().stacks.pop())
+        .ok()
+        .flatten()
+    {
+        return stack;
+    }
+    if let Ok(mut global) = GLOBAL_STACK_POOL.lock() {
+        if let Some(addr) = global.pop() {
+            return addr as *mut u8;
+        }
+    }
+    unsafe {
+        let stack = mmap(
+            null_mut(),
+            STACK_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK,
+            -1,
+            0,
+        );
+        if stack == MAP_FAILED {
+            return null_mut();
+        }
+        // The lowest page faults on overflow instead of corrupting memory.
+        mprotect(stack, GUARD_SIZE, PROT_NONE);
+        stack.cast()
+    }
+}
+
+/// Return a finished coroutine's control stack to the recycle bin, or `munmap`
+/// it when both bins are at capacity, following SBCL's `put_recyclebin_item`
+/// (`src/runtime/thread.c`).
+unsafe fn put_recyclebin_stack(stack: *mut u8) {
+    if stack.is_null() {
+        return;
+    }
+    let stored_local = LOCAL_STACK_POOL
+        .try_with(|pool| {
+            let mut pool = pool.borrow_mut();
+            if pool.stacks.len() < LOCAL_STACK_POOL_CAP {
+                pool.stacks.push(stack);
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
+    if stored_local {
+        return;
+    }
+    if let Ok(mut global) = GLOBAL_STACK_POOL.lock() {
+        if global.len() < GLOBAL_STACK_POOL_CAP {
+            global.push(stack as usize);
+            return;
+        }
+    }
+    unsafe {
+        munmap(stack.cast(), STACK_SIZE);
+    }
 }
 
 pub struct Coroutine {
@@ -118,11 +218,12 @@ pub struct Coroutine {
 
 unsafe extern "C" fn coroutine_main(coroutine: *mut Coroutine) -> ! {
     unsafe {
-        let arguments = match &(*(*coroutine).arguments).data {
-            Data::Args(values, ..) => values.to_vec(),
-            _ => Vec::new(),
+        let (ptr, len) = match &(*(*coroutine).arguments).data {
+            Data::Args(values, ..) => (values.as_ptr(), values.len()),
+            _ => (std::ptr::NonNull::<Value>::dangling().as_ptr().cast_const(), 0),
         };
-        let result = object::call((*coroutine).function, &arguments);
+        let arguments = std::slice::from_raw_parts(ptr, len);
+        let result = object::call((*coroutine).function, arguments);
         (*coroutine).transfer = result;
         (*coroutine).state = FINISHED;
         (*coroutine).locals_ptr = null_mut();
@@ -136,22 +237,13 @@ unsafe extern "C" fn coroutine_main(coroutine: *mut Coroutine) -> ! {
 impl Coroutine {
     unsafe fn new(function: Value, arguments: Value) -> Option<Box<Self>> {
         unsafe {
-            let stack = mmap(
-                null_mut(),
-                STACK_SIZE,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK,
-                -1,
-                0,
-            );
-            if stack == MAP_FAILED {
+            let stack = get_recyclebin_stack();
+            if stack.is_null() {
                 object::error("MemoryError", "generator stack allocation failed");
                 return None;
             }
-            // The lowest page faults on overflow instead of corrupting memory.
-            mprotect(stack, GUARD_SIZE, PROT_NONE);
             let mut coroutine = Box::new(Coroutine {
-                stack: stack.cast(),
+                stack,
                 context: null_mut(),
                 resumer: null_mut(),
                 state: CREATED,
@@ -189,6 +281,15 @@ impl Coroutine {
         }
     }
 
+    unsafe fn recycle_stack(&mut self) {
+        let stack = std::mem::replace(&mut self.stack, null_mut());
+        if !stack.is_null() {
+            unsafe {
+                put_recyclebin_stack(stack);
+            }
+        }
+    }
+
     /// Switch into the coroutine with `value` (owned by the caller, borrowed
     /// here) or, when `value` is NULL, with the pending error thrown into it.
     /// Returns the yielded or returned value, or NULL with an error.
@@ -213,12 +314,15 @@ impl Coroutine {
             let handler_boundary = crate::sequences::enter_coroutine_handlers(&mut self.handlers);
             object::set_frame_depth(base + self.depth);
             mule_context_switch(&mut self.resumer, self.context);
-            self.handlers = crate::sequences::leave_coroutine_handlers(handler_boundary);
+            crate::sequences::leave_coroutine_handlers(handler_boundary, &mut self.handlers);
             self.frames = crate::traceback::leave_coroutine_frames(frame_boundary);
             self.depth = object::frame_depth() - base;
             object::set_frame_depth(base);
             CURRENT.with(|current| current.set(self.parent));
             self.parent = null_mut();
+            if self.state == FINISHED {
+                self.recycle_stack();
+            }
             std::mem::replace(&mut self.transfer, null_mut())
         }
     }
@@ -263,7 +367,7 @@ impl Drop for Coroutine {
             for exception in self.handlers.drain(..) {
                 object::release(exception);
             }
-            munmap(self.stack.cast(), STACK_SIZE);
+            self.recycle_stack();
         }
     }
 }
@@ -322,6 +426,40 @@ unsafe fn operands<const N: usize>(args: Value) -> Option<[Value; N]> {
             *value = object::argument(args, index)?;
         }
         Some(values)
+    }
+}
+
+/// Advance `handle` with `None` for normal generator/coroutine iteration.
+/// Returns `1` and writes the yielded value to `*out` when suspended;
+/// returns `0` and writes the return value (`None` or owned value) to `*out`
+/// when finished without error; returns `-1` when an error is pending.
+pub(crate) unsafe fn step_coroutine_none(handle: Value, out: *mut Value) -> i32 {
+    unsafe {
+        let Some(coroutine) = coroutine(handle) else {
+            return -1;
+        };
+        if coroutine.state == FINISHED {
+            *out = object::none_value();
+            return 0;
+        }
+        let result = coroutine.resume(object::none_value());
+        if result.is_null() {
+            return -1;
+        }
+        *out = result;
+        if coroutine.state == FINISHED { 0 } else { 1 }
+    }
+}
+
+///Return whether `handle` is in the `FINISHED` state.
+pub(crate) unsafe fn is_coroutine_finished(handle: Value) -> bool {
+    unsafe {
+        if !handle.is_null() && !object::is_fixnum(handle) {
+            if let Data::Coroutine(coroutine) = &(*handle).data {
+                return coroutine.state == FINISHED;
+            }
+        }
+        false
     }
 }
 
@@ -413,8 +551,38 @@ unsafe extern "C" fn coroutine_abandon(_: Value, args: Value) -> Value {
         };
         if coroutine.state == CREATED {
             coroutine.state = FINISHED;
+            coroutine.recycle_stack();
         }
         object::none_value()
+    }
+}
+
+unsafe fn clear_current_yieldfrom() {
+    let current = CURRENT.with(Cell::get);
+    if !current.is_null() {
+        unsafe {
+            let old = std::mem::replace(&mut (*current).yield_from, null_mut());
+            if !old.is_null() {
+                object::release(old);
+            }
+        }
+    }
+}
+
+unsafe fn set_current_yieldfrom(value: Value) {
+    let current = CURRENT.with(Cell::get);
+    if !current.is_null() {
+        unsafe {
+            let new_val = if value.is_null() || value == object::none_value() {
+                null_mut()
+            } else {
+                object::retain(value)
+            };
+            let old = std::mem::replace(&mut (*current).yield_from, new_val);
+            if !old.is_null() {
+                object::release(old);
+            }
+        }
     }
 }
 
@@ -423,16 +591,117 @@ unsafe extern "C" fn coroutine_set_yieldfrom(_: Value, args: Value) -> Value {
         let Some([value]) = operands(args) else {
             return null_mut();
         };
-        let current = CURRENT.with(Cell::get);
-        if !current.is_null() {
-            let new_val = if value == object::none_value() {
-                null_mut()
-            } else {
-                object::retain(value)
-            };
-            object::release(std::mem::replace(&mut (*current).yield_from, new_val));
-        }
+        set_current_yieldfrom(value);
         object::none_value()
+    }
+}
+
+unsafe extern "C" fn coroutine_has_yieldfrom(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([]) = operands(args) else {
+            return null_mut();
+        };
+        let current = CURRENT.with(Cell::get);
+        let has = !current.is_null() && !(*current).yield_from.is_null();
+        object::bool_value(has)
+    }
+}
+
+/// `generator.__next__(self)` implemented directly over the coroutine handle.
+unsafe extern "C" fn coroutine_next(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([gen_instance]) = operands(args) else {
+            return null_mut();
+        };
+        if gen_instance.is_null() || object::is_fixnum(gen_instance) {
+            object::error("TypeError", "expected generator object");
+            return null_mut();
+        }
+        let Data::Instance { fields, .. } = &(*gen_instance).data else {
+            object::error("TypeError", "expected generator object");
+            return null_mut();
+        };
+        if fields.is_empty() {
+            object::error("TypeError", "expected generator object");
+            return null_mut();
+        }
+        let handle = fields[0];
+        let mut out: Value = null_mut();
+        let status = step_coroutine_none(handle, &mut out);
+        if status == 1 {
+            return out;
+        }
+        if status == 0 {
+            crate::sequences::raise_stop_iteration_value(out);
+            return null_mut();
+        }
+        if is_coroutine_finished(handle) {
+            crate::sequences::convert_stop_iteration_to_runtime_error();
+        }
+        null_mut()
+    }
+}
+
+/// Drive a subgenerator or coroutine `handle` until it finishes and returns its
+/// final value, forwarding yielded values and sent responses directly.
+unsafe extern "C" fn coroutine_delegate(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([handle, initial_sent, yieldfrom_obj, is_coro_val]) = operands(args) else {
+            return null_mut();
+        };
+        let is_coro = is_coro_val == object::bool_value(true);
+        let mut sent = object::retain(initial_sent);
+        loop {
+            let Some(coro) = coroutine(handle) else {
+                object::release(sent);
+                clear_current_yieldfrom();
+                return null_mut();
+            };
+            if coro.state == FINISHED {
+                object::release(sent);
+                clear_current_yieldfrom();
+                if is_coro {
+                    object::error("RuntimeError", "cannot reuse already awaited coroutine");
+                    return null_mut();
+                }
+                return object::none_value();
+            }
+            if coro.state == CREATED && sent != object::none_value() {
+                object::release(sent);
+                clear_current_yieldfrom();
+                if is_coro {
+                    object::error(
+                        "TypeError",
+                        "can't send non-None value to a just-started coroutine",
+                    );
+                } else {
+                    object::error(
+                        "TypeError",
+                        "can't send non-None value to a just-started generator",
+                    );
+                }
+                return null_mut();
+            }
+            clear_current_yieldfrom();
+            let value = coro.resume(sent);
+            object::release(sent);
+            if value.is_null() {
+                if coro.state == FINISHED {
+                    crate::sequences::convert_stop_iteration_to_runtime_error();
+                }
+                return null_mut();
+            }
+            if coro.state == FINISHED {
+                return value;
+            }
+            set_current_yieldfrom(yieldfrom_obj);
+            let next_sent = mule_coroutine_yield(value);
+            object::release(value);
+            if next_sent.is_null() {
+                return null_mut();
+            }
+            sent = next_sent;
+        }
     }
 }
 
@@ -487,15 +756,18 @@ pub unsafe fn populate(globals: Value) -> bool {
         if !bound {
             return false;
         }
-        let exports: [(&str, object::Native); 8] = [
+        let exports: [(&str, object::Native); 11] = [
             ("coroutine_new", coroutine_new),
             ("coroutine_resume", coroutine_resume),
             ("coroutine_throw", coroutine_throw),
             ("coroutine_state", coroutine_state),
             ("coroutine_abandon", coroutine_abandon),
             ("coroutine_set_yieldfrom", coroutine_set_yieldfrom),
+            ("coroutine_has_yieldfrom", coroutine_has_yieldfrom),
             ("coroutine_yieldfrom", coroutine_yieldfrom),
             ("coroutine_locals", coroutine_locals),
+            ("coroutine_next", coroutine_next),
+            ("coroutine_delegate", coroutine_delegate),
         ];
         for (name, entry) in exports {
             let function = object::function(null_mut(), entry, name);
