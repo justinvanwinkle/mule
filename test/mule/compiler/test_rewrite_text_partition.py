@@ -221,13 +221,11 @@ def test_partition_record_unpack_omits_intermediate_tuple(
 ):
     retained = original_trace[control]["watched"]["tuple"]
     assert retained == 1, original_trace[control]
-    assert original_trace[control]["value_tags"]["object"] == retained, original_trace[
+    assert original_trace[control]["value_tags"]["tuple"] == retained, original_trace[
         control
     ]
     observed = original_trace[name]["watched"]["tuple"]
-    assert original_trace[name]["value_tags"]["object"] == observed, original_trace[
-        name
-    ]
+    assert original_trace[name]["value_tags"]["tuple"] == observed, original_trace[name]
     assert observed == retained, (
         f"{name} constructs extra tuples while unpacking and rebuilding the result: "
         f"root={original_trace[name]!r}, retained control={original_trace[control]!r}"
@@ -256,7 +254,10 @@ def original_trace(record_parser, request):
             "tuple": r"^mule_sequence_tuple(?:_owned)?$",
             "object": r"object9new_value",
         },
-        value_tags={"object": {"offset": DATA_OFFSET, "tag": ARGS_TAG}},
+        value_tags={
+            "object": {"offset": DATA_OFFSET, "tag": ARGS_TAG},
+            "tuple": {"offset": DATA_OFFSET, "tag": ARGS_TAG},
+        },
         stdin=stdin,
     )
     for name in roots:
@@ -290,7 +291,11 @@ def checksum_trace(checksum_parser, request):
             "partition_object": r"^mule_text_partition$",
             "object": r"object9new_value",
         },
-        value_tags={"object": {"offset": DATA_OFFSET, "tag": ARGS_TAG}},
+        # Small tuples can use the pool without passing through new_value.
+        value_tags={
+            "object": {"offset": DATA_OFFSET, "tag": ARGS_TAG},
+            "tuple": {"offset": DATA_OFFSET, "tag": ARGS_TAG},
+        },
         stdin=stdin,
     )
     for name in roots:
@@ -304,7 +309,7 @@ def test_partition_escaping_result_exercises_tuple_constructor(checksum_trace, n
     assert observed["tuple"] == 1, checksum_trace[name]
     assert observed["partition_object"] == 1, checksum_trace[name]
     assert observed["partition_slots"] == 1, checksum_trace[name]
-    assert checksum_trace[name]["value_tags"]["object"] == 1, checksum_trace[name]
+    assert checksum_trace[name]["value_tags"]["tuple"] == 1, checksum_trace[name]
 
 
 @pytest.mark.parametrize(
@@ -320,7 +325,7 @@ def test_partition_scalar_header_parser_never_constructs_tuple(
     assert checksum_trace[control]["watched"]["partition_object"] == 1, checksum_trace[
         control
     ]
-    assert checksum_trace[control]["value_tags"]["object"] == 1, checksum_trace[control]
+    assert checksum_trace[control]["value_tags"]["tuple"] == 1, checksum_trace[control]
     assert checksum_trace[name]["watched"]["partition_slots"] == 1, checksum_trace[name]
     assert checksum_trace[name]["watched"]["partition_object"] == 0, checksum_trace[
         name
