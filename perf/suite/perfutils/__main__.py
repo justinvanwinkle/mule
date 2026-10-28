@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -214,6 +215,14 @@ def revision(cwd):
         "commit": result.stdout.strip(),
         "tracked_diff_sha256": hashlib.sha256(diff.stdout).hexdigest(),
     }
+
+
+def run_jobs(function, items, *, jobs):
+    """Join a bounded phase of independent jobs and retain input result order."""
+    if jobs == 1:
+        return [function(item) for item in items]
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        return list(executor.map(function, items))
 
 
 def measure_group(case, entries, baseline, args, reference):
@@ -435,9 +444,8 @@ def main():
     parser.add_argument(
         "--jobs",
         type=int,
-        choices=(1,),
         default=1,
-        help="run one build or measurement command at a time (only 1 is supported)",
+        help="maximum concurrent builds or scenario measurements (default: 1)",
     )
     args = parser.parse_args()
     available = {
@@ -558,8 +566,7 @@ def main():
             build.update(entry["error"])
 
     prior_runs = history.load(args.history)
-    for task in build_tasks:
-        _run_build(task)
+    run_jobs(_run_build, build_tasks, jobs=args.jobs)
     write_report(report, output, history_runs=prior_runs)
 
     def _measure_case(case):
@@ -591,8 +598,8 @@ def main():
 
     def _measure_all():
         rows = []
-        for case in cases:
-            rows.extend(_measure_case(case))
+        for case_rows in run_jobs(_measure_case, cases, jobs=args.jobs):
+            rows.extend(case_rows)
         return rows
 
     def _record_attempt(attempt):

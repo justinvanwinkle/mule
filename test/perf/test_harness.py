@@ -1,5 +1,6 @@
 import json
 import subprocess
+import threading
 from argparse import Namespace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from perf.suite.perfutils.__main__ import (
     measure_with_cpu_guard,
     read_sample,
     record_accepted_report,
+    run_jobs,
 )
 from perf.suite.perfutils.cpu import CpuMeasurementError
 from test.python_host import python_host
@@ -335,23 +337,33 @@ def test_harness_default_runs_commands_serially(tmp_path):
     assert all(build["status"] == "ok" for build in report["builds"])
 
 
-def test_harness_rejects_concurrent_jobs():
+def test_run_jobs_overlaps_work_with_bounded_concurrency_and_ordered_results():
+    barrier = threading.Barrier(2, timeout=5)
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def work(value):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            barrier.wait()
+            return value * 2
+        finally:
+            with lock:
+                active -= 1
+
+    assert run_jobs(work, range(6), jobs=2) == [0, 2, 4, 6, 8, 10]
+    assert peak == 2
+    assert active == 0
+
+
+@pytest.mark.parametrize("jobs", [0, -1])
+def test_harness_rejects_nonpositive_jobs(jobs):
     process = subprocess.run(
-        [
-            python_host(),
-            "-m",
-            "perf.suite.perfutils",
-            "run",
-            "integer_accumulation",
-            "--size",
-            "10",
-            "--samples",
-            "1",
-            "--cpu-attempts",
-            "1",
-            "--jobs",
-            "4",
-        ],
+        [python_host(), "-m", "perf.suite.perfutils", "run", "--jobs", str(jobs)],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -359,7 +371,7 @@ def test_harness_rejects_concurrent_jobs():
         timeout=30,
     )
     assert process.returncode == 2
-    assert "--jobs" in process.stderr
+    assert "jobs must be positive" in process.stderr
 
 
 @pytest.mark.parametrize(
