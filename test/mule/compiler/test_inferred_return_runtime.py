@@ -136,3 +136,41 @@ def consume(flag):
     direct_part, fallback_part = helper.split("\nfallback:\n", 1)
     assert "mule.return.check" not in direct_part
     assert "mule.return.check" in fallback_part
+
+
+def test_field_initialized_to_int_and_updated_with_unknown_expression_widens(tmp_path):
+    source = """
+class Point:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+class Particle:
+    def __init__(self, x, y, mass=1.0):
+        self.position = Point(x, y)
+        self.mass = mass
+
+class QuadTree:
+    def __init__(self):
+        self.center_of_mass = Point(0, 0)
+        self.total_mass = 0
+
+    def update_mass_distribution(self, particle):
+        total_mass_new = self.total_mass + particle.mass
+        if total_mass_new > 0:
+            self.center_of_mass.x = (
+                self.center_of_mass.x * self.total_mass
+                + particle.position.x * particle.mass
+            ) / total_mass_new
+            self.center_of_mass.y = (
+                self.center_of_mass.y * self.total_mass
+                + particle.position.y * particle.mass
+            ) / total_mass_new
+        self.total_mass = total_mass_new
+
+tree = QuadTree()
+tree.update_mass_distribution(Particle(2.0, 4.0, 1.5))
+tree.update_mass_distribution(Particle(6.0, 8.0, 2.5))
+print(tree.total_mass, tree.center_of_mass.x, tree.center_of_mass.y)
+"""
+    assert run_source(tmp_path, source) == "4.0 4.5 6.5\n"

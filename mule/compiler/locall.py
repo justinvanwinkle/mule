@@ -135,7 +135,12 @@ from .node import (
     Set,
     linked,
 )
-from .seqtran import is_predictable_len_call, known_length_primitive
+from .seqtran import (
+    _PREDICTABLE_RANGE_CALLEE_REF,
+    _UNMUTATED_RANGE_GLOBAL_REF,
+    is_predictable_len_call,
+    known_length_primitive,
+)
 
 DELATTR = PROTOCOLS["delete_attribute"]
 DELITEM = PROTOCOLS["delitem"]
@@ -174,6 +179,24 @@ _SPECIALIZABLE_CONTAINER_OPS = frozenset(
         INPLACE_BINARY[ast.BinaryOperator.BIT_XOR],
     }
 )
+
+
+def _is_predictable_range_call(node: Combination) -> bool:
+    if (
+        node.kind not in (CallKind.FULL, CallKind.GUARDED)
+        or not (1 <= len(node.args) <= 3)
+        or len(node.fun.uses) != 1
+        or (node.info is not None and node.info.keywords)
+        or node.lexenv.policy.safety >= 3
+    ):
+        return False
+    home = node.home_lambda
+    if home is not None and (home.policy.safety >= 3 or home.is_protocol):
+        return False
+    fun_use = node.fun.uses[0]
+    return fun_use.accept(_PREDICTABLE_RANGE_CALLEE_REF) or fun_use.accept(
+        _UNMUTATED_RANGE_GLOBAL_REF
+    )
 
 
 class _ParameterUse(NodeVisitor, LeafVisitor):
@@ -262,6 +285,22 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if info is None:
             if is_predictable_len_call(node) and node.args and node.args[0] is lvar:
                 self.disqualified = True
+            elif _is_predictable_range_call(node) and lvar in node.args:
+                self.numeric = True
+                self.text_disqualified = True
+                self.list_disqualified = True
+                self.sequence_disqualified = True
+            return
+        if info is RANGE_PREPARE:
+            if node.info is not None and (
+                node.info.direct or lvar in node.info.arguments
+            ):
+                self.numeric = True
+                self.text_disqualified = True
+                self.list_disqualified = True
+                self.sequence_disqualified = True
+            else:
+                self.disqualified = True
             return
         if info is RESOLVE_METHOD and node.args and node.args[0] is lvar:
             self.disqualified = True
@@ -286,14 +325,7 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
             self.disqualified = True
             self.list_disqualified = True
             return
-        if (
-            node.args
-            and node.args[0] is lvar
-            and info.non_integer_first_arg
-            and not (
-                info is RANGE_PREPARE and node.info is not None and node.info.direct
-            )
-        ):
+        if node.args and node.args[0] is lvar and info.non_integer_first_arg:
             self.disqualified = True
             if (
                 info is TEXT_SLICE_COMPARE
@@ -313,7 +345,17 @@ class _ParameterUse(NodeVisitor, LeafVisitor):
         if len(node.args) > 1 and node.args[1] is lvar and info in _CONTAINMENT_COMPARE:
             self.disqualified = True
             return
-        if len(node.args) > 1 and node.args[1] is lvar and info.index_second_arg:
+        if (
+            len(node.args) > 1
+            and node.args[1] is lvar
+            and (info.index_second_arg or info is PROTOCOLS["_list_fill"])
+        ):
+            self.numeric = True
+            self.text_disqualified = True
+            self.list_disqualified = True
+            self.sequence_disqualified = True
+            return
+        if info is GETSLICE and lvar in node.args[1:]:
             self.numeric = True
             self.text_disqualified = True
             self.list_disqualified = True
@@ -424,15 +466,24 @@ class _SpecializesBody(NodeVisitor):
                     and not general.fits(candidate)
                 ):
                     return True
+        numeric_args = (
+            node.info.arguments
+            if node.fun_info is RANGE_PREPARE
+            and node.info is not None
+            and not node.info.direct
+            else node.args
+        )
         if (
             node.kind is CallKind.KNOWN
             and node.fun_info is not None
             and node.fun_info.numeric
-            and node.args
-            and all(len(arg.uses) == 1 for arg in node.args)
+            and numeric_args
+            and all(len(arg.uses) == 1 for arg in numeric_args)
         ):
-            cand_args = [self.candidate.get(arg.uses[0], UNKNOWN) for arg in node.args]
-            gen_args = [self.general.get(arg.uses[0], UNKNOWN) for arg in node.args]
+            cand_args = [
+                self.candidate.get(arg.uses[0], UNKNOWN) for arg in numeric_args
+            ]
+            gen_args = [self.general.get(arg.uses[0], UNKNOWN) for arg in numeric_args]
             if (
                 all(arg.is_fixnum for arg in cand_args)
                 and not all(arg.is_fixnum for arg in gen_args)
@@ -441,6 +492,35 @@ class _SpecializesBody(NodeVisitor):
                 and not all(arg.fits_float(FLOAT) for arg in gen_args)
             ):
                 return True
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and (
+                node.fun_info.index_second_arg
+                or node.fun_info is PROTOCOLS["_list_fill"]
+            )
+            and len(node.args) > 1
+            and len(node.args[1].uses) == 1
+        ):
+            idx_use = node.args[1].uses[0]
+            if (
+                self.candidate.get(idx_use, UNKNOWN).is_fixnum
+                and not self.general.get(idx_use, UNKNOWN).is_fixnum
+            ):
+                return True
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is GETSLICE
+            and len(node.args) > 1
+        ):
+            for bound_arg in node.args[1:]:
+                if len(bound_arg.uses) == 1:
+                    bound_use = bound_arg.uses[0]
+                    if (
+                        self.candidate.get(bound_use, UNKNOWN).is_fixnum
+                        and not self.general.get(bound_use, UNKNOWN).is_fixnum
+                    ):
+                        return True
         if is_predictable_len_call(node) and len(node.args[0].uses) == 1:
             arg_use = node.args[0].uses[0]
             if known_length_primitive(
@@ -1556,6 +1636,7 @@ class ClassFacts:
     is_protocol: bool = False
     fixed_slots: tuple[str, ...] = ()
     constructor_proven: bool = True
+    widened_fields: set[str] = field(default_factory=set)
 
 
 class _ProtocolSelfPrediction(ValueTypeVisitor):
@@ -1828,6 +1909,35 @@ class _AppendsFromField(NodeVisitor):
         return None
 
 
+class _DependsOnVars(NodeVisitor, LeafVisitor):
+    def __init__(self, targets: set[LambdaVar]):
+        self.targets = targets
+        self.seen: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Leaf(self, leaf):
+        return False
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf in self.targets:
+            return True
+        if leaf.indirect or leaf in self.seen:
+            return False
+        self.seen.add(leaf)
+        definitions = [store.value for store in leaf.sets if store.value is not None]
+        if len(definitions) == 1 and len(definitions[0].uses) == 1:
+            return definitions[0].uses[0].accept(self)
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return any(use.accept(self) for arg in node.args for use in arg.uses)
+
+
 class _DependsOnInstanceField(NodeVisitor, LeafVisitor):
     def __init__(self, field_name: str):
         self.field_name = field_name
@@ -1941,6 +2051,16 @@ def _update_class_field_types(
             continue
         recv_use = node.args[0].use()
         val_use = node.args[2 if physical else 1].use()
+        narrowed_non_self = {
+            var
+            for var, fix_p, gen_p in zip(
+                lam.vars[1:],
+                parameters.get((lam, "fixnum"), ())[1:],
+                parameters.get((lam, "general"), ())[1:],
+                strict=False,
+            )
+            if fix_p != gen_p
+        }
         found_context = False
         saw_typed_receiver = False
         best_stores: dict[str, ValueType] = {}
@@ -1952,9 +2072,8 @@ def _update_class_field_types(
             val_body = body
             if (ctx_name == "observed" and lam.signature.default_parameters) or (
                 ctx_name == "fixnum"
-                and lam.vars
-                and parameters.get((lam, "fixnum"), ())[1:]
-                != parameters.get((lam, "general"), ())[1:]
+                and narrowed_non_self
+                and val_use.accept(_DependsOnVars(narrowed_non_self))
             ):
                 val_body = bodies.get((lam, "general")) or body
             val_fact = val_body.facts.get(val_use, NO_FACT)
@@ -1968,7 +2087,12 @@ def _update_class_field_types(
                         best_stores[recv_cls] = val_fact.type
         for recv_cls, stored_type in best_stores.items():
             cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
-            if stored_type is UNKNOWN and cur_type is not BOTTOM:
+            if (
+                stored_type is UNKNOWN
+                and cur_type is not BOTTOM
+                and val_use.accept(_GETATTR_ON_INSTANCE) is not None
+                and not cur_type.fits(PYTHON_INTEGER)
+            ):
                 stored_type = cur_type
             elif (
                 stored_type == LIST_TYPE
@@ -2064,6 +2188,7 @@ def _update_class_field_types(
             for name in direct_stores.get(anc_id, ())
             if class_facts[anc_id].constructor_proven
             and name not in ambiguous_fields
+            and name not in facts.widened_fields
             and name not in facts.methods
             and name not in facts.shadowed
         }
@@ -2083,6 +2208,9 @@ def _update_class_field_types(
                 and sanitized != DictType(BOTTOM, BOTTOM, False)
             ):
                 new_fields[name] = sanitized
+        for name in facts.fields:
+            if name not in new_fields:
+                facts.widened_fields.add(name)
         if new_fields != facts.fields:
             facts.fields = new_fields
             changed = True
@@ -3175,6 +3303,7 @@ def analyze(
         prev_deriver_cache = state_cache["deriver_cache"]
         prev_captured_types = state_cache.get("captured_types", {})
         prev_class_fields = state_cache.get("class_fields", {})
+        prev_widened_fields = state_cache.get("class_widened_fields", {})
         directly_changed = set(lambdas) - unchanged_lambdas
         while True:
             added_direct: set[Lambda] = set()
@@ -3236,6 +3365,10 @@ def analyze(
             for cls_id, fields_map in prev_class_fields.items():
                 if cls_id in class_facts:
                     class_facts[cls_id].fields = dict(fields_map)
+        if prev_widened_fields:
+            for cls_id, widened_set in prev_widened_fields.items():
+                if cls_id in class_facts:
+                    class_facts[cls_id].widened_fields = set(widened_set)
         for var in captured_vars:
             if var in prev_captured_types and all(
                 store.home_lambda not in must_recompute for store in var.sets
@@ -4321,6 +4454,9 @@ def analyze(
         state_cache["results"] = dict(results)
         state_cache["class_fields"] = {
             cls_id: dict(cf.fields) for cls_id, cf in class_facts.items()
+        }
+        state_cache["class_widened_fields"] = {
+            cls_id: set(cf.widened_fields) for cls_id, cf in class_facts.items()
         }
         state_cache["class_layouts"] = {
             cls_id: InstanceType(cls_id, fixed_slots=cf.fixed_slots)
