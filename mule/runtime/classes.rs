@@ -55,6 +55,8 @@ pub unsafe extern "C" fn mule_set_attribute_lookup(entry: *mut c_void) {
 pub struct ClassLayout {
     pub id: usize,
     pub name: String,
+    /// `__qualname__`, kept out of the namespace as CPython's `ht_qualname`.
+    pub qualname: String,
     pub base: Value,
     /// Every direct base, retained. `base` is the first of these.
     pub bases: Vec<Value>,
@@ -181,6 +183,7 @@ impl ClassLayout {
         ClassLayout {
             id: NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed),
             name: "Probe".into(),
+            qualname: "Probe".into(),
             base: std::ptr::null_mut(),
             bases: Vec::new(),
             subclasses: Vec::new(),
@@ -548,7 +551,8 @@ pub unsafe extern "C" fn mule_class(
         };
         let base = base_values.first().copied().unwrap_or(std::ptr::null_mut());
         if direct_class(base_values, namespace, keywords) {
-            return create_class(class_name, base, field_count, field_names, namespace, None);
+            let class = create_class(class_name, base, field_count, field_names, namespace, None);
+            return complete_class(class);
         }
         let Some(name) = name(class_name) else {
             return std::ptr::null_mut();
@@ -608,6 +612,32 @@ pub unsafe extern "C" fn mule_class_prepare(name: Value, bases: Value, keywords:
             return std::ptr::null_mut();
         }
         object::call(prepare, &[name, bases, keywords])
+    }
+}
+
+/// Finish a class built directly through the compiled `complete_class`, the
+/// step `type.__new__` also takes, so both paths fill the namespace alike.
+/// Bootstrap classes created before that protocol exists are left as built.
+unsafe fn complete_class(class: Value) -> Value {
+    unsafe {
+        if class.is_null() {
+            return class;
+        }
+        let globals = crate::sequences::mule_protocol_globals();
+        if globals.is_null() {
+            return class;
+        }
+        let completion = object::lookup(globals, "complete_class");
+        if completion.is_null() {
+            return class;
+        }
+        let result = object::call(completion, &[class, object::none_value()]);
+        if result.is_null() {
+            object::release(class);
+            return std::ptr::null_mut();
+        }
+        object::release(result);
+        class
     }
 }
 
@@ -1798,6 +1828,11 @@ fn linearize(bases: &[Value]) -> Option<Vec<Value>> {
         sequences.push(sequence);
     }
     sequences.push(bases.to_vec());
+    merge(sequences)
+}
+
+/// C3 merge of base sequences; None when no consistent order exists.
+fn merge(mut sequences: Vec<Vec<Value>>) -> Option<Vec<Value>> {
     let mut result = Vec::new();
     loop {
         sequences.retain(|sequence| !sequence.is_empty());
@@ -2023,8 +2058,26 @@ unsafe fn create_class_with(
         }
         let mut attributes: Vec<(String, Value)> = Vec::with_capacity(bindings.len());
         let mut attribute_lookup: HashMap<String, usize> = HashMap::default();
+        // type_new removes `__qualname__` from the namespace and keeps it as
+        // the type's qualified name; `type.__qualname__` reads it back.
+        let qualname = match bindings.get("__qualname__") {
+            value if value.is_null() => class_name.to_owned(),
+            value if is_text(value) => match text_argument(value) {
+                Some(qualname) => qualname,
+                None => return std::ptr::null_mut(),
+            },
+            value => {
+                return fail(
+                    "TypeError",
+                    &format!(
+                        "type __qualname__ must be a str, not {}",
+                        object::type_name(value).unwrap_or_default()
+                    ),
+                );
+            }
+        };
         for (attribute, value) in bindings.iter() {
-            if attribute == "__mule_slots__" {
+            if attribute == "__mule_slots__" || attribute == "__qualname__" {
                 continue;
             }
             if let Some(index) = attribute_lookup.get(attribute) {
@@ -2063,6 +2116,7 @@ unsafe fn create_class_with(
         let class = object::new_value(Data::Class(Box::new(ClassLayout {
             id,
             name: class_name.into(),
+            qualname,
             base,
             bases: bases.iter().map(|base| object::retain(*base)).collect(),
             subclasses: Vec::new(),
@@ -2805,6 +2859,25 @@ unsafe fn set_attribute_with(
                         }
                     }
                 }
+                // type_setattro: a data descriptor on the metaclass, such as
+                // `type.__qualname__`, decides the assignment before the
+                // class's own namespace is touched.
+                if hooks {
+                    if let Some(meta_layout) = layout_of_class(class_of_value(receiver)) {
+                        if let Some((defining, _, index)) = meta_layout.find(attribute) {
+                            let descriptor = defining.attributes[index].1;
+                            if is_data_descriptor(descriptor) {
+                                let result =
+                                    special_method(descriptor, "__set__", &[receiver, value]);
+                                if result.is_null() {
+                                    return -1;
+                                }
+                                object::release(result);
+                                return 0;
+                            }
+                        }
+                    }
+                }
                 return set_class_attribute(receiver, attribute, value);
             }
             let setter = if !hooks {
@@ -3184,6 +3257,148 @@ unsafe extern "C" fn class_bases(_: Value, args: Value) -> Value {
         };
         object::mule_sequence_tuple(layout.bases.len() as isize, layout.bases.as_ptr())
     }
+}
+
+/// The layout half of `type.__bases__ = bases` (CPython's type_set_bases):
+/// the compiled setter has checked that `bases` is a non-empty tuple of
+/// classes. This checks for a cycle and an incompatible instance layout,
+/// recomputes the MRO of the class and every subclass, and moves the class
+/// between its old and new bases' subclass lists. Nothing changes unless
+/// every check and every new MRO succeeds.
+unsafe extern "C" fn set_class_bases(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, bases]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        let Data::Args(new_bases, ..) = &(*bases).data else {
+            return fail("SystemError", "class bases must be a tuple");
+        };
+        let new_bases: Vec<Value> = new_bases.to_vec();
+        if layout.native.is_some() {
+            return fail(
+                "TypeError",
+                &format!("cannot set '__bases__' attribute of typed native class '{}'", layout.name),
+            );
+        }
+        for base in &new_bases {
+            let Some(base_layout) = layout_of_class(*base) else {
+                return fail("TypeError", "__bases__ must be tuple of classes");
+            };
+            if *base == class || base_layout.mro.contains(&class) {
+                return fail("TypeError", "a __bases__ item causes an inheritance cycle");
+            }
+        }
+        let Some(mro) = linearize(&new_bases) else {
+            return fail(
+                "TypeError",
+                "Cannot create a consistent method resolution order (MRO) for bases",
+            );
+        };
+        // Instances keep their storage, so every field the new ancestors
+        // declare must already be a field of this class, with the same
+        // slot kind (compatible_for_assignment).
+        for ancestor in &mro {
+            let Some(ancestor_layout) = layout_of_class(*ancestor) else {
+                continue;
+            };
+            for (index, field) in ancestor_layout.fields.iter().enumerate() {
+                let compatible = layout.field_lookup.get(field).is_some_and(|&own| {
+                    layout.slot_fields.get(own) == ancestor_layout.slot_fields.get(index)
+                });
+                if !compatible {
+                    let first = layout_of_class(new_bases[0]).map_or(String::new(), |l| l.name.clone());
+                    return fail(
+                        "TypeError",
+                        &format!(
+                            "__bases__ assignment: '{first}' object layout differs from '{}'",
+                            layout.name
+                        ),
+                    );
+                }
+            }
+            // A class without an instance dict cannot gain an ancestor whose
+            // instances carry one: same tp_dictoffset in CPython.
+            if !layout.dict_allowed && ancestor_layout.dict_allowed {
+                return fail(
+                    "TypeError",
+                    &format!(
+                        "__bases__ assignment: '{}' object layout differs from '{}'",
+                        ancestor_layout.name, layout.name
+                    ),
+                );
+            }
+        }
+        // Compute every dependent MRO before committing any of them.
+        let mut updates: Vec<(Value, Vec<Value>)> = vec![(class, mro)];
+        let mut index = 0;
+        while index < updates.len() {
+            let current = updates[index].0;
+            let subclasses = layout_of_class(current).map_or_else(Vec::new, |l| l.subclasses.clone());
+            for subclass in subclasses {
+                if updates.iter().any(|(seen, _)| *seen == subclass) {
+                    continue;
+                }
+                let sub_bases = layout_of_class(subclass).map_or_else(Vec::new, |l| l.bases.clone());
+                let Some(sub_mro) = linearize_with(&sub_bases, &updates) else {
+                    return fail(
+                        "TypeError",
+                        "Cannot create a consistent method resolution order (MRO) for bases",
+                    );
+                };
+                updates.push((subclass, sub_mro));
+            }
+            index += 1;
+        }
+        let Data::Class(own) = &mut (*class).data else {
+            unreachable!();
+        };
+        let old_bases = std::mem::replace(
+            &mut own.bases,
+            new_bases.iter().map(|base| object::retain(*base)).collect(),
+        );
+        own.base = new_bases[0];
+        for old in &old_bases {
+            if let Data::Class(old_layout) = &mut (**old).data {
+                old_layout.remove_subclass(class);
+            }
+        }
+        for base in &new_bases {
+            if let Data::Class(base_layout) = &mut (**base).data {
+                base_layout.subclasses.push(class);
+            }
+        }
+        for old in old_bases {
+            object::release(old);
+        }
+        for (target, mro) in updates {
+            if let Data::Class(target_layout) = &mut (*target).data {
+                target_layout.mro = mro;
+            }
+        }
+        ATTRIBUTE_EPOCH.fetch_add(1, Ordering::Relaxed);
+        object::none_value()
+    }
+}
+
+/// `linearize`, reading the MROs already recomputed in `updates` in place of
+/// the classes' current ones.
+fn linearize_with(bases: &[Value], updates: &[(Value, Vec<Value>)]) -> Option<Vec<Value>> {
+    let mut sequences: Vec<Vec<Value>> = Vec::with_capacity(bases.len() + 1);
+    for base in bases {
+        let mro = match updates.iter().find(|(class, _)| class == base) {
+            Some((_, mro)) => mro.clone(),
+            None => unsafe { layout_of_class(*base) }?.mro.clone(),
+        };
+        let mut sequence = Vec::with_capacity(mro.len() + 1);
+        sequence.push(*base);
+        sequence.extend_from_slice(&mro);
+        sequences.push(sequence);
+    }
+    sequences.push(bases.to_vec());
+    merge(sequences)
 }
 
 unsafe extern "C" fn class_mro(_: Value, args: Value) -> Value {
@@ -3818,6 +4033,82 @@ unsafe extern "C" fn set_class_name(_: Value, args: Value) -> Value {
             unreachable!();
         };
         layout.name = name;
+        object::none_value()
+    }
+}
+
+unsafe extern "C" fn class_qualname(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        let Some(layout) = class_layout(class) else {
+            return std::ptr::null_mut();
+        };
+        text(&layout.qualname)
+    }
+}
+
+unsafe extern "C" fn set_class_qualname(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, qualname]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if class_layout(class).is_none() {
+            return std::ptr::null_mut();
+        }
+        let Data::Class(layout) = &mut (*class).data else {
+            unreachable!();
+        };
+        if assign_qualname(layout, qualname) < 0 {
+            return std::ptr::null_mut();
+        }
+        object::none_value()
+    }
+}
+
+unsafe fn is_text(value: Value) -> bool {
+    unsafe { !object::is_fixnum(value) && matches!(&(*value).data, Data::Text(..)) }
+}
+
+/// `type.__qualname__ = value`, which accepts only a str (type_set_qualname).
+unsafe fn assign_qualname(layout: &mut ClassLayout, value: Value) -> i32 {
+    unsafe {
+        if !is_text(value) {
+            object::error(
+                "TypeError",
+                &format!(
+                    "can only assign string to {}.__qualname__, not '{}'",
+                    layout.name,
+                    object::type_name(value).unwrap_or_default()
+                ),
+            );
+            return -1;
+        }
+        let Some(qualname) = text_argument(value) else {
+            return -1;
+        };
+        layout.qualname = qualname;
+        0
+    }
+}
+
+/// Bind one of a class's own namespace entries directly, without consulting
+/// the metaclass's descriptors, as type creation fills a new type's dict.
+unsafe extern "C" fn class_bind(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([class, attribute, value]) = operands(args) else {
+            return std::ptr::null_mut();
+        };
+        if class_layout(class).is_none() {
+            return std::ptr::null_mut();
+        }
+        let Some(attribute) = text_argument(attribute) else {
+            return std::ptr::null_mut();
+        };
+        if set_class_attribute(class, &attribute, value) < 0 {
+            return std::ptr::null_mut();
+        }
         object::none_value()
     }
 }
@@ -4526,7 +4817,7 @@ pub unsafe fn populate(globals: Value) -> bool {
         if object::has_error() {
             return false;
         }
-        let exports: [(&str, object::Native); 64] = [
+        let exports: [(&str, object::Native); 68] = [
             ("mark_wrapper_descriptor", mark_wrapper_descriptor),
             ("delete_instance_field", delete_instance_field),
             ("class_lookup_default", class_lookup_default),
@@ -4566,6 +4857,9 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("is_subclass", is_subclass_export),
             ("class_name", class_name),
             ("set_class_name", set_class_name),
+            ("class_qualname", class_qualname),
+            ("set_class_qualname", set_class_qualname),
+            ("class_bind", class_bind),
             ("class_own_names", class_own_names),
             ("allocate_instance", allocate_instance),
             ("set_instance_field", set_instance_field),
@@ -4580,6 +4874,7 @@ pub unsafe fn populate(globals: Value) -> bool {
             ("default_repr", default_repr),
             ("class_base", class_base),
             ("class_bases", class_bases),
+            ("set_class_bases", set_class_bases),
             ("class_mro", class_mro),
             ("class_lookup", class_lookup),
             ("class_lookup_or_null", class_lookup_or_null),
