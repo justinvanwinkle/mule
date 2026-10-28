@@ -119,11 +119,13 @@ command to measure full link-time optimization separately; this can increase
 link time substantially. The example configuration also compiles each scenario's
 `.lisp` implementation into a standalone SBCL executable for side-by-side comparison.
 
-All native builds complete before validation or timing begins. Each case is
-built once. The harness validates every runtime
-against the baseline's result, then runs processes serially within each scenario
-with rotated runtime order. The standard run uses four concurrent scenario jobs
-(`--jobs 4`). Each sample repeats validation. Build failures,
+All commands run one at a time, including builds, validation, and timed samples
+across all scenarios. All native builds complete before validation or timing
+begins. Each case is built once. The harness validates every runtime against the
+baseline's result, then rotates runtime order between samples. `--jobs` defaults
+to 1 and rejects other values. Historical runs with concurrent scenario jobs
+retain their recorded settings and are not directly comparable with serial runs.
+Each sample repeats validation. Build failures,
 timeouts, and incorrect results appear in the report and produce a nonzero
 exit status; other comparisons continue.
 

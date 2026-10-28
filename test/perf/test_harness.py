@@ -275,6 +275,93 @@ def test_timeout_is_visible(tmp_path):
     assert error.value.status == "timeout"
 
 
+def test_harness_default_runs_commands_serially(tmp_path):
+    host = python_host()
+    lock = tmp_path / "command.lock"
+    wrapper = tmp_path / "exclusive.py"
+    wrapper.write_text(
+        "import fcntl, pathlib, subprocess, sys\n"
+        f"with open({str(lock)!r}, 'w') as lock:\n"
+        "    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    if sys.argv[1] == 'build':\n"
+        "        pathlib.Path(sys.argv[2]).write_text('built')\n"
+        "    else:\n"
+        "        subprocess.run([sys.executable, *sys.argv[1:]], check=True)\n"
+    )
+    config = tmp_path / "runtimes.toml"
+    config.write_text(
+        'baseline = "reference"\n'
+        + "".join(
+            f'[[runtime]]\nname="{runtime}"\ncommand='
+            + json.dumps([host, str(wrapper), "{source}"])
+            + "\nbuild="
+            + json.dumps([host, str(wrapper), "build", "{binary}"])
+            + "\n"
+            for runtime in ("reference", "candidate")
+        )
+    )
+    output = tmp_path / "report"
+    process = subprocess.run(
+        [
+            host,
+            "-m",
+            "perf.suite.perfutils",
+            "run",
+            "integer_accumulation",
+            "graph_paths",
+            "--config",
+            str(config),
+            "--size",
+            "100",
+            "--samples",
+            "1",
+            "--cpu-attempts",
+            "1",
+            "--max-external-cpu",
+            "1000000",
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    report = json.loads((output / "results.json").read_text())
+    assert report["options"]["jobs"] == 1
+    assert all(row["status"] == "ok" for row in report["rows"])
+    assert all(build["status"] == "ok" for build in report["builds"])
+
+
+def test_harness_rejects_concurrent_jobs():
+    process = subprocess.run(
+        [
+            python_host(),
+            "-m",
+            "perf.suite.perfutils",
+            "run",
+            "integer_accumulation",
+            "--size",
+            "10",
+            "--samples",
+            "1",
+            "--cpu-attempts",
+            "1",
+            "--jobs",
+            "4",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert process.returncode == 2
+    assert "--jobs" in process.stderr
+
+
 @pytest.mark.parametrize(
     ("baseline_seconds", "runtime_seconds", "expected"),
     [(2, 1, 0.5), (2, 6, 3), (2, 2, 1), (2, 0, 0), (0, 2, None)],
