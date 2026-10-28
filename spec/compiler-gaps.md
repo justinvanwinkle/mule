@@ -1276,6 +1276,9 @@ describe the Python mutation and ownership adaptations to SBCL.
          `dict_not_contains`
        - `key in s` / `key not in s` on `SetType` -> `set_contains` /
          `set_not_contains`
+       - `item in text` / `item not in text` with both operands exact `str` ->
+         `text_contains` / `text_not_contains` (a substring search; neither
+         operand can override `__contains__` or raise for its type)
        - `set()` / `set` literal `{}` -> `empty_set`
        - `s.add(x)`, `s.discard(x)`, `s.remove(x)` on mutable `SetType` ->
          `set_add`, `set_discard`, `set_remove`

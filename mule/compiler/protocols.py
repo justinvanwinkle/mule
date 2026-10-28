@@ -303,6 +303,22 @@ def _transform_instance_field(node):
     return transform_physical_field_ref(node)
 
 
+@deftransform("type")
+def _transform_type_of_value(node):
+    """``type(x)`` is the class of ``x`` (SBCL's ``class-of``, a known
+    function open-coded to the layout read). ``type.__new__`` answers a
+    one-argument call through ``type`` itself with exactly this lookup, so
+    the call through the metaclass protocol and its argument packing go
+    away. The unmutated-builtin and keyword checks are the predictable-global
+    test ``_OptimizeNode`` already made."""
+    from .ir1util import retarget_known_combination
+
+    if len(node.args) != 1:
+        return False
+    retarget_known_combination(node, PRIMITIVES["_type_of"], [node.args[0]])
+    return True
+
+
 @deftransform("_set_instance_field")
 def _transform_set_instance_field(node):
     from .ir1opt import transform_physical_field_set

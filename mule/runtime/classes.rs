@@ -3276,15 +3276,16 @@ pub unsafe extern "C" fn mule_instance_field(instance: Value, attribute: Value) 
         let Some(attribute) = text_argument(attribute) else {
             return std::ptr::null_mut();
         };
-        instance_field_by_name(instance, &attribute)
+        instance_field_by_name(instance, &attribute, std::ptr::null_mut())
     }
 }
 
-unsafe fn instance_field_by_name(instance: Value, attribute: &str) -> Value {
+unsafe fn instance_field_by_name(instance: Value, attribute: &str, cache: *mut AttrCache) -> Value {
     unsafe {
         if let Some((layout, true, _)) = layout(instance) {
             if let Data::Instance { fields, .. } = &(*instance).data {
                 if let Some(index) = layout.field_lookup.get(attribute) {
+                    store_cached(layout, cache, (*index << SHIFT) | FIELD);
                     let value = fields[*index];
                     if !value.is_null() {
                         return object::retain(value);
@@ -3303,7 +3304,25 @@ pub unsafe extern "C" fn mule_instance_field_name(instance: Value, name: *const 
         let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, length)) else {
             return fail("ValueError", "physical field name is not UTF-8");
         };
-        instance_field_by_name(instance, name)
+        instance_field_by_name(instance, name, std::ptr::null_mut())
+    }
+}
+
+/// A named reference field read from a compiled site of unproven receiver
+/// class. Records the field's slot for the receiver's layout in the site's
+/// cache, which the site probes before calling here again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_instance_field_name_cached(
+    instance: Value,
+    name: *const u8,
+    length: usize,
+    cache: *mut AttrCache,
+) -> Value {
+    unsafe {
+        let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, length)) else {
+            return fail("ValueError", "physical field name is not UTF-8");
+        };
+        instance_field_by_name(instance, name, cache)
     }
 }
 
@@ -4081,16 +4100,22 @@ pub unsafe extern "C" fn mule_set_instance_field(instance: Value, attribute: Val
         let Some(attribute) = text_argument(attribute) else {
             return std::ptr::null_mut();
         };
-        set_instance_field_by_name(instance, &attribute, value)
+        set_instance_field_by_name(instance, &attribute, value, std::ptr::null_mut())
     }
 }
 
-unsafe fn set_instance_field_by_name(instance: Value, attribute: &str, value: Value) -> Value {
+unsafe fn set_instance_field_by_name(
+    instance: Value,
+    attribute: &str,
+    value: Value,
+    cache: *mut AttrCache,
+) -> Value {
     unsafe {
         if let Some((layout, true, _)) = layout(instance) {
             if let (Some(index), Data::Instance { fields, .. }) =
                 (layout.field_lookup.get(attribute), &mut (*instance).data)
             {
+                store_cached(layout, cache, (*index << SHIFT) | FIELD);
                 let old = fields[*index];
                 fields[*index] = object::retain(value);
                 object::release(old);
@@ -4108,7 +4133,24 @@ pub unsafe extern "C" fn mule_set_instance_field_name(instance: Value, name: *co
         let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, length)) else {
             return fail("ValueError", "physical field name is not UTF-8");
         };
-        set_instance_field_by_name(instance, name, value)
+        set_instance_field_by_name(instance, name, value, std::ptr::null_mut())
+    }
+}
+
+/// The write counterpart of `mule_instance_field_name_cached`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_set_instance_field_name_cached(
+    instance: Value,
+    name: *const u8,
+    length: usize,
+    value: Value,
+    cache: *mut AttrCache,
+) -> Value {
+    unsafe {
+        let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, length)) else {
+            return fail("ValueError", "physical field name is not UTF-8");
+        };
+        set_instance_field_by_name(instance, name, value, cache)
     }
 }
 

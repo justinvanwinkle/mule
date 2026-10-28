@@ -2261,6 +2261,53 @@ def _physical_name_call(gen, receiver, plan, value=None):
     return gen.operation(f"call ptr @{function}({arguments})")
 
 
+def _cached_physical_name_field(gen, receiver, plan, value=None):
+    """A named physical field on a receiver of unproven class, through the
+    site's attribute cache: the cache maps the receiver's class layout to the
+    field's slot, so only the first receiver of each class pays the by-name
+    lookup (the slot-access caches SBCL's PCL keeps per call site). A class
+    with an instance dictionary, an epoch change, or an unbound field takes
+    the runtime path, which fills the cache or raises."""
+    cache = gen.module.attribute_cache()
+    site = _AttributeSite(gen, receiver, cache, ATTR_FIELD)
+    slot = _attribute_slot(gen, receiver, site.encoded, None)
+    arguments = (
+        f"ptr {receiver}, ptr {gen.module.text(plan.name)}, "
+        f"i64 {len(plan.name.encode('utf-8'))}"
+    )
+    if value is None:
+        field = gen.operation(f"load ptr, ptr {slot}")
+        unset = gen.operation(f"icmp eq ptr {field}, null")
+        loaded = gen.fresh("field.cached")[1:]
+        gen.line(f"br i1 {unset}, label %{site.slow}, label %{loaded}")
+        gen.lines.append(f"{loaded}:")
+        gen.line(f"call ptr @mule.fast.retain(ptr {field})")
+        gen.line(f"br label %{site.join}")
+        gen.lines.append(f"{site.slow}:")
+        slow = gen.operation(
+            f"call ptr @mule_instance_field_name_cached({arguments}, ptr {cache})"
+        )
+        gen.line(f"br label %{site.join}")
+        gen.lines.append(f"{site.join}:")
+        return gen.operation(f"phi ptr [{field}, %{loaded}], [{slow}, %{site.slow}]")
+    old = gen.operation(f"load ptr, ptr {slot}")
+    retained = gen.retain(value)
+    gen.line(f"store ptr {retained}, ptr {slot}")
+    gen.release(old)
+    stored = gen.fresh("field.stored")[1:]
+    gen.line(f"br label %{stored}")
+    gen.lines.append(f"{stored}:")
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.slow}:")
+    slow = gen.operation(
+        f"call ptr @mule_set_instance_field_name_cached({arguments}, "
+        f"ptr {value}, ptr {cache})"
+    )
+    gen.line(f"br label %{site.join}")
+    gen.lines.append(f"{site.join}:")
+    return gen.operation(f"phi ptr [@mule.none, %{stored}], [{slow}, %{site.slow}]")
+
+
 def _guarded_physical_field(gen, receiver, plan, value=None):
     actual = gen.operation(f"call i64 @mule_reference_layout_id(ptr {receiver})")
     matches = "false"
@@ -2301,7 +2348,7 @@ def _emit_planned_physical(gen, vop, *, write=False, guarded=False):
     result = (
         _guarded_physical_field(gen, receiver, plan, value)
         if guarded
-        else _physical_name_call(gen, receiver, plan, value)
+        else _cached_physical_name_field(gen, receiver, plan, value)
     )
     gen.publish(vop.results[0], result)
     for argument in values:
@@ -3246,6 +3293,8 @@ _BORROWED_PROTOCOL_NAMES = frozenset(
         "set_remove",
         "set_contains",
         "set_not_contains",
+        "text_contains",
+        "text_not_contains",
         "set_and",
         "set_or",
         "set_sub",

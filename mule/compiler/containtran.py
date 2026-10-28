@@ -15,6 +15,7 @@ from mule import ast
 from . import fndb
 from .constraint import constant_type
 from .ctype import (
+    TEXT_TYPE,
     BytesType,
     IntegerType,
     PythonIntegerType,
@@ -490,6 +491,11 @@ def _transform_compare_in(node: Combination) -> bool:
                 node, fndb.PROTOCOLS["set_contains"], [right_lvar, left_lvar]
             )
             return True
+        if _is_text_containment(left_lvar, right_type):
+            retarget_known_combination(
+                node, fndb.PROTOCOLS["text_contains"], [right_lvar, left_lvar]
+            )
+            return True
     return _transform_small_containment(
         node,
         empty_result=False,
@@ -512,6 +518,11 @@ def _transform_compare_not_in(node: Combination) -> bool:
                 node, fndb.PROTOCOLS["set_not_contains"], [right_lvar, left_lvar]
             )
             return True
+        if _is_text_containment(left_lvar, right_type):
+            retarget_known_combination(
+                node, fndb.PROTOCOLS["text_not_contains"], [right_lvar, left_lvar]
+            )
+            return True
     return _transform_small_containment(
         node,
         empty_result=True,
@@ -531,6 +542,13 @@ class _IsContainmentConsumer(NodeVisitor):
 
 
 _IS_CONTAINMENT_CONSUMER = _IsContainmentConsumer()
+
+
+def _is_text_containment(item: Lvar, container_type: ValueType) -> bool:
+    """Whether ``item in container`` is a substring search: both operands are
+    exact ``str``, so ``str.__contains__`` cannot be overridden and cannot
+    raise for the operand type."""
+    return container_type.fits_text(TEXT_TYPE) and lvar_type(item).fits_text(TEXT_TYPE)
 
 
 @deftransform("%build_tuple")

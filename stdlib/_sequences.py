@@ -23,7 +23,7 @@ from _object import _bytes_special
 from _object import _index_integer
 from _mule_native import text_from_codepoints
 from _mule_native import typed_value
-from _str import TextStorage, ascii, decode, format, ord, repr
+from _str import TextStorage, ascii, decode, find_in, format, ord, repr
 from _str import str as _make_str
 from _str import _MISSING as _CODEC_ERRORS_MISSING
 from _attributes import delattr, getattr, hasattr, setattr
@@ -3939,6 +3939,15 @@ def contains(container, item):
 
 def not_contains(container, item):
     return not contains(container, item)
+
+
+def text_contains(text, item):
+    """``item in text`` with both operands proven exact ``str``."""
+    return find_in(text, item, 0, _text_length(text)) >= 0
+
+
+def text_not_contains(text, item):
+    return find_in(text, item, 0, _text_length(text)) < 0
 
 
 def next_item(value):

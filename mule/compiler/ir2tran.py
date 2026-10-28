@@ -167,6 +167,8 @@ _BORROWING_VOPS = frozenset(
         "protocol-set_remove",
         "protocol-set_contains",
         "protocol-set_not_contains",
+        "protocol-text_contains",
+        "protocol-text_not_contains",
         "protocol-set_and",
         "protocol-set_or",
         "protocol-set_sub",

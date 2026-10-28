@@ -2796,48 +2796,216 @@ class TextIOWrapper(TextIOBase):
             dealloc_warn(source)
 
 
-class StringIO(TextIOWrapper):
+class StringIO(TextIOBase):
     """Text I/O implementation using an in-memory buffer.
 
     The initial_value argument sets the value of object.  The newline
     argument is like the one of TextIOWrapper's constructor.
     """
 
-    def __init__(self, initial_value="", newline="\n"):
-        super(StringIO, self).__init__(BytesIO(),
-                                       encoding="utf-8",
-                                       errors="surrogatepass",
-                                       newline=newline)
-        # Issue #5645: make universal newlines semantics the same as in the
-        # C version, even under Windows.
-        if newline is None:
-            self._writetranslate = False
-        if initial_value is not None:
-            if not isinstance(initial_value, str):
-                raise TypeError("initial_value must be str or None, not {0}"
-                                .format(type(initial_value).__name__))
-            self.write(initial_value)
-            self.seek(0)
+    # The text is the concatenation of ``_chunks``. Writes at the end of the
+    # stream append a chunk, as CPython's accumulating state appends to its
+    # writer (Modules/_io/stringio.c); any other access first joins the
+    # chunks into one string. Positions and sizes count code points.
 
-    def getvalue(self):
-        self.flush()
-        decoder = self._decoder or self._get_decoder()
-        old_state = decoder.getstate()
-        decoder.reset()
-        try:
-            return decoder.decode(self.buffer.getvalue(), final=True)
-        finally:
-            decoder.setstate(old_state)
+    def __init__(self, initial_value="", newline="\n"):
+        if newline is not None and not isinstance(newline, str):
+            raise TypeError("newline must be str or None, not %s"
+                            % type(newline).__name__)
+        if newline not in (None, "", "\n", "\r", "\r\n"):
+            raise ValueError("illegal newline value: %r" % (newline,))
+        if initial_value is not None and not isinstance(initial_value, str):
+            raise TypeError("initial_value must be str or None, not {0}"
+                            .format(type(initial_value).__name__))
+        self._readnl = newline
+        self._readuniversal = newline is None or newline == ""
+        self._readtranslate = newline is None
+        # Translating to "\n" is a no-op, so only a carriage-return newline
+        # rewrites written text.
+        self._writenl = newline if newline and newline[0] == "\r" else None
+        if self._readuniversal:
+            self._decoder = IncrementalNewlineDecoder(None, self._readtranslate)
+        else:
+            self._decoder = None
+        self._chunks = []
+        self._size = 0
+        self._pos = 0
+        self._stringio_closed = False
+        if initial_value:
+            self._write_text(initial_value)
+            self._pos = 0
+
+    def _check_closed(self):
+        if self._stringio_closed:
+            raise ValueError("I/O operation on closed file")
+
+    def _value(self):
+        chunks = self._chunks
+        if len(chunks) == 1:
+            return chunks[0]
+        value = "".join(chunks)
+        self._chunks = [value] if value else []
+        return value
+
+    def _write_text(self, s):
+        if self._decoder is not None:
+            s = self._decoder.decode(s, final=True)
+        if self._writenl is not None:
+            s = s.replace("\n", self._writenl)
+        length = len(s)
+        if length == 0:
+            return
+        pos = self._pos
+        size = self._size
+        if pos == size:
+            self._chunks.append(s)
+        else:
+            value = self._value()
+            if pos > size:
+                # An overseek pads the gap with NUL characters.
+                value = value + "\0" * (pos - size)
+            value = value[:pos] + s + value[pos + length:]
+            self._chunks = [value]
+        self._pos = pos + length
+        if self._size < self._pos:
+            self._size = self._pos
 
     def write(self, s):
-        if self._snapshot is not None:
-            self.seek(self.tell())
-        return super().write(s)
+        if not isinstance(s, str):
+            raise TypeError("string argument expected, got '%s'"
+                            % type(s).__name__)
+        self._check_closed()
+        length = len(s)
+        if length > 0:
+            self._write_text(s)
+        return length
 
-    def __repr__(self):
-        # TextIOWrapper tells the encoding in its repr. In StringIO,
-        # that's an implementation detail.
-        return object.__repr__(self)
+    def getvalue(self):
+        self._check_closed()
+        return self._value()
+
+    def read(self, size=-1):
+        self._check_closed()
+        size = _optional_size(size)
+        available = self._size - self._pos
+        if size < 0 or size > available:
+            size = available if available > 0 else 0
+        if size == 0:
+            return ""
+        start = self._pos
+        self._pos = start + size
+        value = self._value()
+        if start == 0 and size == len(value):
+            return value
+        return value[start:start + size]
+
+    def _readline(self, limit):
+        start = self._pos
+        if start >= self._size:
+            return ""
+        available = self._size - start
+        if limit < 0 or limit > available:
+            limit = available
+        end = start + limit
+        value = self._value()
+        if self._readtranslate:
+            found = value.find("\n", start, end)
+            stop = end if found < 0 else found + 1
+        elif self._readuniversal:
+            lf = value.find("\n", start, end)
+            cr = value.find("\r", start, end)
+            if cr < 0 or (0 <= lf < cr):
+                stop = end if lf < 0 else lf + 1
+            elif cr + 1 < end and value[cr + 1] == "\n":
+                stop = cr + 2
+            else:
+                stop = cr + 1
+        else:
+            found = value.find(self._readnl, start, end)
+            stop = end if found < 0 else found + len(self._readnl)
+        self._pos = stop
+        return value[start:stop]
+
+    def readline(self, size=-1):
+        self._check_closed()
+        return self._readline(_optional_size(size))
+
+    def __next__(self):
+        self._check_closed()
+        if type(self) is StringIO:
+            line = self._readline(-1)
+        else:
+            line = self.readline()
+            if not isinstance(line, str):
+                raise OSError("readline() should have returned a str object, "
+                              "not '%s'" % type(line).__name__)
+        if not line:
+            raise StopIteration
+        return line
+
+    def tell(self):
+        self._check_closed()
+        return self._pos
+
+    def seek(self, pos, whence=0):
+        self._check_closed()
+        pos = _index(pos)
+        whence = _index(whence)
+        if whence != 0 and whence != 1 and whence != 2:
+            raise ValueError("Invalid whence (%d, should be 0, 1 or 2)" % whence)
+        if pos < 0 and whence == 0:
+            raise ValueError("Negative seek position %d" % pos)
+        if whence != 0 and pos != 0:
+            raise OSError("Can't do nonzero cur-relative seeks")
+        if whence == 1:
+            pos = self._pos
+        elif whence == 2:
+            pos = self._size
+        self._pos = pos
+        return pos
+
+    def truncate(self, pos=None):
+        self._check_closed()
+        size = self._pos if pos is None else _index(pos)
+        if size < 0:
+            raise ValueError("Negative size value %d" % size)
+        if size < self._size:
+            value = self._value()[:size]
+            self._chunks = [value] if value else []
+            self._size = size
+        return size
+
+    def readable(self):
+        self._check_closed()
+        return True
+
+    def writable(self):
+        self._check_closed()
+        return True
+
+    def seekable(self):
+        self._check_closed()
+        return True
+
+    def close(self):
+        self._stringio_closed = True
+        self._chunks = []
+
+    @property
+    def closed(self):
+        return self._stringio_closed
+
+    @property
+    def line_buffering(self):
+        self._check_closed()
+        return False
+
+    @property
+    def newlines(self):
+        self._check_closed()
+        if self._decoder is None:
+            return None
+        return self._decoder.newlines
 
     @property
     def errors(self):
@@ -2849,4 +3017,64 @@ class StringIO(TextIOWrapper):
 
     def detach(self):
         # This doesn't make sense on StringIO.
-        self._unsupported("detach")
+        raise UnsupportedOperation("detach")
+
+    def __getstate__(self):
+        self._check_closed()
+        state = getattr(self, "__dict__", None)
+        if state is not None:
+            state = dict(state)
+            for name in _STRINGIO_FIELDS:
+                state.pop(name, None)
+            if not state:
+                state = None
+        return (self.getvalue(), self._readnl, self._pos, state)
+
+    def __setstate__(self, state):
+        if not isinstance(state, tuple) or len(state) < 4:
+            raise TypeError("%s.__setstate__ argument should be 4-tuple, got %s"
+                            % (type(self).__name__, type(state).__name__))
+        value, newline, pos, extra = state[0], state[1], state[2], state[3]
+        self.__init__(None, newline)
+        if value is not None:
+            if not isinstance(value, str):
+                raise TypeError("initial_value must be str or None, not %s"
+                                % type(value).__name__)
+            # The pickled value is already translated: restore it verbatim.
+            self._chunks = [value] if value else []
+            self._size = len(value)
+        if not isinstance(pos, int):
+            raise TypeError("third item of state must be an integer, got %s"
+                            % type(pos).__name__)
+        if pos < 0:
+            raise ValueError("position value cannot be negative")
+        self._pos = pos
+        if extra is not None:
+            if not isinstance(extra, dict):
+                raise TypeError("fourth item of state should be a dict, got a %s"
+                                % type(extra).__name__)
+            self.__dict__.update(extra)
+
+
+_STRINGIO_FIELDS = ("_readnl", "_readuniversal", "_readtranslate", "_writenl",
+                    "_decoder", "_chunks", "_size", "_pos", "_stringio_closed")
+
+
+def _optional_size(size):
+    if size is None:
+        return -1
+    try:
+        size_index = size.__index__
+    except AttributeError:
+        raise TypeError(f"argument should be integer or None, not "
+                        f"'{type(size).__name__}'")
+    return size_index()
+
+
+def _index(value):
+    try:
+        value_index = value.__index__
+    except AttributeError:
+        raise TypeError(f"'{type(value).__name__}' object cannot be "
+                        f"interpreted as an integer")
+    return value_index()

@@ -407,6 +407,10 @@ HASATTR = defknown(
 # emitted as known calls: without a constant name the call stays generic.
 GETATTR_BUILTIN = defknown("getattr", "call", "unsafe")
 HASATTR_BUILTIN = defknown("hasattr", "call", "unsafe")
+# ``type`` itself, so a one-argument call to an unmutated global ``type``
+# reaches the class-of transform in ``protocols``. Class creation
+# (``type(name, bases, namespace)``) stays a generic call.
+TYPE_BUILTIN = defknown("type", "call", "unsafe")
 
 
 def _isinstance_answer(node) -> ValueType | None:
@@ -726,6 +730,8 @@ _PROTOCOL_DERIVE_TYPES = {
     "set_remove": lambda node: NONE_TYPE,
     "set_contains": lambda node: BOOLEAN,
     "set_not_contains": lambda node: BOOLEAN,
+    "text_contains": lambda node: BOOLEAN,
+    "text_not_contains": lambda node: BOOLEAN,
     "set_and": lambda node: (
         None
         if _DERIVATION_MODE.active
@@ -771,6 +777,8 @@ _NON_INTEGER_FIRST_PROTOCOLS = frozenset(
         "set_or",
         "set_sub",
         "set_xor",
+        "text_contains",
+        "text_not_contains",
     }
 )
 _INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
@@ -788,6 +796,8 @@ _PROTOCOL_ARGUMENT_TYPES = {
     "set_remove": (SET_TYPE, UNKNOWN),
     "set_contains": (SET_TYPE, UNKNOWN),
     "set_not_contains": (SET_TYPE, UNKNOWN),
+    "text_contains": (TEXT_TYPE, TEXT_TYPE),
+    "text_not_contains": (TEXT_TYPE, TEXT_TYPE),
     "set_and": (SET_TYPE, SET_TYPE),
     "set_or": (SET_TYPE, SET_TYPE),
     "set_sub": (SET_TYPE, SET_TYPE),
@@ -856,6 +866,8 @@ PROTOCOLS = {
         "set_or",
         "set_sub",
         "set_xor",
+        "text_contains",
+        "text_not_contains",
         "iterate",
         "next_item",
         "getitem",

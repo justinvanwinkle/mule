@@ -219,7 +219,9 @@ declare ptr @mule_instance_field(ptr, ptr)
 declare ptr @mule_set_instance_field(ptr, ptr, ptr)
 declare void @mule_instance_field_missing(ptr, ptr, i64) cold
 declare ptr @mule_instance_field_name(ptr, ptr, i64)
+declare ptr @mule_instance_field_name_cached(ptr, ptr, i64, ptr)
 declare ptr @mule_set_instance_field_name(ptr, ptr, i64, ptr)
+declare ptr @mule_set_instance_field_name_cached(ptr, ptr, i64, ptr, ptr)
 declare i64 @mule_instance_layout_id(ptr) nounwind readonly
 declare i64 @mule_reference_layout_id(ptr) nounwind readonly
 declare i32 @mule_set_attr_cached(ptr, ptr, ptr, ptr)
@@ -541,6 +543,8 @@ _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
         "set_remove",
         "set_contains",
         "set_not_contains",
+        "text_contains",
+        "text_not_contains",
         "set_and",
         "set_or",
         "set_sub",

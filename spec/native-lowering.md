@@ -244,8 +244,15 @@ An unconditional constant-index operation requires an unmodified parameter of
 a runtime-guarded entry with matching reference-layout metadata. An inferred
 `InstanceType` from a mutable field is only a prediction, not that proof.
 Predicted layouts receive an actual reference-layout guard and a physical-name
-fallback. Other receivers use the UTF-8-name runtime ABI without constructing
-a text object for the constant name. Physical-call entry selection retains
+fallback. Other receivers probe a per-site attribute cache keyed by class
+layout and attribute epoch, then read or write the cached slot index inline.
+A miss, an unset slot, or a receiver with an instance dictionary calls the
+UTF-8-name runtime ABI (`mule_instance_field_name_cached` and
+`mule_set_instance_field_name_cached`) without constructing a text object for
+the constant name; that call records the slot for the receiver's layout or
+raises. The compiled dict and set table code, whose receiver is any table
+class, therefore pays the by-name lookup once per class per site rather than
+on every access. Physical-call entry selection retains
 actual argument guards even when predicted dispatch facts match.
 IR1 retains useful argument narrowing through known calls even when their
 general return remains unknown. Call planning preserves guarded layout

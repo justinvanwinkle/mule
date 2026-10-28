@@ -82,18 +82,22 @@ def percent_decimal(pattern, values):
     consumed = 0
     index = 0
     size = _text_length(pattern)
-    result = ""
+    # Literal runs are copied as slices and every piece is joined once at the
+    # end, so the work is linear in the pattern and the result.
+    pieces = []
     while index < size:
-        character = _text_character(pattern, index)
-        index += 1
-        if character != "%":
-            result += character
-            continue
+        percent = pattern.find("%", index)
+        if percent < 0:
+            pieces.append(_text_slice(pattern, index, size))
+            break
+        if percent > index:
+            pieces.append(_text_slice(pattern, index, percent))
+        index = percent + 1
         if index == size:
             raise ValueError("incomplete format")
         if _text_character(pattern, index) == "%":
             index += 1
-            result += "%"
+            pieces.append("%")
             continue
         key = None
         if _text_character(pattern, index) == "(":
@@ -102,10 +106,7 @@ def percent_decimal(pattern, values):
                 close += 1
             if close == size:
                 raise ValueError("incomplete format key")
-            key = ""
-            while index + 1 < close:
-                index += 1
-                key += _text_character(pattern, index)
+            key = _text_slice(pattern, index + 1, close)
             index = close + 1
             if index == size:
                 raise ValueError("incomplete format")
@@ -269,21 +270,18 @@ def percent_decimal(pattern, values):
                 sign = " "
         text = sign + prefix + body
         if _text_length(text) < width:
-            pad = width - _text_length(text)
-            padding = ""
-            while pad > 0:
-                padding += "0" if zero_pad and numeric and not left else " "
-                pad -= 1
+            fill = "0" if zero_pad and numeric and not left else " "
+            padding = fill * (width - _text_length(text))
             if left:
                 text = text + padding
             elif zero_pad and numeric:
                 text = sign + prefix + padding + body
             else:
                 text = padding + text
-        result += text
+        pieces.append(text)
     if consumed != count and not _mapping_operand(original):
         raise TypeError("not all arguments converted during string formatting")
-    return result
+    return "".join(pieces)
 
 
 def _mapping_operand(value):
