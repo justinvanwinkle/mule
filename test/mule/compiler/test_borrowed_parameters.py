@@ -61,11 +61,14 @@ def invoke(value):
 
 
 def test_temporary_argument_keeps_owning_entry_and_mixed_failure_releases_owner():
+    # Debug 2 keeps the mixed entry fallible without requiring checks on leaves.
     llvm = emit_llvm(
-        SOURCE
+        "from mule_types import optimize\n"
+        + SOURCE
         + """
 def temporary():
     return is_none([])
+@optimize(debug=2)
 def choose(owner, token):
     return token if owner is None else False
 def mixed(value):
@@ -81,7 +84,9 @@ def mixed(value):
     owning = next(
         body for body in helpers if 'call ptr @"mule_fn_is_none.body"' in body
     )
-    assert "call void @mule.fast.release(ptr %arg.0)" in owning
+    assert "@mule_enter_frame" not in owning
+    owning_body = function_body(llvm, '"mule_fn_is_none.body"')
+    assert "call void @mule.fast.release" in owning_body
     mixed = next(
         body for body in helpers if 'call ptr @"mule_fn_choose.borrow.' in body
     )
