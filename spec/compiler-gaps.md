@@ -1,40 +1,48 @@
 # Remaining SBCL compiler and IR1 transform gaps
 
-Status: **implemented** for declared parameter contracts and sound container
-element propagation (Section 0A), typed `dict`/`set` storage and fixnum hash
-clipping (Section 0B), `InstanceType(cls)` method specialization and return
-contracts (Section 0C), borrowed/unboxed container element reads (Section 0D),
-general-context flow-type feedback into IR1 transforms, unified
-constant-lvar/dead-operand helpers, and monotonic `derive_node_type`
-(Section 1A), entry-context IR1 specialization / closed-call parameter promotion
-(Section 1B), local closure extent / fixed aggregate scalar replacement
+Status: **implemented** for builtin-type conformance coverage across all 254
+conformance programs (`conformance/gaps.toml` has 0 recorded gaps), declared
+parameter contracts and sound container element propagation (Section 0A), typed
+`dict`/`set` storage and fixnum hash clipping (Section 0B), `InstanceType(cls)`
+method specialization and return contracts (Section 0C), borrowed/unboxed
+container element reads (Section 0D), general-context flow-type feedback into
+IR1 transforms, unified constant-lvar/dead-operand helpers, and monotonic
+`derive_node_type` (Section 1A), entry-context IR1 specialization / closed-call
+parameter promotion / worker-local derivation mode (Section 1B), fixnum
+division/modulo, shift intervals, 2-arg `min`/`max`, and `math.sqrt`
+(parts of Section 1D), local closure extent / fixed aggregate scalar replacement
 (Section 3), loop optimizations / loop-invariant code motion / induction-variable
-range and relational constraint inference (Section 4), and identity-aware float
+range and relational constraint inference (Section 4), identity-aware float
 storage and coercions, flow-proven fixnum locals, numeric internal calling
-conventions, LLVM-visible private leaf boxes (parts of Section 5),
-module-level constant folding via write-set tracking (Section 6A), general
-tuple delivery with per-store liveness (Section 6G), and fixed-slot access and
-singleton-list fill (Section 6J); **proposed** for Sections
-1C–2, the rest of Section 5, and the remaining Section 6 replacements of
-benchmark-specific special cases with general SBCL mechanisms.
+conventions, and LLVM-visible private leaf boxes (parts of Section 5),
+module-level constant folding via write-set tracking (Section 6A), call-site
+argument propagation (`propagate-to-args`) and structural method-receiver typing
+(Section 6B), IR1 combination matching (`lvar_matches` / `splice_fun_args`) and
+slice-comparison/int-parse transforms (Section 6C), symbolic sequence-length
+constraints and dead-allocation flushing (Section 6E), general tuple delivery
+with per-store liveness (Section 6G), general fixed-slot layout access and
+singleton-list fill (Section 6J), and pre-representation calling-convention
+selection and inline Latin-1 string equality (Section 6L); **proposed** for
+Sections 1C, 2, the remaining items in Sections 1D and 5, Sections 6D, 6F, 6H,
+6I, 6K, and the remaining SBCL parity gaps identified in the 24-workload suite
+review (Sections 6M–6Q).
 
 This document records the remaining architectural and transform gaps between
-SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`),
-together with the SBCL source references, Python semantic adaptations, and
-staged implementation plan for each area.
+SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`,
+`stdlib/`, `mule/runtime/`), together with the SBCL source references, Python
+semantic adaptations, and staged implementation plan for each area.
 
-## Builtin-type conformance coverage (partially implemented)
+## Builtin-type conformance coverage (implemented)
 
-Status: initial focused conformance programs for `object`, `type`, `bool`, `int`,
-`float`, `complex`, `str`, `bytes`, `bytearray`, `memoryview`, `list`, `tuple`,
-`dict` (including views), `set`, `frozenset`, `range`, `slice`, and `for`-loop
-iteration are in place and recorded in `conformance/gaps.toml`; full method-by-method
-CPython 3.14 parity and remaining runtime descriptor fixes remain open.
+Status: **implemented** across all 254 programs in `conformance/` (19 categories,
+`0` recorded gaps in `conformance/gaps.toml` as of commit `1c0cbcc`).
 
-The conformance suite contains builtin, container, and protocol programs, and now
-separates passing core type/descriptor/subclass cases from isolated runtime gaps:
+The conformance suite covers `object`, `type`, `bool`, `int`, `float`,
+`complex`, `str`, `bytes`, `bytearray`, `memoryview`, `list`, `tuple`, `dict`
+(including `dict_keys`, `dict_values`, `dict_items`), `set`, `frozenset`,
+`range`, `slice`, `for`-loop iteration, descriptors, and builtin subclassing:
 
-- **Passing focused conformance cases**:
+- **Passing core type, descriptor, and protocol suites**:
   - `conformance/control_flow/for_loops.py`: `for`-loop iteration over `list`,
     `tuple`, `str`, `bytes`, `bytearray`, `dict`, `dict.keys()`, `dict.values()`,
     `dict.items()`, `set`, `frozenset`, `range`, `enumerate`, `zip`, `reversed`,
@@ -47,88 +55,119 @@ separates passing core type/descriptor/subclass cases from isolated runtime gaps
     `object.__getattribute__`/`__setattr__`/`__delattr__`, `type.mro`,
     `type.__subclasses__`, `type.__getattribute__`/`__setattr__`/`__delattr__`,
     and receiver `TypeError`s.
-  - `conformance/builtins/range_slice_basics.py`: `range` and `slice`
-    constructors, `start`/`stop`/`step` attributes, `len(range)`, indexing,
-    slicing, membership, sequence slicing with explicit `slice` objects, and
-    error checks (`ValueError` on zero step, `IndexError` on out-of-range index,
-    `TypeError` on `hash(slice)`).
-  - `conformance/numbers/int_bool_descriptors.py`: `int` and `bool` constructors,
-    base parsing, `bit_length`, `to_bytes`/`from_bytes`, numeric properties,
-    explicit descriptor calls (`int.__int__`, `int.__index__`, `int.__float__`,
-    `int.__round__`, `int.__divmod__`, `int.__repr__`, `bool.__repr__`),
-    `int` subclass inheritance/overrides, and receiver `TypeError`s.
-  - `conformance/numbers/float_descriptors.py`: `float` constructors, arithmetic,
-    `is_integer`, `as_integer_ratio`, `hex`, numeric properties, explicit
-    descriptor calls (`float.__int__`, `float.__float__`, `float.__round__`,
-    `float.__divmod__`, `float.is_integer`, `float.as_integer_ratio`,
-    `float.hex`), `float` subclassing, and receiver `TypeError`s.
+  - `conformance/builtins/range_slice_basics.py` and
+    `conformance/builtins/range_objects.py`: `range` and `slice` constructors,
+    `start`/`stop`/`step` attributes, `len(range)`, indexing, slicing,
+    membership, `range.count`, `range.index`, `range.__eq__`, `range.__repr__`,
+    sequence slicing with explicit `slice` objects, and error checks
+    (`ValueError` on zero step, `IndexError` on out-of-range index, `TypeError`
+    on `hash(slice)`).
+  - `conformance/numbers/int_bool_descriptors.py` and
+    `conformance/numbers/int_methods.py`: `int` and `bool` constructors, base
+    parsing, `bit_length`, `bit_count`, `as_integer_ratio`, `is_integer`,
+    `to_bytes`/`from_bytes`, numeric properties, explicit descriptor calls
+    (`int.__int__`, `int.__index__`, `int.__float__`, `int.__round__`,
+    `int.__divmod__`, `int.__repr__`, `bool.__repr__`), `int` subclass
+    inheritance/overrides, and receiver `TypeError`s.
+  - `conformance/numbers/float_descriptors.py` and
+    `conformance/numbers/float_methods.py`: `float` constructors, arithmetic,
+    `is_integer`, `as_integer_ratio`, `hex`, `float.fromhex`, numeric properties,
+    explicit descriptor calls (`float.__int__`, `float.__float__`,
+    `float.__round__`, `float.__divmod__`, `float.is_integer`,
+    `float.as_integer_ratio`, `float.hex`), `float` subclassing, and receiver
+    `TypeError`s.
+  - `conformance/numbers/complex_descriptors.py`: `complex` construction,
+    `real`/`imag` descriptors, `conjugate`, CPython-matching `complex.__repr__`
+    formatting of integral float components, and receiver `TypeError` validation.
   - `conformance/strings/str_descriptors.py`: `str` constructors, indexing,
-    slicing, concatenation, repetition, comparisons, `in`, explicit descriptor
-    calls (`str.__len__`, `str.__getitem__`, `str.__contains__`, `str.upper`,
-    `str.lower`, `str.strip`, `str.split`, `str.join`, `str.replace`,
-    `str.startswith`, `str.endswith`, `str.find`, `str.count`, `str.encode`),
-    `str` subclass overrides vs base descriptor calls, and receiver `TypeError`s.
-  - `conformance/strings/bytes_bytearray_memoryview.py`: `bytes`, `bytearray`,
-    and `memoryview` constructors, indexing, slicing, methods, in-place
-    `bytearray` and writable `memoryview` mutation, subclassing, and `ValueError`
-    range checks.
+    slicing, concatenation, repetition, comparisons, `in`, `str.format_map`,
+    explicit descriptor calls (`str.__len__`, `str.__getitem__`,
+    `str.__contains__`, `str.upper`, `str.lower`, `str.strip`, `str.split`,
+    `str.join`, `str.replace`, `str.startswith`, `str.endswith`, `str.find`,
+    `str.count`, `str.encode`), `str` subclass overrides vs base descriptor
+    calls, and receiver `TypeError`s.
+  - `conformance/strings/bytes_bytearray_memoryview.py` and
+    `conformance/strings/bytes_bytearray_descriptors.py`: `bytes`, `bytearray`,
+    and `memoryview` constructors, indexing, slicing, `bytes.__len__`, ASCII case
+    methods (`upper`, `lower`), in-place `bytearray` and writable `memoryview`
+    mutation, subclassing, receiver `TypeError` checks, and `ValueError` range
+    checks.
   - `conformance/containers/list_tuple_descriptors.py`: `list` and `tuple`
-    constructors, indexing, slicing, methods, explicit base-descriptor calls
-    (`list.__len__`, `list.__getitem__`, `list.__setitem__`, `list.__delitem__`,
-    `list.append`, `list.extend`, `list.insert`, `list.pop`, `list.remove`,
-    `list.reverse`, `list.sort`, `list.count`, `list.index`, `list.copy`,
-    `list.clear`, `tuple.__len__`, `tuple.__getitem__`, `tuple.count`,
-    `tuple.index`), `list`/`tuple` subclass overrides vs base descriptor calls,
-    and receiver `TypeError`s.
-  - `conformance/containers/dict_set_descriptors.py`: `dict`, `dict_keys`,
-    `dict_values`, `dict_items`, `set`, and `frozenset` constructors, views,
-    set algebra, explicit descriptor calls, `dict` subclass `__missing__` and
-    `__getitem__` overrides vs `dict.__getitem__`, `set` subclassing, and
-    `KeyError`/unhashable `TypeError` checks.
-- **Isolated builtin-type conformance gaps recorded in `conformance/gaps.toml`**:
-  - `conformance/classes/builtin_subclass_len_override.py`: builtin `len(sub)` on
-    `list` and `str` subclasses currently takes the `mule_fast_len` storage fast
-    path instead of consulting a subclass `__len__` override (`sub.__len__()` and
-    `Base.__len__(sub)` already distinguish override vs storage length).
-  - `conformance/numbers/complex_descriptors.py`: `complex.__repr__` formats
-    integral float components with `.0` (`(3.0-4.0j)` instead of `(3-4j)`), and
-    `complex.conjugate(1.0)` raises `AttributeError` instead of `TypeError`.
-  - `conformance/strings/bytes_bytearray_descriptors.py`: `BytesStorage` (`bytes`)
-    does not yet expose `bytes.__len__` or ASCII case methods (`upper`, `lower`)
-    as class descriptors, and `bytes`/`bytearray` descriptors do not validate
-    receiver types with `TypeError`.
-  - `conformance/containers/dict_set_receiver_errors.py`: explicit `dict`, `set`,
-    and `frozenset` descriptor calls (`dict.__len__([])`, `set.add([], 1)`) raise
-    `AttributeError` on internal table fields instead of `TypeError` when given a
-    non-instance receiver.
-  - Broader method-completeness files (`conformance/numbers/int_methods.py`,
-    `conformance/numbers/float_methods.py`, `conformance/builtins/range_objects.py`,
-    `conformance/classes/builtin_subclasses.py`) remain recorded gaps for
-    `int.bit_count` / `int.as_integer_ratio` / `int.is_integer`, `float.fromhex`,
-    `range.count` / `range.index` / `range.__eq__` / `range.__repr__`, and
-    `str.format_map` / `tuple.__new__`.
+    constructors (including `tuple.__new__`), indexing, slicing, methods,
+    explicit base-descriptor calls (`list.__len__`, `list.__getitem__`,
+    `list.__setitem__`, `list.__delitem__`, `list.append`, `list.extend`,
+    `list.insert`, `list.pop`, `list.remove`, `list.reverse`, `list.sort`,
+    `list.count`, `list.index`, `list.copy`, `list.clear`, `tuple.__len__`,
+    `tuple.__getitem__`, `tuple.count`, `tuple.index`), `list`/`tuple` subclass
+    overrides vs base descriptor calls, and receiver `TypeError`s.
+  - `conformance/containers/dict_set_descriptors.py` and
+    `conformance/containers/dict_set_receiver_errors.py`: `dict`, `dict_keys`,
+    `dict_values`, `dict_items`, `set`, and `frozenset` constructors, views, set
+    algebra, explicit descriptor calls with receiver `TypeError` validation,
+    `dict` subclass `__missing__` and `__getitem__` overrides vs
+    `dict.__getitem__`, `set` subclassing, and `KeyError`/unhashable `TypeError`
+    checks.
+  - `conformance/classes/builtin_subclasses.py` and
+    `conformance/classes/builtin_subclass_len_override.py`: subclassing builtin
+    types and consulting subclass `__len__` overrides on `len(sub)` while
+    keeping exact-type `_storage_length` / `_text_length` fast paths on proven
+    exact builtin instances.
 
-Remaining coverage and implementation work:
+Ongoing maintenance contract:
 
-1. Expand method-by-method and operator-dunder conformance cases across remaining
-   builtin types against the Python 3.14 oracle.
-2. Fix the isolated runtime gaps above (`len()` on `list`/`str` subclasses,
-   `bytes.__len__` and ASCII case methods, receiver type validation on `complex` /
-   `bytes` / `bytearray` / `dict` / `set` / `frozenset` descriptors, `range`
-   methods/equality/repr, `int.bit_count`/`as_integer_ratio`/`is_integer`, and
-   `float.fromhex`).
-3. Keep cases focused so an unsupported feature cannot hide unrelated builtin
+1. Expand method-by-method and operator-dunder conformance cases across builtin
+   types and standard-library modules against the Python 3.14 oracle as new
+   surfaces are added.
+2. Keep cases focused so an unsupported feature cannot hide unrelated builtin
    coverage, and regenerate `conformance/gaps.toml` via
    `uv run python -m tools.record_conformance_gaps` whenever compiler or stdlib
    changes land.
 
-## 0. High-impact architectural parity gaps from the 14-workload suite audit (proposed)
+## 0. High-impact architectural parity gaps from the benchmark suite audit (implemented; follow-up gaps in Section 6)
 
-An audit of the compiled IR1, `locall` summaries, and `stdlib/_dict.py` across
-the 14 benchmark workloads ([performance.md](performance.md#suite-wide-benchmark-audit-and-root-cause-diagnosis-2026-10-22))
-showed that Mule's largest slowdowns relative to CPython and SBCL (`Mule / CPython`
-up to `2.97` and `Mule / SBCL` up to `7.95`) come from four fundamental
-departures from SBCL's compiler and runtime architecture:
+An initial audit of the compiled IR1, `locall` summaries, and `stdlib/_dict.py`
+across the original 14 benchmark workloads
+([performance.md](performance.md#suite-wide-benchmark-audit-and-root-cause-diagnosis-2026-10-22))
+showed that Mule's largest slowdowns relative to CPython and SBCL came from four
+departures from SBCL's compiler and runtime architecture (Sections 0A–0D below),
+all of which are now **implemented**.
+
+### Current 24-workload benchmark status (`docs/assets/results.json`, 2026-10-28, commit `b69344598`)
+
+With Sections 0A–0D, 1A–1B, 3, 4, 5 (parts), 6A–6C, 6E, 6G, 6J, and 6L in place
+(plus commit `9a8b4f8` eliminating `str.split()` list allocation in counted
+whitespace token loops), the expanded 24-workload suite (`Mule -O2` without LTO
+vs. CPython 3.15.0 and SBCL 2.6.4, median kernel seconds across 5 samples) breaks
+down into four groups:
+
+| Category | Workload | CPython 3.15.0 (s) | Mule `-O2` (s) | SBCL 2.6.4 (s) | Mule / CPython | Mule / SBCL | Primary status / remaining gap |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| **1. Faster than both CPython & SBCL (7)** | `float_nbody_typed` | 0.7176 | 0.0258 | 0.1782 | **0.04x** | **0.14x** | Unboxed `double` fields & loops (Sections 0C, 0D, 5) |
+| | `float_nbody` | 0.7330 | 0.0269 | 0.1787 | **0.04x** | **0.15x** | Inferred float fields & private leaf boxes (Sections 0C, 5) |
+| | `Richards` | 0.1705 | 0.0091 | 0.0177 | **0.05x** | **0.51x** | Fixed-slot layout access & method specialization (Sections 0C, 6J) |
+| | `Richards_typed` | 0.1711 | 0.0102 | 0.0178 | **0.06x** | **0.58x** | Declared class contracts & fixed-slot layout (Sections 0A, 6J) |
+| | `kv_record_parse` | 4.3168 | 1.6010 | 2.6374 | **0.37x** | **0.61x** | IR1 slice-compare & `%parse_int_slice` fusion (Section 6C) |
+| | `matrix_multiply` | 5.2116 | 0.1788 | 0.2709 | **0.03x** | **0.66x** | Nested list contracts, LICM, borrowed row locals (Sections 0A, 0D, 4) |
+| | `word_frequency` | 4.1490 | 2.9011 | 3.2838 | **0.70x** | **0.88x** | Typed `_Table` slots & fixnum hashes (Sections 0B, 6J); further sped up in `9a8b4f8` |
+| **2. Near SBCL parity & 4–25x faster than CPython (7)** | `numeric_sieve` | 0.0725 | 0.0029 | 0.0028 | **0.04x** | **1.03x** | Singleton `[1] * n` fill & unboxed fixnum loops (Sections 5, 6J) |
+| | `numeric_sieve_typed` | 0.0724 | 0.0033 | 0.0028 | **0.05x** | **1.19x** | Checked `int64` loop & list indexing |
+| | `interval_merging` | 0.0497 | 0.0058 | 0.0048 | **0.12x** | **1.21x** | Exact-tuple inline indexing & borrowed unpack (Section 0D) |
+| | `json_tokenizer` | 0.0680 | 0.0088 | 0.0070 | **0.13x** | **1.27x** | Remaining gap: IR2 codepoint peephole vs IR1 transform (Section 6D) |
+| | `topological_schedule` | 0.0258 | 0.0042 | 0.0022 | **0.16x** | **1.94x** | Remaining gap: `list.pop()` specialization & inner list iteration (Section 1C) |
+| | `text_pipeline_typed` | 0.0726 | 0.0169 | 0.0076 | **0.23x** | **2.21x** | Remaining gap: text content domain wiring & string method transforms (Sections 6D, 6I, 6P) |
+| | `text_pipeline` | 0.0736 | 0.0176 | 0.0076 | **0.24x** | **2.31x** | Same as `text_pipeline_typed` |
+| **3. Faster than CPython, trailing SBCL 5–12x (5)** | `bytes_codec` | 0.1032 | 0.0216 | 0.0027 | **0.21x** | **7.89x** | `bytearray` generic iterator protocol & C-ABI indexing calls (Sections 1C.5–6, 6P) |
+| | `closure_pipeline` | 4.1499 | 1.6020 | 0.2638 | **0.39x** | **6.07x** | Boxed heap `Cell` reads/writes for non-escaping mutable `nonlocal` fixnums (Section 6Q) |
+| | `binary_trees` | 0.1029 | 0.0432 | 0.0074 | **0.42x** | **5.83x** | Recursive `Node` allocation & refcount traffic vs SBCL bump-pointer GC |
+| | `dataclass_ast` | 0.0570 | 0.0257 | 0.0022 | **0.45x** | **11.67x** | `match` class-pattern `isinstance(x, (Cls,))` lacks branch narrowing in `constraint.py` (Section 6O) |
+| | `exception_validation` | 4.3184 | 3.1574 | 0.6050 | **0.73x** | **5.22x** | Exception instance + `_args` tuple allocation & `super().__init__` dispatch on hot raise path (Section 6O) |
+| **4. Slower than both CPython & SBCL (7)** | `set_operations` | 0.1184 | 1.4211 | 0.1975 | **12.00x** | **7.20x** | No `SetType` in `ctype.py`, 4-list `_Table` layout with unused `_values`, `try/except TypeError` in `_set_lookup`/`_set_remove`, `_table_live` list allocation (Section 6M) |
+| | `generator_pipeline` | 0.1028 | 0.3134 | 0.0064 | **3.05x** | **49.23x** | Stackful coroutine switch + boxed locals per `yield`/`next` instead of IR1 generator fusion / state machine (Section 6N) |
+| | `log_aggregation` | 0.0572 | 0.1389 | 0.0213 | **2.43x** | **6.53x** | Unspecialized `str.rsplit(..., 1)` + list allocation, `set.add`, and `dict` composite-key/nested updates (Sections 6M, 6P) |
+| | `lru_simulation` | 4.0235 | 6.7929 | 1.7226 | **1.69x** | **3.94x** | Repeated `dict` probe loops (`in`, `[]`, `del`, `[]=`) & 4-list `_Table` indirection (Section 6M) |
+| | `http_routing` | 0.0506 | 0.0707 | 0.0537 | **1.40x** | **1.32x** | Chained `str + str` allocations, `name.lower() == "..."` allocation, `int(value.strip())` (Section 6P) |
+| | `expression_tree` | 4.3744 | 5.8504 | 1.5239 | **1.34x** | **3.84x** | Polymorphic `Expr.eval_node` dispatch & 3–4 `dict` probes per `LetExpr` node (Sections 6M, 6O) |
+| | `graph_paths` | 0.0322 | 0.0427 | 0.0122 | **1.33x** | **3.51x** | `dict[int, list[tuple[int, int]]]` inner unpacking & heap rebuild loops (Sections 6K, 6M) |
 
 ### 0A. Declared parameter contracts and nested container/class annotations (`ir1tran.py`, `annotation_types.py`, `locall.py`, `constraint.py`, `codegen.py`, `vops.py`) (implemented)
 
@@ -369,102 +408,80 @@ overlapping scopes with out-of-order exits and restoration after both workers
 finish. These checks establish state isolation, not the cause of a particular
 suite failure or performance measurement.
 
-### 1C. Sequence, string, and container transforms (`seqtran.py` vs `seqtran.lisp`) (proposed)
+### 1C. Sequence, string, and container transforms (`seqtran.py` vs `seqtran.lisp`) (partially implemented)
 
 - **SBCL reference**: `src/compiler/seqtran.lisp` (3,371 lines in SBCL vs
   `mule/compiler/seqtran.py` and `mule/compiler/containtran.py`).
+- **Implemented**:
+  1. **IR1 slice-comparison, integer-slice parsing, constant-slice folding,
+     empty-container truthiness, and 0-arg `str.split()` loop fusion
+     (`seqtran.py`, `srctran.py`)**:
+     - `str[a:b] == target` (`%text_slice_compare` / `%text_slice2_compare`) and
+       `int(str[a:b])` (`%parse_int_text` / `%parse_int_slice`) lower in IR1 via
+       `@deftransform`s and `splice_fun_args` in `seqtran.py` and `srctran.py`,
+       with multi-use local slice forwarding in `escape.py` and `scalar.py`.
+     - Constant `%getslice` on constant `str`, `bytes`, and `tuple` folds in IR1,
+       and truthiness tests on proven empty or non-empty containers fold in
+       `seqtran.py`.
+     - `for tok in s.split():` on proven `TEXT_TYPE` with 0 arguments lowers in
+       IR1 (`seqtran.py`, commit `9a8b4f8`) to a counted index loop using
+       `_text_split_whitespace_next` and `_text_slice` without allocating an
+       intermediate `list[str]`.
+  2. **`bytes` and `bytearray` type representation, element-type derivation,
+     and physical indexing/mutation VOPs (`array-tran.lisp`)**:
+     - `BytesType` and `ByteArrayType` (`ctype.py`) implement `dispatch_domain()`
+       returning `BYTES_TYPE` and `BYTEARRAY_TYPE` (unless `may_be_unbound`), and
+       `locall.py` includes `BYTES_TYPE` and `BYTEARRAY_TYPE` when seeding
+       `observed` entry contexts, preserving `IntegerType(0, 255)` `getitem_type`
+       and `iterate_type`.
+     - `seqtran.py` lowers `len(bytearray)` to `_storage_length`
+       (`visit_ByteArrayType`), and `vops.py` / `buffers.rs` / `sequences.rs`
+       specialize `getitem(BYTES_TYPE | BYTEARRAY_TYPE, FIXNUM)`
+       (`@mule_bytes_getitem`, `@mule_bytearray_getitem_fast`),
+       `setitem(BYTEARRAY_TYPE, FIXNUM, FIXNUM)` (`@mule_bytearray_setitem_fast`),
+       and `bytearray.append` (`@mule_bytearray_append_fast`).
+  3. **IR1 sequence iteration specialization for `list`, `tuple`, `str`, `bytes`,
+     and `dict.items()` (`seqtran.py`, `ir1tran_loops.py`)**:
+     - `seqtran.py` transforms `%sequence_available` iteration over proven exact
+       `list`, `tuple`, `str`, `bytes`, and `dict.items()` into counted/indexed
+       loops re-reading mutable list length on each step.
 - **Remaining gaps and proposed transforms**:
-  1. **IR1-level character-comparison and text-method transforms**: `str[a:b] == target`
-     (`%text_slice_compare` / `%text_slice2_compare`) and `int(str[a:b])`
-     (`%parse_int_text` / `%parse_int_slice`) are now lowered in IR1 via
-     `@deftransform`s and `splice_fun_args` in `seqtran.py` and `srctran.py`,
-     with multi-use local slice forwarding in `escape.py` and `scalar.py`.
-     Remaining IR2 pattern matchers for `text[i] == "c"`
-     (`_fuse_text_codepoint_comparisons`) and `text.find(...)`
-     (`convert_call_resolved`) should likewise move to IR1 `@deftransform`s
-     (see Sections 6D and 6F).
+  1. **IR1 character-comparison and text-method transforms**: Remaining IR2
+     pattern matchers for `text[i] == "c"` (`_fuse_text_codepoint_comparisons`)
+     and `text.find(...)` (`convert_call_resolved`) should move to IR1
+     `@deftransform`s (see Sections 6D and 6I).
   2. **Pure comprehension and generator fusion**: Lower `sum([...])`,
      `any([...])`, `all([...])`, `min([...])`, `max([...])`, and
-     `list(x for x in seq)` directly into counted or iterator-driven
-     accumulation loops in IR1 without allocating an intermediate list (as
-     SBCL's `map` / `reduce` / `every` / `some` transforms do in
-     `seqtran.lisp`).
-  3. **Constant sequence operations**: Fold `%getitem` on constant `str`,
-     `bytes`, and `tuple` with constant or bounded index; fold `%add` /
+     `list(x for x in seq)` / generator pipelines directly into counted or
+     iterator-driven accumulation loops in IR1 without allocating an intermediate
+     list or stackful coroutine (as SBCL's `map` / `reduce` / `every` / `some`
+     transforms do in `seqtran.lisp`; see Section 6N).
+  3. **Constant sequence operations and string joins**: Fold `%getitem` on
+     constant `str`, `bytes`, and `tuple` with constant index; fold `%add` /
      `%multiply` on small constant sequences within size limits; specialize
-     `"".join(...)` on constant or known-length tuple/list displays into a
-     single pre-sized text build.
-  4. **Known container methods**: Specialize `dict.get(k, default)`,
-     `list.pop()`, `str.startswith(prefix)`, and `str.endswith(suffix)` on
-     proven receiver types in `seqtran.py`.
-  5. **`bytes` and `bytearray` type representation, element-type derivation,
-     and physical indexing/mutation VOPs (`array-tran.lisp`)**:
-     - **SBCL reference**: `src/compiler/array-tran.lisp` (`deftransform aref`
-       and `data-vector-ref` / `data-vector-set` on
-       `(simple-array (unsigned-byte 8) (*))`, which derive element type
-       `(unsigned-byte 8)` = `[0, 255]` and lower to inline byte-load /
-       byte-store VOPs `data-vector-ref-with-offset/simple-array-unsigned-byte-8`
-       and `data-vector-set-with-offset/simple-array-unsigned-byte-8` in
-       `src/compiler/x86-64/array.lisp`).
-     - **Implemented**:
-       - `BytesType` and `ByteArrayType` (`ctype.py`) implement
-         `dispatch_domain()` returning `BYTES_TYPE` and `BYTEARRAY_TYPE`
-         (unless `may_be_unbound`), and `locall.py` includes `BYTES_TYPE` and
-         `BYTEARRAY_TYPE` when seeding `observed` entry contexts. Consequently,
-         `BYTES_TYPE` and `BYTEARRAY_TYPE` parameters and locals preserve their
-         `IntegerType(0, 255)` `getitem_type` and `iterate_type` across
-         `general`, `fixnum`, and `observed` entry contexts.
-       - `seqtran.py` lowers `len(bytearray)` to `_storage_length` (`visit_ByteArrayType`),
-         and `vops.py` / `buffers.rs` / `sequences.rs` specialize
-         `getitem(BYTES_TYPE | BYTEARRAY_TYPE, FIXNUM)` (`@mule_bytes_getitem`,
-         `@mule_bytearray_getitem_fast`), `setitem(BYTEARRAY_TYPE, FIXNUM, FIXNUM)`
-         (`@mule_bytearray_setitem_fast`), and `bytearray.append`
-         (`@mule_bytearray_append_fast`).
-  6. **IR1 iteration specialization (`seqtran.lisp`)**:
-     - **SBCL reference**: `build-sequence-iterator` in `src/compiler/seqtran.lisp`
-       selects list or vector traversal from inferred argument types and gives
-       up when the sequence type is unknown. Python requires different mutation
-       and observable iterator-state semantics; SBCL's cached vector length is
-       not sufficient for mutable Python sequences.
-     - **Current Mule defect (observed in `perf/suite/bytes_codec.py`)**:
-       - While `for j in range(...)` lowers to a counted loop in `ir1tran.py`,
-         `for packet in data:` (with `data: list[bytes]`) and `for b in decoded:`
-         (with `decoded: bytearray`) allocate a heap iterator via
-         `@mule.fast.iterate.move`, call `@mule.fast.next_item` on each step,
-         and terminate by raising and catching `StopIteration`
-         (`@mule_catch_exception` + `@"mule.protocol.iteration_exhausted"`).
-     - **Architecture gap**: `ir1tran.py` chooses the range candidate from the
-       source spelling `range(...)`. `seqtran.py` also transforms
-       `%range_prepare`, and some IR2 paths fuse setup. Replace or adapt these
-       pieces so IR1 represents general iteration and later transforms select
-       behavior from proven iterator and sequence facts, not source spelling.
-       Apply the same approach to ranges obtained through other expressions.
+     `"".join(...)` on constant or known-length tuple/list displays and chained
+     `str + str + ...` into a single pre-sized `%format` text build (see Section 6P).
+  4. **Known container methods**: Move `dict.get(k, default)`, `list.pop()`,
+     `str.startswith(prefix)`, `str.endswith(suffix)`, `str.rsplit(sep, 1)`,
+     `str.lower()`, `str.strip()`, `set.add()`, and `set.discard()` on proven
+     receiver types to IR1 `@deftransform`s in `seqtran.py` (see Sections 6I, 6M,
+     and 6P).
+  5. **Counted iteration for `bytearray`, `set`, `frozenset`, and aliased
+     `range` (`seqtran.lisp`)**:
+     - **SBCL reference**: `build-sequence-iterator` in `src/compiler/seqtran.lisp`.
+     - **Current Mule defect (observed in `perf/suite/bytes_codec.py` and
+       `perf/suite/set_operations.py`)**:
+       - `for b in decoded:` (with `decoded: bytearray`) and `for x in s:` (with
+         `s: set`) still fall back to the generic iterator protocol
+         (`@mule.fast.iterate.move` + `@mule.fast.next_item` + `StopIteration`),
+         because `seqtran.py` does not yet include `ByteArrayType` or `SetType`
+         in `%sequence_available` counted loop lowering.
      - **Required implementation**:
-       - Derive or guard exact iteration behavior and iterator freshness and
-         observability. Exact storage or a broad annotation alone does not prove
-         that subclass or overridden iteration behavior can be bypassed.
-         Retain the generic protocol, including sequence-protocol fallback, when
-         these facts are unknown. Do not assume the necessary proofs already
-         exist in the compiler.
-       - For a fresh, unobservable iterator over a proven exact list, tuple,
-         bytes, or bytearray, transform iteration into direct indexed traversal
-         without an iterator allocation or exception on normal exhaustion.
-         An existing iterator can be partially consumed or shared; preserve its
-         position and observable updates instead of starting a private index at
-         zero. Preserve permanent exhaustion and owned-reference lifetimes.
-       - Re-read the current length and element on each advance of a mutable
-         list or bytearray. Preserve insertion, deletion, replacement, and
-         storage reallocation effects. Do not retain a storage pointer across
-         body effects unless a proof makes that safe.
-       - Evaluate the iterable once. A guard before iterator creation must create
-         it once on fallback; a guard after creation must reuse that iterator.
-         Preserve target assignment, `break`, `continue`, cleanup, and
-         `for`-`else`. Only normal iterator exhaustion enters the else branch;
-         errors from acquisition, advancement, assignment, and the body retain
-         their normal behavior.
-       - Preserve range construction errors and arbitrary-precision semantics.
-         Use native arithmetic only when its bounds are proven or guarded, with
-         a correct general fallback. Do not require a particular callable name.
+       - Extend `seqtran.py` counted-loop lowering to `ByteArrayType` (re-reading
+         current length and byte buffer on each step to preserve mutation and
+         reallocation semantics), `SetType` / `FrozenSetType` (scanning `_keys`
+         while skipping `_TOMBSTONE`), and `RangeType` values (Section 6H), while
+         preserving `break`, `continue`, cleanup, and `for`-`else` semantics.
 
 ### 1D. Numeric, division, and float transforms (`srctran.py` / `modarith.py` / `float-tran.lisp`) (partially implemented)
 
@@ -499,11 +516,18 @@ suite failure or performance measurement.
        operation's operand narrows from non-fixnum (`PythonIntegerType` /
        `INTEGER`) to `is_fixnum` (or `FLOAT`), even when the operation's result
        type (`BOOLEAN` or bounded `IntegerType`) is already proven in `general`.
-  2. **Bitwise shift interval derivation, 2-argument `min`/`max`, and `math.sqrt`
-     (`ctype.py`, `fndb.py`, `srctran.py`, `constraint.py`, `represent.py`, `vops.py`)**:
+  2. **Bitwise shift interval derivation, 2-argument `min`/`max`, `math.sqrt`,
+     and commutative/associative constant folding (`ctype.py`, `fndb.py`,
+     `ir1opt.py`, `srctran.py`, `modarith.py`, `constraint.py`, `represent.py`,
+     `vops.py`)**:
      - `IntegerType.binary` (`ctype.py`) derives exact interval bounds for
        `<<` (with shift count in `[0, 61]`) and `>>` (with non-negative shift
        count), keeping `(lo + hi) >> 1` and `(x << k)` within `FIXNUM` bounds.
+     - `_canonicalize_commutative_constant` (`ir1opt.py`) normalizes
+       `const + x -> x + const`, `const & x -> x & const`, and
+       `const == x -> x == const` on proven commutative domains, and
+       `modarith.py` reassociates and folds `(x + c1) + c2` / `(x & m1) & m2`
+       via `splice_fun_args` (Section 6C).
      - `srctran.py` lowers 2-argument `min(a, b)` and `max(a, b)` to `%min2` /
        `%max2` (`fndb.MIN2`, `fndb.MAX2`), with interval bound derivation in
        `fndb.py`/`constraint.py` and inline `icmp`/`fcmp` + `select` VOPs
@@ -520,19 +544,16 @@ suite failure or performance measurement.
     dispatch in `src/compiler/ir1opt.lisp` uses function attributes and constant
     arguments. Revisit Mule's limit with an explicit compile-time resource policy
     and verify the generated code and compilation cost.
-  1. **Commutative canonicalization and reassociation**: Normalize
-     `const + x -> x + const` and `const & x -> x & const` on proven commutative
-     domains (`INTEGER`, `BOOLEAN`) so associative transforms in `modarith.py`
-     match regardless of operand order.
-  2. **Modular arithmetic cutting (`modarith.lisp`)**: Propagate modular width
+  1. **Modular arithmetic cutting (`modarith.lisp`)**: Propagate modular width
      demand backward through `(a + b) & mask`, `(a - b) & mask`, and
      `(a * b) & mask` when `mask = (1 << k) - 1` fits in `int64`, allowing
      intermediate operations to use wrapping 64-bit arithmetic without bigint
      overflow allocation.
-  3. **Additional float and math transforms (`float-tran.lisp`)**: Add `fndb.py`
+  2. **Additional float and math transforms (`float-tran.lisp`)**: Add `fndb.py`
      and `srctran.py` transforms for builtin `abs(x)` and `float(x)` on proven
      `INTEGER` and `FLOAT` operands, plus remaining `math` module intrinsics
-     (`math.floor`, `math.ceil`, `math.fabs`, `math.isinf`, `math.isnan`).
+     (`math.floor`, `math.ceil`, `math.fabs`, `math.isinf`, `math.isnan`; see
+     Section 6I).
 
 ---
 
@@ -847,13 +868,15 @@ not complete closure/container escape analysis. See the
 
 ---
 
-## 6. Replacing benchmark-specific special cases with general SBCL compiler mechanisms (partially implemented)
+## 6. Replacing benchmark-specific special cases and closing remaining SBCL parity gaps (partially implemented)
 
-An audit of `mule/compiler/` and `stdlib/` against `perf/suite/*.py` identified
-twelve compiler and stdlib paths that rely on syntactic or structural heuristics
-shaped around individual benchmarks rather than general SBCL analyses and
-transforms. Each item below states the current special case, the corresponding
-SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
+An audit of `mule/compiler/` and `stdlib/` against `perf/suite/*.py` and
+`~/checkout/sbcl/src/` identified both compiler/stdlib paths that relied on
+syntactic heuristics (Sections 6A–6L, seven of which are now implemented: 6A,
+6B, 6C, 6E, 6G, 6J, 6L) and five remaining architectural gaps explaining the
+24-workload performance deltas against CPython and SBCL (Sections 6M–6Q). Each
+item below states the current behavior, the corresponding SBCL compiler or
+runtime mechanism in `~/checkout/sbcl/src/`, and the required implementation.
 
 ### 6A. Module-level constant folding via write-set tracking (`ir1tran.lisp` / `globaldb.lisp`) — **implemented**
 
@@ -951,16 +974,25 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
     and `_fuse_text_slice_compares` and `note_int_parse` have been removed from
     `mule/compiler/ir2tran.py`.
 
-### 6D. Single-character string comparison transforms and codepoint representations (`seqtran.lisp` / `represent.lisp`)
+### 6D. Single-character string comparison transforms, codepoint representations, and bounded `TextContent` wiring (`seqtran.lisp` / `represent.lisp` / `type.lisp`)
 
-- **Current special case**: `_fuse_text_codepoint_comparisons`
-  (`mule/compiler/ir2tran.py:556-697`) post-processes IR2 VOPs to rewrite
-  `protocol-getitem` into `@mule_text_codepoint_getitem` and `TextLiteral` into
-  `IntegerLiteral` only when 100% of uses of `ch = text[i]` are comparisons with
-  1-character string literals.
+- **Current special case and partial progress**:
+  - `_fuse_text_codepoint_comparisons` (`mule/compiler/ir2tran.py:556-697`)
+    post-processes IR2 VOPs to rewrite `protocol-getitem` into
+    `@mule_text_codepoint_getitem` and `TextLiteral` into `IntegerLiteral` only
+    when 100% of uses of `ch = text[i]` are comparisons with 1-character string
+    literals.
+  - `mule/compiler/text_domain.py` (`TextContent`, implemented in commit
+    `b693445`) defines the bounded text content domain (`min_length`,
+    `max_length`, and 5-character `prefix` / `suffix` with union, intersection,
+    containment, widening, and serialization), but `TextType` in
+    `mule/compiler/ctype.py` still carries only `literal: str | None = None` and
+    `interned: bool = False` and does not yet wire `TextContent` into
+    `TextType`, `constraint.py`, `fndb.py`, or `seqtran.py`.
 - **SBCL reference**: `select-tn-representation` and `emit-moves-and-coercions`
   in `src/compiler/represent.lisp` (`CHARACTER-REG` vs `CHARACTER-DESCRIPTOR`),
-  and `deftransform string=*` in `src/compiler/seqtran.lisp`.
+  `deftransform string=*` in `src/compiler/seqtran.lisp`, and array/string shape
+  subtyping/intersection in `src/code/type.lisp`.
 - **Required implementation**:
   1. Add IR1 `@deftransform`s in `mule/compiler/seqtran.py` on
      `%compare_equal`, `%compare_not_equal`, `<`, `<=`, `>`, and `>=` when one
@@ -974,6 +1006,11 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
      (such as `out.append(ch)`), hot comparisons still compare unboxed
      codepoints.
   3. Delete `_fuse_text_codepoint_comparisons` from `ir2tran.py`.
+  4. Wire `TextContent` (`mule/compiler/text_domain.py`) into `TextType`
+     (`mule/compiler/ctype.py`), `constraint.py` (`_text_length`, `%getslice`,
+     `%add`, `startswith`, `endswith`), and `typetran.py` / `seqtran.py` so
+     proven length bounds (`min_length == max_length == 1` on `text[i]`) and
+     prefix/suffix guarantees drive IR1 specialization directly.
 
 ### 6E. Symbolic sequence-length constraints and dead-allocation flushing (`equality-constraints.lisp` / `ir1opt.lisp`) (completed)
 
@@ -1092,10 +1129,11 @@ the method and math selection mechanisms below.
 
 - **Current special case**: `ir2tran.py:382-439, 3747-3922` hardcodes 6
   `exact_text_*` / `exact_bytearray_append` methods to Rust helpers in
-  `mule/runtime/sequences.rs` (leaving 0-arg `str.split()`, `rsplit`, `strip`,
-  `lower`, `set.add`, `set.discard` on generic paths), and
-  `srctran.py:_try_replace_math_sqrt` (lines 721-813) pattern-matches
-  `CALL_RESOLVED` for `math.sqrt` only.
+  `mule/runtime/sequences.rs` (leaving `rsplit`, `strip`, `lower`, `set.add`,
+  and `set.discard` on generic paths, although 0-arg `for tok in s.split():`
+  now has an IR1 counted token-loop transform in `seqtran.py` from commit
+  `9a8b4f8`), and `srctran.py:_try_replace_math_sqrt` (lines 721-813)
+  pattern-matches `CALL_RESOLVED` for `math.sqrt` only.
 - **SBCL reference**: `defknown` in `src/compiler/fndb.lisp`,
   `src/compiler/float-tran.lisp`, and `ir1-optimize-combination` in
   `src/compiler/ir1opt.lisp`.
@@ -1200,8 +1238,251 @@ describe the Python mutation and ownership adaptations to SBCL.
     closures, and guarded mixed `(SIGNED/DOUBLE, DESCRIPTOR)` conventions.
   - `_pack_inline_latin1_words` and `_emit_inline_latin1_compare`
     (`mule/compiler/vops.py`) cover length `0..24` Latin-1 literals (comparing
-     only the 16-bit `(len << 8) | kind_tag` header for `""` and the header plus
+    only the 16-bit `(len << 8) | kind_tag` header for `""` and the header plus
     `words[0]` for single-character literals without materializing a borrowed
     text slot or synthesizing fake `inline.text` SSA names), and general `str`
     equality uses the `alwaysinline` `@mule.fast.text.eq` /
     `@mule.fast.text.ne` helpers before falling back to `@mule_text_eq`.
+
+### 6M. `SetType` / `FrozenSetType` lattice, IR1 set transforms, and compact `_Table` storage (`target-hash-table.lisp` / `containtran.py`) (proposed)
+
+- **Observed benchmark impact**: `set_operations` (`1.4211s` Mule vs `0.1184s`
+  CPython = `12.00x`, `0.1975s` SBCL = `7.20x`), `log_aggregation` (`2.43x`
+  CPython), `lru_simulation` (`1.69x` CPython), `expression_tree` (`1.34x`
+  CPython), and `graph_paths` (`1.33x` CPython).
+- **Current Mule defects**:
+  1. **No `SetType` or `FrozenSetType` in `ctype.py`**: `SET_TYPE` and
+     `FROZENSET_TYPE` (`mule/compiler/ctype.py:2165`) are plain
+     `InstanceType("$mule_set:set")` and `InstanceType("$mule_set:frozenset")`
+     singletons. Unlike `ListType` and `DictType`, sets do not track element
+     `ValueType` (`set[int]`), are not recognized by `annotation_types.py`
+     (`set[T]`), and have no IR1 transforms in `containtran.py` or `seqtran.py`
+     for `key in s`, `s.add(x)`, `s.discard(x)`, `s & other`, `s | other`,
+     `s - other`, `s ^ other`, `len(s)`, or `for x in s:`.
+  2. **Four-list `_Table` indirection and unused `_values` list on sets
+     (`stdlib/_dict.py`)**: `_table_clear` (`stdlib/_dict.py:132-147`) and
+     `_table_resize` (`stdlib/_dict.py:199-240`) allocate four separate Python
+     `list` objects per table (`_indices = [-1] * size`, `_hashes = []`,
+     `_keys = []`, `_values = []`), and every `set.add` / `frozenset` insertion
+     calls `_table_insert(self, item, None)` (`stdlib/_dict.py:278, 885, 1181`),
+     allocating and appending `None` into an unused `_values` list on every set!
+  3. **Exception handler frame (`try/except TypeError`) around every `_set_lookup`
+     and `_set_remove` (`stdlib/_dict.py:888-903`)**: `_set_lookup` and
+     `_set_remove` enter a `try: return _table_lookup(self, key) except TypeError:`
+     handler on every `key in s` and `s.discard(key)` solely to convert an
+     unhashable `set` key into `frozenset` for membership/removal, paying
+     exception-handler setup (`enter-handler` / `leave-handler`) on every lookup
+     even when `key` is a proven `int` or `str`.
+  4. **`_table_live(self)` list allocation on every set/dict bulk operation
+     (`stdlib/_dict.py:312-322, 998-1076`)**: `_table_live(self)` allocates and
+     populates a fresh `list[int]` of non-tombstone entry indices on every
+     `s | other`, `s & other`, `s - other`, `s ^ other`, `issubset`, `__eq__`,
+     and `dict.copy`/`update`, and `intersection` / `difference` index
+     `_instance_field(self, "_keys")[index]` via generic subscripting instead of
+     `_storage_read` and test `key in other` through generic `__contains__`
+     instead of `_set_lookup`.
+- **SBCL reference**: `src/code/target-hash-table.lisp` (`make-hash-table`,
+  `define-ht-getter`, `define-gethash/flat`, `puthash`, `remhash`, `maphash`),
+  where hash-table storage uses flat typed vectors without per-operation
+  intermediate list allocations or handler frames.
+- **Required implementation**:
+  1. Add `SetType(element)` and `FrozenSetType(element)` to `ctype.py` and
+     `SetContract` to `annotation_types.py`, propagating element types through
+     `set()`, `{...}`, `s.add`, `s | other`, `s & other`, `s - other`,
+     `s ^ other`, and `for x in s:`.
+  2. Add IR1 `@deftransform`s in `containtran.py` and `seqtran.py` for
+     `key in s`, `key not in s`, `s.add(x)`, `s.discard(x)`, `len(s)`, and
+     indexed `for x in s:` iteration over `_keys` (skipping `_TOMBSTONE`
+     entries directly without allocating a `_TableIterator` or `_table_live`
+     list).
+  3. In `stdlib/_dict.py`, eliminate the `try ... except TypeError:` wrapper from
+     the hot path of `_set_lookup` and `_set_remove` (only attempting the
+     `set -> frozenset` conversion when `key` is actually an instance of `set`),
+     omit `_values` allocation/writes for `set`/`frozenset` tables, and replace
+     `_table_live(self)` list allocations in `union`, `intersection`,
+     `difference`, `symmetric_difference`, `issubset`, and `__eq__` with direct
+     indexed loops over `0.._storage_length(keys)` using `_storage_read`.
+
+### 6N. Generator IR1 loop fusion and non-escaping state-machine lowering (`seqtran.lisp` / `stdlib/_generators.py`) (proposed)
+
+- **Observed benchmark impact**: `generator_pipeline` (`0.3134s` Mule vs
+  `0.1028s` CPython = `3.05x`, `0.0064s` SBCL = `49.23x`).
+- **Current Mule defect**:
+  1. Every Python generator invocation (`stdlib/_generators.py` and
+     `mule/runtime/coroutine.rs`) allocates a separate stackful coroutine stack
+     (`coroutine_new`), and every `next()` / `yield` performs a full Python
+     method call chain (`generator.__next__` -> `generator.send` ->
+     `generator._resume` -> `coroutine_state` + `coroutine_resume` stack switch)
+     and raises/catches `StopIteration` on exhaustion.
+  2. In `mule/compiler/represent.py:148`, `ir2tran.py:1937`, and
+     `ir1opt.py:274`, `component.lambda_.coroutine_body` disables flow-proven
+     unboxed fixnum locals (`return IMMORTAL_T`), container-element borrowing,
+     and `ok_lvar_lambda_var` combination matching across the entire generator
+     body.
+  3. Consequently, a 3-stage pipeline `stage3_Running_sum(stage2_transform(stage1_filter(n, seed)))`
+     consumed by `for val in pipeline:` performs ~3 stack context switches and
+     boxed fixnum operations per element instead of fusing into a single
+     unboxed register loop.
+- **SBCL reference**: `src/compiler/seqtran.lisp` (`map`, `reduce`, `loop` /
+  sequence iterator fusion) and `src/compiler/locall.lisp` (`let-convert`),
+  which inline non-escaping producer/consumer pipelines into a single loop body
+  in IR1.
+- **Required implementation**:
+  1. **IR1 generator pipeline fusion**: When a generator function's call result
+     is consumed exclusively by `for x in gen(...):` (or chained non-escaping
+     generator stages feeding a `for` loop, `sum(...)`, `any(...)`, `all(...)`,
+     `list(...)`) and the generator body uses structured `yield` without `.send`,
+     `.throw`, `.close`, or frame inspection, inline/LET-convert the generator
+     body into the consumer loop in IR1, turning `yield val` into the consumer's
+     loop body and allowing `represent.py` to keep all stage locals in unboxed
+     `i64` / `double` registers.
+  2. **State-machine lowering for escaping single-frame generators**: For
+     generators whose suspension points do not occur inside nested Python calls
+      requiring a separate C stack, lower the generator body to a flat heap-frame
+     state machine (`switch` on resumption state index) and allow locals that do
+     not cross a `yield` point (or whose binding state is proven initialized at
+     every reachable `yield`) to use unboxed `SIGNED` / `DOUBLE` slots.
+
+### 6O. `isinstance` / `match` class-pattern branch narrowing, polymorphic dispatch, and exception-raise fast paths (`constraint.lisp` / `ir1tran.py`) (proposed)
+
+- **Observed benchmark impact**: `dataclass_ast` (`0.0257s` Mule vs `0.0022s`
+  SBCL = `11.67x`), `expression_tree` (`5.8504s` Mule vs `4.3744s` CPython =
+  `1.34x`, `1.5239s` SBCL = `3.84x`), and `exception_validation` (`3.1574s` Mule
+  vs `0.6050s` SBCL = `5.22x`).
+- **Current Mule defects**:
+  1. **`match` class patterns and `%isinstance` do not narrow user classes in
+     `constraint.py`**:
+     - `_MatchLowering.class_pattern` (`mule/compiler/ir1tran.py:4148-4158`)
+       emits `isinstance(subject, (ClassName,))` wrapped in a 1-element tuple
+       even for a single class.
+     - `_propagate_instance_check` (`mule/compiler/constraint.py:2675`) derives
+       the boolean result of `%isinstance` when already statically proven, but
+       there is **no `@defconstrain("%isinstance")` branch constrainer** in
+       `constraint.py` (unlike `_constrain_builtin_call` for `CallKind.FULL`
+       calls to `isinstance(x, int/str/bytes/tuple/list/dict)` at
+       `constraint.py:3947`, which also ignores user-defined classes and
+       1-element class tuples!).
+     - As a result, inside every `case Lit(value=v):` / `case Add(left=l, right=r):`
+       arm in `dataclass_ast.py`, `subject` remains `UNKNOWN` (or an unnarrowed
+       union) instead of narrowing to `InstanceType(Lit)` / `InstanceType(Add)`.
+       Every field extraction `subject.value`, `subject.left`, `subject.right`
+       therefore misses `InstanceType` field-type inference (`locall.py`) and
+       fixed-slot layout specialization (Section 6J)!
+  2. **Polymorphic method calls and `super().__init__`**:
+     - In `expression_tree.py`, `self.left.eval_node(env)` dispatches across a
+       closed 5-class hierarchy (`LitExpr`, `VarExpr`, `AddExpr`, `MulExpr`,
+       `LetExpr`) through generic method lookup on each recursive step.
+     - In `exception_validation.py`, `ValidationError.__init__` and
+       `RangeError.__init__` call `super().__init__(message)` via
+       `RESOLVE_SUPER_METHOD` + `CALL_RESOLVED` and allocate an exception
+       instance plus `_args` tuple on every invalid record before unwinding to
+       the caller's `try/except ValidationError:` handler.
+- **SBCL reference**: `src/compiler/constraint.lisp`
+  (`add-test-constraint` on `%instance-typep` / `typep`, narrowing the tested
+  variable to the target `structure-class` / `standard-class` on the consequent
+  branch and subtracting it from `UnionType` on the alternative branch) and
+  `src/compiler/typetran.lisp` (`source-transform-typep`).
+- **Required implementation**:
+  1. In `_MatchLowering.class_pattern` (`ir1tran.py:4148`), pass `ClassName`
+     directly (not a 1-element tuple `(ClassName,)`) to `isinstance`, and add
+     `@defconstrain("%isinstance")` (plus user-class support in
+     `_constrain_builtin_call`) in `constraint.py` so `isinstance(x, Cls)` and
+     `isinstance(x, (Cls1, ...))` narrow `x` to `InstanceType(Cls)` (or union of
+     `InstanceType`s) on the true branch and subtract `InstanceType(Cls)` from a
+     `UnionType` on the false branch.
+  2. Specialize `RESOLVE_SUPER_METHOD` when the enclosing class and its single
+     base class are statically known in the compilation unit into a direct call
+     to the base class method.
+
+### 6P. `bytearray` inline buffer VOPs and string `rsplit` / `lower` / `strip` / multi-concat transforms (`array-tran.lisp` / `seqtran.lisp`) (proposed)
+
+- **Observed benchmark impact**: `bytes_codec` (`0.0216s` Mule vs `0.0027s`
+  SBCL = `7.89x`), `log_aggregation` (`0.1389s` Mule vs `0.0572s` CPython =
+  `2.43x`), and `http_routing` (`0.0707s` Mule vs `0.0506s` CPython = `1.40x`).
+- **Current Mule defects**:
+  1. **`bytearray` iteration and C-ABI call overhead (`bytes_codec`)**:
+     - `seqtran.py` lowers `for x in seq:` to counted indexing for `list`,
+       `tuple`, `str`, `bytes`, and `dict.items()`, but **not** `bytearray`. In
+       `bytes_codec.py`, `for b in decoded:` allocates a heap iterator and calls
+       `@mule.fast.next_item` + catches `StopIteration`.
+     - `bytearray` indexing (`b[i]`, `b[i] = v`) and `b.append(v)` call external
+       Rust functions (`@mule_bytearray_getitem_fast`,
+       `@mule_bytearray_setitem_fast`, `@mule_bytearray_append_fast`) on every
+       byte instead of loading/storing from the inline buffer pointer + length
+       fields in LLVM IR (calling Rust only when `len == capacity` requires
+       reallocation).
+  2. **Missing `str.rsplit`, `int(s.strip())`, case-insensitive comparison, and
+     n-ary string concatenation transforms (`log_aggregation`, `http_routing`)**:
+     - `line.rsplit(".", 1)` and `route.rsplit("/", 1)` in `log_aggregation.py`
+       allocate a 2-element Python `list` and two `str` slices via generic method
+       dispatch; `ir2tran.py` only has `exact_text_split`, not `rsplit`, and
+       `seqtran.py` has no bounded `rsplit(..., 1)` or `int(s.rsplit(sep, 1)[1])`
+       slice fusion.
+     - `int(value.strip())` in `http_routing.py:73` allocates a stripped `str`
+       before calling `%parse_int_text`, even though `int(str)` already skips
+       leading and trailing ASCII/Unicode whitespace.
+     - `name.lower() == "content-length"` (`http_routing.py:72`) allocates a
+       lowercased `str` on every header line instead of folding to an allocation-
+       free ASCII case-insensitive comparison when compared against an ASCII
+       lowercase literal.
+     - Chained string concatenations `a + b + c + d` (`http_routing.py:41-50, 84, 88`)
+       allocate `n - 1` intermediate `TextStorage` objects via binary `%add`
+       instead of flattening into a single pre-sized `%format` build in
+       `formattran.py`.
+- **SBCL reference**: `src/compiler/array-tran.lisp`
+  (`data-vector-ref-with-offset/simple-array-unsigned-byte-8`,
+  `vector-push-extend`), and `src/compiler/seqtran.lisp` (`concatenate`,
+  `string-equal`, `search`/`position` `:from-end t`).
+- **Required implementation**:
+  1. Add `BYTEARRAY_TYPE` counted loop lowering in `seqtran.py` (re-reading the
+     current length on each step to preserve mutation semantics) and emit inline
+     LLVM byte loads/stores and capacity-checked appends for `BYTEARRAY_TYPE` in
+     `vops.py`.
+  2. Add IR1 `@deftransform`s in `srctran.py`, `seqtran.py`, and `formattran.py`
+     for:
+     - `int(s.strip()) -> %parse_int_text(s)` when `s` is `TEXT_TYPE` and
+       `strip()` is called with 0 arguments;
+     - `s.lower() == <ascii-lower-literal>` and `s.upper() == <ascii-upper-literal>`
+       into an allocation-free case-insensitive comparison;
+     - Chained `TEXT_TYPE + TEXT_TYPE + ...` (`>= 3` operands) into `%format`;
+     - `s.rsplit(sep, 1)` on `TEXT_TYPE` with a non-empty constant separator into
+       a reverse find (`rpartition`-style index scan), fusing with `[0]` / `[1]`
+       indexing and `%parse_int_slice` when non-escaping.
+
+### 6Q. Unboxed and stack-promoted closure cells for non-escaping mutable `nonlocal` variables (`envanal.lisp` / `represent.lisp`) (proposed)
+
+- **Observed benchmark impact**: `closure_pipeline` (`1.6020s` Mule vs `0.2638s`
+  SBCL = `6.07x`).
+- **Current Mule defect**:
+  - In `perf/suite/closure_pipeline.py`, `make_stepper` returns a closure
+    `_step(x: int) -> int` that mutates `nonlocal acc, count`. Because `_step`
+    is returned from `make_stepper`, `acc` and `count` have `var.indirect = True`
+    (`envanal.py`).
+  - Even when every closure sharing an `indirect` cell proves `is_fixnum` across
+    all cell stores (`var.optimistic_type.is_fixnum`), `value-cell-ref` and
+    `value-cell-set` (`mule/compiler/vops.py:2325-2365`) store a boxed/tagged
+    descriptor via runtime attribute helpers (`@mule_getattr_cached` /
+    `@mule_setattr_cached` on `cell_contents`) and `represent.py:145` forces
+    `if var.indirect: return OBJECT`, preventing unboxed `i64` cell payloads or
+    direct fixed-offset cell slot loads/stores.
+  - Furthermore, when `s1 = make_stepper(...)` is bound locally in `run` and
+    called only via direct calls `s1(v)` without escaping `run`, inlining
+    `make_stepper` (or tracking factory-returned local closures in `locall.py`
+    and `escape.py`) would make `acc` and `count` ordinary local `i64`
+    registers in `run`.
+- **SBCL reference**: `src/compiler/envanal.lisp` (indirect value cells accessed
+  via single-instruction `value-cell-ref` / `value-cell-set` VOPs at a fixed word
+  offset in `src/compiler/x86-64/cell.lisp`) and `src/compiler/locall.lisp`
+  (inlining small closure factories so captured cells become local `lambda-var`s).
+- **Required implementation**:
+  1. Lower `value-cell-ref` and `value-cell-set` (`vops.py:2325-2365`) on
+     compiler-allocated internal `Cell` objects (when the cell never escapes to
+     `__closure__` / `cell_contents` introspection) to direct fixed-offset word
+     loads/stores at the `Cell` payload slot instead of attribute-cache helper
+     calls, omitting reference-count traffic when `var.optimistic_type.is_fixnum`
+     or `is_immortal`.
+  2. When a small factory function (`make_stepper`) returns a closure and is
+     called at a local call site whose returned closure does not escape the
+     caller, inline the factory in IR1 so the closure becomes a closed local
+     lambda in the caller and its `nonlocal` variables lower to caller frame
+     registers (`escape.py`).

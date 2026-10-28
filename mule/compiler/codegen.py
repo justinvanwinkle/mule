@@ -57,7 +57,7 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .escape import analyze_escapes, find_local_environments
-from .ir1util import block_exception_target, made_function
+from .ir1util import made_function
 from .ir2tran import _specialize_list_getitems, ir2_convert, select_tuple_delivery
 from .locall import specialized_ir1_context
 from .ltn import EntryContext, FixnumGuard, ltn_analyze, primitive_type_of
@@ -3655,7 +3655,7 @@ def _value_tns_live_in(component, candidates) -> dict:
             for succ in block.block.succ
             if succ in component.ir2_blocks
         ]
-        target = block_exception_target(block.block)
+        target = block.exception_target
         if target is not None and target in component.ir2_blocks:
             following.append(component.ir2_blocks[target])
         successors[block] = following
@@ -3742,7 +3742,7 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
         normal_succs[block] = [
             ir2_blocks[succ] for succ in block.block.succ if succ in ir2_blocks
         ]
-        handlers[block] = ir2_blocks.get(block_exception_target(block.block))
+        handlers[block] = ir2_blocks.get(block.exception_target)
     live_in = {block: set(live_use[block]) for block in blocks}
     live_out = {block: set() for block in blocks}
     changed = True
@@ -4186,6 +4186,7 @@ class FunctionGenerator:
             self.return_uses = frozenset()
         self.environment = component.environment
         self.immortal_values: set[str] = set()
+        self.nonnull_values: set[str] = set()
         self.borrowed_values: set[str] = set()
         self.heap_values: set[str] = set()
         self.private_values: dict[str, BoxLayout] = {}
@@ -4593,6 +4594,8 @@ class FunctionGenerator:
         return continuation
 
     def check_pointer(self, value: str) -> str:
+        if value in self.nonnull_values:
+            return self.current_block()
         return self.guard(self.operation(f"icmp eq ptr {value}, null"), value)
 
     def check_status(self, value: str) -> str:
@@ -5661,9 +5664,9 @@ class FunctionGenerator:
         self.emit_blocks()
         handler_live = None
         for target in dict.fromkeys(
-            block_exception_target(block.block) for block in self.component.blocks
+            block.exception_target for block in self.component.blocks
         ):
-            if target is None:
+            if target is None or target not in self.component.ir2_blocks:
                 continue
             if handler_live is None:
                 unwind_tns = {tn for group in self.unwind_slot_groups for tn in group}
@@ -5715,9 +5718,11 @@ class FunctionGenerator:
     def emit_blocks(self) -> None:
         for block in self.component.blocks:
             self.lines.append(block.label + ":")
-            target = block_exception_target(block.block)
+            target = block.exception_target
             self.exception_target = (
-                self.component.ir2_blocks[target].label if target is not None else None
+                self.component.ir2_blocks[target].label
+                if target is not None and target in self.component.ir2_blocks
+                else None
             )
             for vop in block.vops:
                 self.vop = vop

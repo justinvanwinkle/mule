@@ -298,7 +298,7 @@ class Body:
     # ``%call_resolved`` nodes whose receiver's class resolved the method.
     method_targets: dict[object, Lambda] | None = None
     element_contracts: dict[object, object] = field(default_factory=dict)
-    in_bounds_nodes: frozenset = frozenset()
+    in_bounds_nodes: frozenset[object] = frozenset()
 
     def types(self) -> dict[object, ValueType]:
         return {
@@ -673,11 +673,52 @@ class _InferredReturnDestination(NodeVisitor):
         return node.declaration == ("inferred-return", self.call)
 
 
+class _UnreassignedRefVar(NodeVisitor, LeafVisitor):
+    def __init__(self, headers: frozenset):
+        self.headers = headers
+        self.ref_block = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        self.ref_block = node.block
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf):
+        if leaf.indirect:
+            return None
+        if not leaf.sets:
+            return leaf
+        if (
+            len(leaf.sets) == 1
+            and leaf.sets[0].block is self.ref_block
+            and self.ref_block not in self.headers
+        ):
+            return leaf
+        return None
+
+
 class _LinearUpdate(NodeVisitor):
     """Extract ``(src_var, d_min, d_max)`` from ``src_var`` or ``src_var +/- d``."""
 
     def __init__(self, visitor: _Propagation):
         self.visitor = visitor
+
+    def _origin_var(self, lvar):
+        src_var = self.visitor.origins.get(lvar)
+        if src_var is not None:
+            return src_var
+        if len(lvar.uses) == 1:
+            var = lvar.uses[0].accept(
+                _UnreassignedRefVar(self.visitor.walk.graph.headers)
+            )
+            if var is not None and var in self.visitor.walk.local_vars_set:
+                return var
+        return None
 
     def visit_Node(self, node):
         return None
@@ -685,7 +726,7 @@ class _LinearUpdate(NodeVisitor):
     def visit_Ref(self, node: Ref):
         if node.lvar is None:
             return None
-        src_var = self.visitor.origins.get(node.lvar)
+        src_var = self._origin_var(node.lvar)
         if src_var is not None and src_var in self.visitor.walk.local_vars_set:
             t = self.visitor.type_of(node.lvar)
             if t.fits(PYTHON_INTEGER) and not t.may_be_unbound:
@@ -698,7 +739,7 @@ class _LinearUpdate(NodeVisitor):
         return None
 
     def _extract_seq_len_linear(self, seq_lvar):
-        src_var = self.visitor.origins.get(seq_lvar)
+        src_var = self._origin_var(seq_lvar)
         if src_var is not None:
             src_var = self.visitor.walk.temp_source.get(src_var, src_var)
             seq_key = self.visitor.walk.seq_len_keys.get(src_var)
@@ -722,12 +763,38 @@ class _LinearUpdate(NodeVisitor):
             and len(node.args) == 1
         ):
             return self._extract_seq_len_linear(node.args[0])
-        if info is fndb.RANGE_ADVANCE and node.info is not None:
-            r_key = self.visitor.walk.range_stop_keys.get(node.info)
-            if r_key is not None and r_key in self.visitor.state:
-                r_fact = self.visitor.state[r_key]
-                if not r_fact.type.may_be_unbound:
-                    return r_key, None, -1
+        if info is fndb.RANGE_ADVANCE:
+            state = node.info
+            if state is not None:
+                r_key = self.visitor.walk.range_stop_keys.get(state)
+                if r_key is not None and r_key in self.visitor.state:
+                    r_fact = self.visitor.state[r_key]
+                    if not r_fact.type.may_be_unbound:
+                        return r_key, None, -1
+            if state is None or not (1 <= len(state.arguments) <= 3):
+                return None
+            if len(state.arguments) == 1:
+                stop_lvar = state.arguments[0]
+                positive_step = True
+                negative_step = False
+            else:
+                stop_lvar = state.arguments[1]
+                step_t = (
+                    self.visitor.type_of(state.arguments[2])
+                    if len(state.arguments) == 3
+                    else _SMALL_INTS[1]
+                )
+                positive_step = step_t.minimum is not None and step_t.minimum > 0
+                negative_step = step_t.maximum is not None and step_t.maximum < 0
+            if not (positive_step or negative_step) or len(stop_lvar.uses) != 1:
+                return None
+            stop_linear = stop_lvar.uses[0].accept(self)
+            if stop_linear is None:
+                return None
+            bvar, bmin, bmax = stop_linear
+            if positive_step:
+                return bvar, None, (bmax - 1 if bmax is not None else None)
+            return bvar, (bmin + 1 if bmin is not None else None), None
         if len(node.args) != 2:
             return None
         arg0, arg1 = node.args
@@ -775,10 +842,10 @@ class _LinearUpdate(NodeVisitor):
             fndb.BINARY[ast.BinaryOperator.ADD],
             fndb.INPLACE_BINARY[ast.BinaryOperator.ADD],
         ):
-            src0 = self.visitor.origins.get(arg0)
+            src0 = self._origin_var(arg0)
             if src0 is not None and src0 in self.visitor.walk.local_vars_set:
                 return src0, t1.minimum, t1.maximum
-            src1 = self.visitor.origins.get(arg1)
+            src1 = self._origin_var(arg1)
             if src1 is not None and src1 in self.visitor.walk.local_vars_set:
                 return src1, t0.minimum, t0.maximum
             if len(arg0.uses) == 1:
@@ -815,7 +882,7 @@ class _LinearUpdate(NodeVisitor):
             fndb.BINARY[ast.BinaryOperator.SUBTRACT],
             fndb.INPLACE_BINARY[ast.BinaryOperator.SUBTRACT],
         ):
-            src0 = self.visitor.origins.get(arg0)
+            src0 = self._origin_var(arg0)
             if src0 is not None and src0 in self.visitor.walk.local_vars_set:
                 d_min = -t1.maximum if t1.maximum is not None else None
                 d_max = -t1.minimum if t1.minimum is not None else None
@@ -1103,6 +1170,58 @@ class _Propagation(NodeVisitor, LeafVisitor):
             return _SEQ_LEN_BOUND_TYPE
         return None
 
+    def is_proven_in_bounds(self, seq_lvar, idx_lvar) -> bool:
+        seq_type = self.type_of(seq_lvar)
+        idx_type = self.type_of(idx_lvar)
+        if (
+            seq_type is BOTTOM
+            or idx_type is BOTTOM
+            or seq_type.may_be_unbound
+            or idx_type.may_be_unbound
+            or not idx_type.is_fixnum
+            or idx_type.minimum is None
+            or idx_type.minimum < 0
+        ):
+            return False
+        exact_len = seq_type.exact_length()
+        if (
+            exact_len is not None
+            and idx_type.maximum is not None
+            and idx_type.maximum < exact_len
+        ):
+            return True
+        seq_len_t = self.sequence_length_type(seq_lvar)
+        if (
+            seq_len_t is not None
+            and not seq_len_t.may_be_unbound
+            and seq_len_t.minimum is not None
+            and idx_type.maximum is not None
+            and idx_type.maximum < seq_len_t.minimum
+        ):
+            return True
+        if self.relations:
+            idx_term = _extract_linear_term(self, idx_lvar)
+            if idx_term is not None:
+                seq_linear = _LinearUpdate(self)._extract_seq_len_linear(seq_lvar)
+                if (
+                    seq_linear is not None
+                    and seq_linear[1] is not None
+                    and seq_linear[1] == seq_linear[2]
+                    and _relational_comparison(
+                        ast.ComparisonOperator.LESS,
+                        self.relations,
+                        idx_term[0],
+                        seq_linear[0],
+                        idx_term[1] - seq_linear[1],
+                    )
+                    is BOOLEAN_TRUE
+                ):
+                    return True
+        return False
+
+    def record_in_bounds(self, node, seq_lvar, idx_lvar) -> None:
+        self.check_in_bounds_access(node, seq_lvar, idx_lvar)
+
     def _invalidate_seq_len(self, var) -> None:
         seq_key = self.walk.seq_len_keys.get(var)
         if seq_key is None or seq_key not in self.state:
@@ -1133,7 +1252,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
         seq_type = self.type_of(seq_lvar)
         idx_type = self.type_of(idx_lvar)
         if (
-            seq_type.may_be_unbound
+            seq_type is BOTTOM
+            or idx_type is BOTTOM
+            or seq_type.may_be_unbound
             or idx_type.may_be_unbound
             or not idx_type.fits(PYTHON_INTEGER)
             or idx_type.minimum is None
@@ -1141,32 +1262,16 @@ class _Propagation(NodeVisitor, LeafVisitor):
         ):
             self.walk.in_bounds_nodes.discard(node)
             return
-        in_bounds = False
-        exact_len = seq_type.exact_length()
-        if (
-            exact_len is not None
-            and idx_type.maximum is not None
-            and idx_type.maximum < exact_len
-        ):
-            in_bounds = True
-        if not in_bounds:
-            seq_len_t = self.sequence_length_type(seq_lvar)
-            if (
-                seq_len_t is not None
-                and idx_type.maximum is not None
-                and seq_len_t.minimum is not None
-                and idx_type.maximum < seq_len_t.minimum
-            ):
-                in_bounds = True
+        in_bounds = self.is_proven_in_bounds(seq_lvar, idx_lvar)
         seq_key = None
-        src_var = self.origins.get(seq_lvar)
+        src_var = _LinearUpdate(self)._origin_var(seq_lvar)
         if src_var is not None:
             src_var = self.walk.temp_source.get(src_var, src_var)
             seq_key = self.walk.seq_len_keys.get(src_var)
         idx_var = None
         idx_d_min = None
         idx_d_max = None
-        local = self.origins.get(idx_lvar)
+        local = _LinearUpdate(self)._origin_var(idx_lvar)
         if local is not None and local in self.walk.local_vars_set:
             idx_var = self.walk.temp_source.get(local, local)
             idx_d_min = idx_d_max = 0
@@ -3261,12 +3366,17 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
     receiver_type = visitor.type_of(args[0])
     index_type = visitor.type_of(args[1])
     if receiver_type is BOTTOM or index_type is BOTTOM:
+        visitor.walk.in_bounds_nodes.discard(node)
         return NO_FACT
-    if receiver_type.may_run_user_code or index_type.may_run_user_code:
-        visitor.invalidate()
     static_item = receiver_type.flow_getitem_type(index_type)
     if static_item is BOTTOM:
+        visitor.walk.in_bounds_nodes.discard(node)
         return NO_FACT
+    if (
+        not receiver_type.accept(_IS_BUILTIN_SEQUENCE_TYPE)
+        and receiver_type.may_run_user_code
+    ) or index_type.may_run_user_code:
+        visitor.invalidate()
     if index_type.fits(PYTHON_INTEGER) and not index_type.may_be_unbound:
         visitor.check_in_bounds_access(node, args[0], args[1])
         bounds = receiver_type.valid_index_bounds()
@@ -3292,9 +3402,10 @@ def _propagate_getslice(visitor: _Propagation, node: Combination):
     if any(visitor.type_of(arg) is BOTTOM for arg in args):
         return NO_FACT
     receiver_type = visitor.type_of(args[0])
-    if receiver_type.may_run_user_code or any(
-        visitor.type_of(arg).may_run_user_code for arg in args[1:]
-    ):
+    if (
+        not receiver_type.accept(_IS_BUILTIN_SEQUENCE_TYPE)
+        and receiver_type.may_run_user_code
+    ) or any(visitor.type_of(arg).may_run_user_code for arg in args[1:]):
         visitor.invalidate()
     recv_contract = visitor.walk.lvar_contracts.get(args[0])
     if (
@@ -3351,7 +3462,10 @@ def _propagate_iterate(visitor: _Propagation, node: Combination):
     operand_type = visitor.type_of(args[0])
     if operand_type is BOTTOM:
         return NO_FACT
-    if operand_type.may_run_user_code:
+    if (
+        not operand_type.accept(_IS_BUILTIN_SEQUENCE_TYPE)
+        and operand_type.may_run_user_code
+    ):
         visitor.invalidate()
     recv_contract = visitor.walk.lvar_contracts.get(args[0])
     if recv_contract is not None and node.lvar is not None:
@@ -3484,6 +3598,11 @@ class _GraphScan(NodeVisitor, LeafVisitor):
                 self.has_seq_length_ops = True
             if node.args:
                 for arg in node.args:
+                    for use in arg.uses:
+                        if use.block is not self.block:
+                            self.consumers[use].add(self.block)
+            if node.fun_info is fndb.RANGE_ADVANCE and node.info is not None:
+                for arg in node.info.arguments:
                     for use in arg.uses:
                         if use.block is not self.block:
                             self.consumers[use].add(self.block)

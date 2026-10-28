@@ -517,7 +517,7 @@ class EntryContext:
     targets: dict[object, Lambda]
     return_type: ValueType
     element_contracts: dict[object, object] = field(default_factory=dict)
-    in_bounds_nodes: frozenset = frozenset()
+    in_bounds_nodes: frozenset[object] = frozenset()
     escape_facts: object = None
     base_escape_facts: object = None
 
@@ -530,7 +530,7 @@ class LambdaFacts:
     return_type: ValueType = UNKNOWN
     parameters: tuple[ValueType, ...] = ()
     element_contracts: dict[object, object] = field(default_factory=dict)
-    in_bounds_nodes: frozenset = frozenset()
+    in_bounds_nodes: frozenset[object] = frozenset()
 
     def method_return_type(self, receiver: ValueType) -> ValueType:
         """Predict a method result without narrowing its ordinary arguments.

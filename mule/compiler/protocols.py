@@ -357,8 +357,10 @@ def _propagate_storage_read(visitor, node) -> ValueType | None:
         seq_type = visitor.type_of(args[0])
         idx_type = visitor.type_of(args[1])
         if seq_type is BOTTOM or idx_type is BOTTOM:
+            visitor.walk.in_bounds_nodes.discard(node)
             return BOTTOM
         if seq_type == EMPTY_LIST_TYPE and idx_type.fits(PYTHON_INTEGER):
+            visitor.walk.in_bounds_nodes.discard(node)
             return BOTTOM
         exact_len = seq_type.exact_length()
         max_idx = (
