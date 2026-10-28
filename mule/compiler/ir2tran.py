@@ -183,6 +183,10 @@ _FIXNUM_BINARY_VOPS = frozenset(
         "fixnum-bit_and",
         "fixnum-bit_or",
         "fixnum-bit_xor",
+        "fixnum-left_shift",
+        "fixnum-right_shift",
+        "fixnum-floor_divide",
+        "fixnum-modulo",
     }
 )
 _FIXNUM_UNARY_VOPS = frozenset(

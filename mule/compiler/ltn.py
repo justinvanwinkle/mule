@@ -153,6 +153,7 @@ class EntryContext:
     base_escape_facts: object = None
     local_environments: object = None
     codegen_info: dict = field(default_factory=dict)
+    in_bounds_nodes: frozenset = frozenset()
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)
@@ -414,11 +415,12 @@ def find_template_for_ltn_policy(call: Combination, context, annotate) -> object
     if fun_info.name in ("%physical_field_ref", "%physical_field_set"):
         return _physical_slot_template(call, context)
     candidates = templates_for(fun_info)
-    operands = [
-        arg.info.primitive_type if arg.info is not None else annotate.lvar_ptype(arg)
-        for arg in call.args
-        if arg.info is None or arg.info.kind is not IR2LvarKind.DELAYED
-    ]
+    operands = []
+    for arg in call.args:
+        if arg.info is None:
+            annotate.annotate_1_value_lvar(arg)
+        if arg.info.kind is not IR2LvarKind.DELAYED:
+            operands.append(arg.info.primitive_type)
     lvar = call.lvar
     if context.plan is not None:
         result = context.plan.node_type(call)

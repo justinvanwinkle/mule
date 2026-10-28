@@ -298,6 +298,7 @@ class Body:
     # ``%call_resolved`` nodes whose receiver's class resolved the method.
     method_targets: dict[object, Lambda] | None = None
     element_contracts: dict[object, object] = field(default_factory=dict)
+    in_bounds_nodes: frozenset = frozenset()
 
     def types(self) -> dict[object, ValueType]:
         return {
@@ -517,6 +518,7 @@ def constant_type(literal) -> ValueType:
 
 _GLOBAL = object()
 _SEQ_LEN = "seq-len"
+_RANGE_STOP = "range-stop"
 _SEQ_LEN_BOUND_TYPE = IntegerType(0, (1 << 60) - 1)
 _SEQ_LEN_BOUND_FACT = Fact(_SEQ_LEN_BOUND_TYPE)
 _CANONICAL_FACTS[id(_SEQ_LEN_BOUND_TYPE)] = _SEQ_LEN_BOUND_FACT
@@ -643,6 +645,20 @@ class _IsUnpackNode(NodeVisitor):
 _IS_UNPACK_NODE = _IsUnpackNode()
 
 
+class _IsBinaryAddNode(NodeVisitor):
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return node.kind is CallKind.KNOWN and node.fun_info in (
+            fndb.BINARY[ast.BinaryOperator.ADD],
+            fndb.INPLACE_BINARY[ast.BinaryOperator.ADD],
+        )
+
+
+_IS_BINARY_ADD_NODE = _IsBinaryAddNode()
+
+
 class _InferredReturnDestination(NodeVisitor):
     def __init__(self, call: Combination):
         self.call = call
@@ -702,10 +718,16 @@ class _LinearUpdate(NodeVisitor):
         info = node.fun_info
         if (
             info is not None
-            and info.name in ("_text_length", "_storage_length")
+            and info.name in ("_text_length", "_storage_length", "len")
             and len(node.args) == 1
         ):
             return self._extract_seq_len_linear(node.args[0])
+        if info is fndb.RANGE_ADVANCE and node.info is not None:
+            r_key = self.visitor.walk.range_stop_keys.get(node.info)
+            if r_key is not None and r_key in self.visitor.state:
+                r_fact = self.visitor.state[r_key]
+                if not r_fact.type.may_be_unbound:
+                    return r_key, None, -1
         if len(node.args) != 2:
             return None
         arg0, arg1 = node.args
@@ -718,6 +740,37 @@ class _LinearUpdate(NodeVisitor):
             and not t1.may_be_unbound
         ):
             return None
+        if (
+            (
+                info is fndb.BINARY[ast.BinaryOperator.RIGHT_SHIFT]
+                and t1.exact_integer() == 1
+            )
+            or (
+                info is fndb.BINARY[ast.BinaryOperator.FLOOR_DIVIDE]
+                and t1.exact_integer() == 2
+            )
+        ) and len(arg0.uses) == 1:
+            sum_node = arg0.uses[0]
+            if (
+                sum_node.accept(_IS_BINARY_ADD_NODE)
+                and len(sum_node.args) == 2
+                and self.visitor.relations
+            ):
+                term_a = _extract_linear_term(self.visitor, sum_node.args[0])
+                term_b = _extract_linear_term(self.visitor, sum_node.args[1])
+                if term_a is not None and term_b is not None:
+                    u_var, c0 = term_a
+                    v_var, c1 = term_b
+                    uv = (
+                        0
+                        if u_var is v_var
+                        else self.visitor.relations.get((u_var, v_var))
+                    )
+                    if uv is not None:
+                        return v_var, None, (uv + c0 + c1) // 2
+                    vu = self.visitor.relations.get((v_var, u_var))
+                    if vu is not None:
+                        return u_var, None, (vu + c0 + c1) // 2
         if info in (
             fndb.BINARY[ast.BinaryOperator.ADD],
             fndb.INPLACE_BINARY[ast.BinaryOperator.ADD],
@@ -899,6 +952,8 @@ class _SequenceProducerLength(NodeVisitor):
                 cnt_var = visitor.origins.get(node.args[1])
                 if cnt_var is not None and cnt_var in visitor.walk.local_vars_set:
                     linear = (cnt_var, 0, 0)
+                elif len(node.args[1].uses) == 1:
+                    linear = node.args[1].uses[0].accept(_LinearUpdate(visitor))
             return IntegerType(lo, hi), linear
         if name == "%multiply" and len(node.args) == 2:
             t0 = visitor.type_of(node.args[0])
@@ -940,6 +995,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.type_of_origins: dict[object, object] = {}
         self.tuple_list_origins: dict[object, TupleType] = {}
         self.handler_state: dict[object, Fact] | None = None
+        self.handler_relations: dict | None = None
         self.has_handler = False
         # Keys assigned since the handler state last absorbed the state.
         self.changed = set()
@@ -965,6 +1021,9 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.globals_invalidated = False
         self.has_handler = has_handler
         self.handler_state = None
+        self.handler_relations = (
+            relations.copy() if has_handler and relations is not None else None
+        )
 
     def assign(self, key, fact):
         if self.state.get(key) is not fact:
@@ -1070,6 +1129,77 @@ class _Propagation(NodeVisitor, LeafVisitor):
         if narrowed is not BOTTOM and narrowed != cur.type:
             self.assign(var, self.narrowed_fact(cur, narrowed))
 
+    def check_in_bounds_access(self, node, seq_lvar, idx_lvar) -> None:
+        seq_type = self.type_of(seq_lvar)
+        idx_type = self.type_of(idx_lvar)
+        if (
+            seq_type.may_be_unbound
+            or idx_type.may_be_unbound
+            or not idx_type.fits(PYTHON_INTEGER)
+            or idx_type.minimum is None
+            or idx_type.minimum < 0
+        ):
+            self.walk.in_bounds_nodes.discard(node)
+            return
+        in_bounds = False
+        exact_len = seq_type.exact_length()
+        if (
+            exact_len is not None
+            and idx_type.maximum is not None
+            and idx_type.maximum < exact_len
+        ):
+            in_bounds = True
+        if not in_bounds:
+            seq_len_t = self.sequence_length_type(seq_lvar)
+            if (
+                seq_len_t is not None
+                and idx_type.maximum is not None
+                and seq_len_t.minimum is not None
+                and idx_type.maximum < seq_len_t.minimum
+            ):
+                in_bounds = True
+        seq_key = None
+        src_var = self.origins.get(seq_lvar)
+        if src_var is not None:
+            src_var = self.walk.temp_source.get(src_var, src_var)
+            seq_key = self.walk.seq_len_keys.get(src_var)
+        idx_var = None
+        idx_d_min = None
+        idx_d_max = None
+        local = self.origins.get(idx_lvar)
+        if local is not None and local in self.walk.local_vars_set:
+            idx_var = self.walk.temp_source.get(local, local)
+            idx_d_min = idx_d_max = 0
+        elif len(idx_lvar.uses) == 1:
+            linear = idx_lvar.uses[0].accept(_LinearUpdate(self))
+            if linear is not None:
+                idx_var, idx_d_min, idx_d_max = linear
+                if idx_var in self.walk.temp_source:
+                    idx_var = self.walk.temp_source[idx_var]
+        if (
+            not in_bounds
+            and self.relations
+            and seq_key is not None
+            and idx_var is not None
+            and idx_d_max is not None
+        ):
+            rel = self.relations.get((idx_var, seq_key))
+            if rel is not None and rel + idx_d_max <= -1:
+                in_bounds = True
+        if in_bounds:
+            self.walk.in_bounds_nodes.add(node)
+        else:
+            self.walk.in_bounds_nodes.discard(node)
+        if (
+            seq_key is not None
+            and idx_var is not None
+            and idx_d_max is not None
+            and idx_d_min == idx_d_max
+            and seq_type.accept(_IS_BUILTIN_SEQUENCE_TYPE)
+            and not in_bounds
+        ):
+            _tighten_relation(self.relations, idx_var, seq_key, -1 - idx_d_max)
+
     def prove_argument_type(self, lvar, proven_type: ValueType) -> None:
         recv_var = self.origins.get(lvar)
         if recv_var is not None and not recv_var.indirect:
@@ -1125,11 +1255,15 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 if updated_nested != current_fact.type:
                     self.assign(parent_var, _fact(updated_nested))
 
-    def mutate_container_element(self, lvar, elem_type: ValueType) -> None:
+    def mutate_container_element(
+        self, lvar, elem_type: ValueType, *, preserves_length: bool = False
+    ) -> None:
         recv_var = self.origins.get(lvar)
         recv_type = self.type_of(lvar)
         if recv_type.fits_list(LIST_TYPE):
-            self.mutate_list(recv_var, recv_type, elem_type)
+            self.mutate_list(
+                recv_var, recv_type, elem_type, preserves_length=preserves_length
+            )
 
     def resolve_call_target(self, node: Combination):
         callee_fact = self.fact_of(node.fun)
@@ -1144,14 +1278,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return self.walk.builtin_target(node.fun)
 
     def invalidate(self):
-        if self.walk.seq_len_keys:
-            for var in self.walk.seq_len_keys:
-                var_fact = self.state.get(var)
-                if var_fact is not None and (
-                    var_fact.type is UNKNOWN
-                    or var_fact.type.accept(_IS_MUTABLE_SEQUENCE_TYPE)
-                ):
-                    self._invalidate_seq_len(var)
         if not self.globals_invalidated and self.walk.invalidated:
             state = self.state
             has_handler = self.has_handler
@@ -1192,13 +1318,21 @@ class _Propagation(NodeVisitor, LeafVisitor):
             if member is not parent_var:
                 parents[member].add(parent_var)
 
-    def mutate_list(self, recv_var, recv_type: ValueType, elem_type: ValueType):
+    def mutate_list(
+        self,
+        recv_var,
+        recv_type: ValueType,
+        elem_type: ValueType,
+        *,
+        preserves_length: bool = False,
+    ):
         if recv_var is not None and recv_var not in self.walk.indirect:
             if self.state.get(recv_var) is not UNBOUND_FACT:
                 self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
             all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
-            for member in all_vars:
-                self._invalidate_seq_len(member)
+            if not preserves_length:
+                for member in all_vars:
+                    self._invalidate_seq_len(member)
             for alias_var in all_vars - {recv_var}:
                 if alias_var in self.state and alias_var not in self.walk.indirect:
                     alias_type = self.state[alias_var].type
@@ -1263,6 +1397,13 @@ class _Propagation(NodeVisitor, LeafVisitor):
             state = self.state
             for key in self.changed:
                 handler[key] = join_fact(handler[key], state[key])
+        if self.handler_relations is not None:
+            if not self.relations:
+                self.handler_relations.clear()
+            else:
+                self.handler_relations = _join_relations_list(
+                    [self.handler_relations, self.relations]
+                )
         self.changed.clear()
 
     # Nodes
@@ -2612,9 +2753,67 @@ def _propagate_build_dict(visitor: _Propagation, node: Combination):
 
 @defpropagate("%range_prepare")
 def _propagate_range_prepare(visitor: _Propagation, node: Combination):
+    state = linked(node.info, node, "info")
+    r_key = visitor.walk.range_stop_keys.get(state)
+    if r_key is not None:
+        visitor._drop_relations_for(r_key)
+        step_pos = False
+        if 1 <= len(state.arguments) <= 2:
+            step_pos = True
+        elif len(state.arguments) == 3:
+            st = visitor.type_of(state.arguments[2])
+            step_pos = (
+                st.fits(PYTHON_INTEGER)
+                and not st.may_be_unbound
+                and st.minimum is not None
+                and st.minimum > 0
+            )
+        if step_pos:
+            stop_lvar = (
+                state.arguments[0] if len(state.arguments) == 1 else state.arguments[1]
+            )
+            stop_fact = visitor.fact_of(stop_lvar)
+            visitor.assign(r_key, stop_fact)
+            if (
+                stop_fact.type.fits(PYTHON_INTEGER)
+                and not stop_fact.type.may_be_unbound
+            ):
+                linear = None
+                stop_local = visitor.origins.get(stop_lvar)
+                if stop_local is not None and stop_local in visitor.walk.local_vars_set:
+                    linear = (
+                        visitor.walk.temp_source.get(stop_local, stop_local),
+                        0,
+                        0,
+                    )
+                elif len(stop_lvar.uses) == 1:
+                    linear = stop_lvar.uses[0].accept(_LinearUpdate(visitor))
+                if linear is not None:
+                    src_var, d_min, d_max = linear
+                    if d_max is not None:
+                        _tighten_relation(visitor.relations, r_key, src_var, d_max)
+                    if d_min is not None:
+                        _tighten_relation(visitor.relations, src_var, r_key, -d_min)
+        else:
+            visitor.assign(r_key, UNBOUND_FACT)
     if visitor.is_proven_fixnum_range(node):
         return BOOLEAN_TRUE_FACT
     return BOOLEAN_FACT
+
+
+@defpropagate("len")
+def _propagate_len(visitor: _Propagation, node: Combination):
+    if len(node.args) == 1:
+        arg_type = visitor.type_of(node.args[0])
+        if arg_type is BOTTOM:
+            return NO_FACT
+        if arg_type.accept(_IS_BUILTIN_SEQUENCE_TYPE):
+            seq_len = visitor.sequence_length_type(node.args[0])
+            if seq_len is not None:
+                return _fact(seq_len)
+            return _SEQ_LEN_BOUND_FACT
+    visitor.invalidate()
+    return _SEQ_LEN_BOUND_FACT
 
 
 @defpropagate("%range_available")
@@ -3069,9 +3268,12 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
     if static_item is BOTTOM:
         return NO_FACT
     if index_type.fits(PYTHON_INTEGER) and not index_type.may_be_unbound:
+        visitor.check_in_bounds_access(node, args[0], args[1])
         bounds = receiver_type.valid_index_bounds()
         if bounds is not None:
             visitor.prove_argument_type(args[1], IntegerType(bounds[0], bounds[1]))
+    else:
+        visitor.walk.in_bounds_nodes.discard(node)
     recv_contract = visitor.walk.lvar_contracts.get(args[0])
     elem_contract = (
         recv_contract.getitem_contract(index_type)
@@ -3119,17 +3321,24 @@ def _propagate_setitem(visitor: _Propagation, node: Combination):
     if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
         visitor.invalidate()
     if recv_type.fits_list(LIST_TYPE):
-        if key_type.fits(PYTHON_INTEGER) and not key_type.may_be_unbound:
+        is_int_index = key_type.fits(PYTHON_INTEGER) and not key_type.may_be_unbound
+        if is_int_index:
+            visitor.check_in_bounds_access(node, args[0], args[1])
             bounds = recv_type.valid_index_bounds()
             if bounds is not None:
                 visitor.prove_argument_type(args[1], IntegerType(bounds[0], bounds[1]))
+        else:
+            visitor.walk.in_bounds_nodes.discard(node)
         elem_type = (
             val_type
             if key_type.fits(PYTHON_INTEGER)
             else val_type.iterate_type().next_item_type()
         )
-        visitor.mutate_list(recv_var, recv_type, elem_type)
+        visitor.mutate_list(
+            recv_var, recv_type, elem_type, preserves_length=is_int_index
+        )
     else:
+        visitor.walk.in_bounds_nodes.discard(node)
         visitor.mutate_dict(recv_var, recv_type, key_type, val_type)
     return NONE_FACT
 
@@ -3220,6 +3429,7 @@ class LambdaGraph:
     call_nodes: tuple
     thresholds: tuple[int, ...] = _BASE_WIDENING_THRESHOLDS
     has_seq_length_ops: bool = False
+    range_states: tuple = ()
 
 
 class _GraphScan(NodeVisitor, LeafVisitor):
@@ -3232,6 +3442,7 @@ class _GraphScan(NodeVisitor, LeafVisitor):
         self.consumers = consumers
         self.block = None
         self.has_seq_length_ops: bool = False
+        self.range_states: list = []
 
     def visit_Ref(self, node):
         node.leaf.accept(self)
@@ -3255,13 +3466,20 @@ class _GraphScan(NodeVisitor, LeafVisitor):
         ):
             self.call_nodes.append((self.block, node))
         if node.kind is CallKind.KNOWN:
-            if node.fun_info is not None and node.fun_info.name in (
+            if node.fun_info is fndb.RANGE_PREPARE and node.info is not None:
+                self.range_states.append(node.info)
+                self.has_seq_length_ops = True
+            elif node.fun_info is not None and node.fun_info.name in (
                 "_text_length",
                 "_storage_length",
                 "len",
                 "%getslice",
                 "_text_slice",
                 "%_list_fill",
+                "%getitem",
+                "%setitem",
+                "_storage_read",
+                "_storage_write",
             ):
                 self.has_seq_length_ops = True
             if node.args:
@@ -3329,6 +3547,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         call_nodes=call_nodes,
         thresholds=thresholds,
         has_seq_length_ops=scan.has_seq_length_ops,
+        range_states=tuple(scan.range_states),
     )
 
 
@@ -3436,8 +3655,13 @@ class _Walk:
             if graph.has_seq_length_ops
             else {}
         )
-        self.relational_vars_tuple = self.local_vars_tuple + tuple(
-            self.seq_len_keys.values()
+        self.range_stop_keys: dict[object, tuple[str, object]] = {
+            rs: (_RANGE_STOP, rs) for rs in graph.range_states
+        }
+        self.relational_vars_tuple = (
+            self.local_vars_tuple
+            + tuple(self.seq_len_keys.values())
+            + tuple(self.range_stop_keys.values())
         )
         self.relational_vars_set = frozenset(self.relational_vars_tuple)
         self.aliases: dict[object, set[object]] = defaultdict(set)
@@ -3454,6 +3678,8 @@ class _Walk:
             var: _fact(parameter_facts[var]) if var in parameter_facts else UNBOUND_FACT
             for var in lambda_.locals
         }
+        for r_key in self.range_stop_keys.values():
+            self.initial[r_key] = UNBOUND_FACT
         for var, seq_key in self.seq_len_keys.items():
             if var in parameter_facts:
                 p_type = parameter_facts[var]
@@ -3467,6 +3693,7 @@ class _Walk:
             else:
                 self.initial[seq_key] = UNBOUND_FACT
         self.element_contracts: dict[object, object] = {}
+        self.in_bounds_nodes: set[object] = set()
         self.var_contracts: dict[object, object] = {
             var: contract
             for var, contract in self.local_contracts.items()
@@ -3749,6 +3976,7 @@ class _Walk:
             return_states,
             dict(self.method_targets),
             dict(self.element_contracts),
+            frozenset(self.in_bounds_nodes),
         )
 
     def propagate(
@@ -3955,7 +4183,11 @@ class _Walk:
                     else:
                         edge = state.copy()
                         self.invalidate_globals(edge)
-                    edge_rel = {}
+                    edge_rel = (
+                        visitor.handler_relations
+                        if visitor.handler_relations is not None
+                        else visitor.relations.copy()
+                    )
                 elif last is None:
                     edge = state
                     edge_rel = visitor.relations.copy()

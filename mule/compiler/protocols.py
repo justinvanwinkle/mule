@@ -342,8 +342,11 @@ def _propagate_storage_write(visitor, node) -> ValueType | None:
         max_idx = (
             exact_len - 1 if exact_len is not None and exact_len > 0 else (1 << 60) - 1
         )
+        visitor.check_in_bounds_access(node, args[0], args[1])
         visitor.prove_argument_type(args[1], IntegerType(0, max_idx))
-        visitor.mutate_container_element(args[0], visitor.type_of(args[2]))
+        visitor.mutate_container_element(
+            args[0], visitor.type_of(args[2]), preserves_length=True
+        )
     return None
 
 
@@ -362,6 +365,7 @@ def _propagate_storage_read(visitor, node) -> ValueType | None:
             exact_len - 1 if exact_len is not None and exact_len > 0 else (1 << 60) - 1
         )
         idx_bound = IntegerType(0, max_idx)
+        visitor.check_in_bounds_access(node, args[0], args[1])
         visitor.prove_argument_type(args[1], idx_bound)
         return seq_type.getitem_type(idx_bound if idx_type is UNKNOWN else idx_type)
     return None

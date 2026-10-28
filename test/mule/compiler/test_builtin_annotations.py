@@ -438,7 +438,8 @@ def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class
     matrix_spec = llvm.split('define internal ptr @"mule_fn_sum_matrix.spec.0"(')[
         1
     ].split("\n}")[0]
-    assert "@mule_list_getitem(" in matrix_spec
+    assert "getelementptr ptr, ptr " in matrix_spec
+    assert "@mule_list_getitem(" not in matrix_spec
     assert "@llvm.sadd.with.overflow.i64(" in matrix_spec
 
     lookup_spec = llvm.split('define internal ptr @"mule_fn_lookup_add.spec.0"(')[

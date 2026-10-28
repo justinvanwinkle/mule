@@ -2686,6 +2686,7 @@ class ModuleGenerator:
             borrowed_parameters=borrowed_params,
             borrowed_callees=self.borrowed_callees,
             element_contracts=facts.element_contracts,
+            in_bounds_nodes=facts.in_bounds_nodes,
             escape_facts=self.escape_facts,
             local_environments=self.local_environments,
         )
@@ -2699,6 +2700,7 @@ class ModuleGenerator:
                 borrowed_parameters=borrowed_params,
                 borrowed_callees=self.borrowed_callees,
                 element_contracts=context.element_contracts,
+                in_bounds_nodes=context.in_bounds_nodes,
                 escape_facts=self.escape_facts,
                 local_environments=self.local_environments,
             )
