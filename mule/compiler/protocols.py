@@ -106,6 +106,10 @@ _TEXT_ACCESS = {
         "_class_identity",
         "_class_parent",
         "_class_is_subclass",
+        "_is_class",
+        "_is_instance",
+        "_class_lookup_default",
+        "_bind_instance_attribute",
         "_raised_class",
         "_exception_targets",
         "_raise_pending",
@@ -219,6 +223,8 @@ _RESULT_TYPES = {
     "_text_storage": lambda node: BooleanType(),
     "_storage_compatible": lambda node: BooleanType(),
     "_class_is_subclass": lambda node: BooleanType(),
+    "_is_class": lambda node: BooleanType(),
+    "_is_instance": lambda node: BooleanType(),
     "_storage_length": _derive_storage_length,
     "_text_length": _derive_text_length,
     "_text_codepoint": lambda node: IntegerType(0, 0x10FFFF),
@@ -257,6 +263,10 @@ _BORROWED_PRIMITIVE_ARGS = {
     "_text_storage": frozenset({0}),
     "_storage_compatible": frozenset({0, 1}),
     "_class_is_subclass": frozenset({0, 1}),
+    "_is_class": frozenset({0}),
+    "_is_instance": frozenset({0, 1}),
+    "_class_lookup_default": frozenset({0, 1, 2}),
+    "_bind_instance_attribute": frozenset({0, 1, 2}),
     "_storage_length": frozenset({0}),
     "_text_length": frozenset({0}),
     "_text_codepoint": frozenset({0, 1}),
@@ -294,6 +304,22 @@ for _name, _emit in _EMITTERS.items():
         _emit,
         consumes_arguments=_name in _COMPILED_CALLS or _name == "_initialize",
     )
+
+# `_mule_native` exports whose generic entry only unpacks an argument tuple
+# around one of these primitives. A protocol module whose only binding of a
+# name is `from _mule_native import export` calls the primitive directly, as
+# SBCL compiles a call to a known function through its VOP rather than its
+# full-call entry. Keys cannot be identifiers, so they never match a name.
+NATIVE_EXPORT_PRIMITIVES = {
+    ("type_of", 1): "_type_of",
+    ("is_subclass", 2): "_class_is_subclass",
+    ("is_class", 1): "_is_class",
+    ("is_instance", 2): "_is_instance",
+    ("class_lookup_default", 3): "_class_lookup_default",
+    ("bind_instance_attribute", 3): "_bind_instance_attribute",
+}
+for (_export, _arity), _name in NATIVE_EXPORT_PRIMITIVES.items():
+    PRIMITIVES[f"_mule_native.{_export}/{_arity}"] = PRIMITIVES[_name]
 
 
 @deftransform("_instance_field")
@@ -466,6 +492,21 @@ def _propagate_class_is_subclass(visitor, node) -> ValueType | None:
 @defconstrain("_class_is_subclass")
 def _constrain_class_is_subclass(visitor, node, state, truth: bool) -> bool:
     return _constrain_native_is_subclass(node, visitor, state, truth)
+
+
+@defpropagate("_is_class")
+def _propagate_is_class(visitor, node) -> ValueType | None:
+    return _derive_native_is_class(tuple(visitor.type_of(arg) for arg in node.args))
+
+
+@defpropagate("_is_instance")
+def _propagate_is_instance(visitor, node) -> ValueType | None:
+    return _derive_native_is_instance(tuple(visitor.type_of(arg) for arg in node.args))
+
+
+@defconstrain("_is_instance")
+def _constrain_is_instance(visitor, node, state, truth: bool) -> bool:
+    return _constrain_native_is_instance(node, visitor, state, truth)
 
 
 @defpropagate("_storage_compatible")

@@ -825,6 +825,61 @@ unsafe fn cached(layout: &ClassLayout, cache: *mut AttrCache) -> Option<usize> {
     unsafe { cached_key(layout.id, cache) }
 }
 
+/// Marks cache keys for reads whose receiver is a class itself, so `C.name`
+/// and `C().name` never share an entry for the same layout.
+const CLASS_RECEIVER_KEY: usize = 1 << (usize::BITS - 1);
+
+/// `class.attribute` through a per-site cache, for the common case the
+/// type-level lookup order reduces to the class's own MRO: the metaclass has
+/// no `__getattribute__` hook and no data descriptor of that name, and the
+/// class defines the attribute. The cache stores the defining position, so a
+/// hit only binds the stored value (`__get__(None, class)` for descriptors).
+/// Any class or metaclass attribute change advances the attribute epoch and
+/// invalidates the entry. Every other case returns None for the full lookup.
+unsafe fn class_receiver_attribute(
+    class: Value,
+    layout: &ClassLayout,
+    attribute: *const c_char,
+    cache: *mut AttrCache,
+) -> Option<Value> {
+    unsafe {
+        let metaclass = class_of_value(class);
+        let meta = layout_of_class(metaclass)?;
+        if !hook(meta, Special::GetAttribute).is_null() {
+            return None;
+        }
+        let key = layout.id | CLASS_RECEIVER_KEY;
+        let position = match cached_key(key, cache) {
+            Some(encoded) => encoded >> SHIFT,
+            None => {
+                let attribute = name(attribute)?;
+                if let Some((owner, _, index)) = meta.find(attribute) {
+                    if attribute_kind(owner.attributes[index].1) == DATA_DESCRIPTOR {
+                        return None;
+                    }
+                }
+                let (owner, depth, index) = layout.find(attribute)?;
+                let kind = attribute_kind(owner.attributes[index].1);
+                let encoded = (((depth << DEPTH_SHIFT) | index) << SHIFT) | kind;
+                if !cache.is_null() {
+                    let epoch = ATTRIBUTE_EPOCH.load(Ordering::Relaxed);
+                    // Compiled inline sites key on instance layouts; a zero
+                    // layout keeps them from matching this entry.
+                    (*cache).layout = 0;
+                    (*cache).encoded = encoded;
+                    (*cache).class_id = key;
+                    (*cache).epoch = epoch;
+                    (*cache).extra[key & (EXTRA_CACHE_SLOTS - 1)] = [key, encoded, epoch];
+                }
+                encoded >> SHIFT
+            }
+        };
+        let defining = layout.ancestor(position >> DEPTH_SHIFT);
+        let value = defining.attributes[position & INDEX_MASK].1;
+        Some(bind_class_attribute(value, std::ptr::null_mut(), class))
+    }
+}
+
 unsafe fn encoded_super(
     layout: &ClassLayout,
     owner: Value,
@@ -1066,6 +1121,8 @@ unsafe fn resolve(
                         return std::ptr::null_mut();
                     }
                 }
+            } else if let Some(value) = class_receiver_attribute(receiver, layout, attribute, cache) {
+                return value;
             }
         } else if !receiver.is_null()
             && !object::is_fixnum(receiver)
@@ -3049,6 +3106,14 @@ unsafe extern "C" fn is_class(_: Value, args: Value) -> Value {
         let Some([value]) = operands(args) else {
             return std::ptr::null_mut();
         };
+        mule_is_class(value)
+    }
+}
+
+/// `_mule_native.is_class` with a borrowed operand, for compiled protocols.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_is_class(value: Value) -> Value {
+    unsafe {
         let class = !value.is_null()
             && !object::is_fixnum(value)
             && matches!(&(*value).data, Data::Class(_));
@@ -3179,6 +3244,19 @@ unsafe extern "C" fn class_lookup_or_null(_: Value, args: Value) -> Value {
 unsafe extern "C" fn class_lookup_default(_: Value, args: Value) -> Value {
     unsafe {
         let Some([class, attribute, default]) = operands(args) else { return std::ptr::null_mut(); };
+        mule_class_lookup_default(class, attribute, default)
+    }
+}
+
+/// `_mule_native.class_lookup_default` with borrowed operands, for compiled
+/// protocols that call it as a primitive.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_class_lookup_default(
+    class: Value,
+    attribute: Value,
+    default: Value,
+) -> Value {
+    unsafe {
         let Some(layout) = class_layout(class) else { return std::ptr::null_mut(); };
         let Some(attribute) = text_argument(attribute) else { return std::ptr::null_mut(); };
         let value = layout.method(&attribute);
@@ -3232,6 +3310,17 @@ unsafe extern "C" fn bind_instance_attribute(_: Value, args: Value) -> Value {
         };
         bind_class_attribute(value, instance, owner)
     }
+}
+
+/// `_mule_native.bind_instance_attribute` with borrowed operands, for compiled
+/// protocols that call it as a primitive.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_bind_instance_attribute(
+    value: Value,
+    instance: Value,
+    owner: Value,
+) -> Value {
+    unsafe { bind_class_attribute(value, instance, owner) }
 }
 
 unsafe extern "C" fn bound_method_receiver(_: Value, args: Value) -> Value {
@@ -4212,6 +4301,15 @@ unsafe extern "C" fn is_instance_export(_: Value, args: Value) -> Value {
         let Some([value, class]) = operands(args) else {
             return std::ptr::null_mut();
         };
+        mule_is_instance(value, class)
+    }
+}
+
+/// `_mule_native.is_instance` with borrowed operands, for compiled protocols
+/// that call it as a primitive rather than through the argument-tuple ABI.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_is_instance(value: Value, class: Value) -> Value {
+    unsafe {
         if is_instance(value, class) {
             return object::bool_value(true);
         }

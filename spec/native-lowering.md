@@ -179,6 +179,27 @@ unset fields retain ordinary lookup and exception behavior. Layout metadata
 describes physical order independently of inferred field value types. Unknown
 and multiple-base layouts retain dynamic access.
 
+Attribute reads whose receiver is a class use the same per-site cache under a
+key distinct from the class's instance layout key, with a zero layout word so
+inline instance probes never match it (`class_receiver_attribute` in
+`classes.rs`). The entry is filled only when the metaclass has no
+`__getattribute__` hook and no data descriptor of that name and the class's MRO
+defines the attribute; it stores the defining position, and a hit binds the
+stored value with `__get__(None, class)` semantics. Any class or metaclass
+attribute change advances the attribute epoch. PCL's per-call-site slot and
+method caches (`src/pcl/dlisp.lisp`, `src/pcl/cache.lisp`) key on the wrapper
+(layout) and invalidate on class redefinition in the same way. Before this,
+every class-receiver read, such as `getattr(cls, '__repr__')`, entered the
+compiled `get_attribute` protocol with a freshly built name.
+
+Calls through a global name that the module never binds and that the builtins
+unit binds to one of its functions predict that function (`builtin_functions`
+in the builtins interface, `foreign_builtin_function` in `constraint.py`). The
+call is guarded by the callee's entry identity like any predicted global call,
+so rebinding `builtins.repr` at runtime reaches the replacement through the
+fallback. Builtin constructors and functions defined in the same compilation
+keep their declared return derivations rather than this prediction.
+
 Method exports condition their result prediction on the owning receiver class.
 A specialized entry contributes only when every other parameter still accepts
 the complete general-entry domain. The ordinary callable summary remains based

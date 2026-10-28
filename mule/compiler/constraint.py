@@ -1589,6 +1589,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
         target = fact.target or self.walk.global_targets.get(leaf.name)
         if target is None and self.walk.imported_targets is not None:
             target = self.walk.imported_targets.get(leaf.name)
+        if target is None:
+            target = self.walk.foreign_builtin_function(leaf.name)
         if (
             fact.type is UNKNOWN
             and ref is not None
@@ -4155,16 +4157,33 @@ class _Walk:
     def builtin_target(
         self, fun_lvar
     ) -> Lambda | ClassConstructorTarget | ForeignCallTarget | None:
+        return self.builtin_target_named(fun_lvar.use().accept(_IMPORTED_CALLEE_NAME))
+
+    def builtin_target_named(
+        self, name: str | None
+    ) -> Lambda | ClassConstructorTarget | ForeignCallTarget | None:
+        """The builtins-unit definition a reference to global ``name``
+        resolves to, when this module never binds that global itself."""
         if (
             self.lambda_.kind is FunctionalKind.TOPLEVEL
             or self.lambda_.policy.safety >= 3
             or self.builtin_targets is None
         ):
             return None
-        name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
         if name is None or name in self.rebound_globals or name in self.global_targets:
             return None
         return self.builtin_targets.get(name)
+
+    def foreign_builtin_function(self, name: str) -> object | None:
+        """The separately compiled builtins-unit function global ``name``
+        names, as a predicted call target. Calls through the name stay
+        guarded by the callee's identity, so a runtime rebinding still runs.
+        Builtin constructors and functions defined in this compilation keep
+        their declared return derivations rather than a predicted entry."""
+        target = self.builtin_target_named(name)
+        if target is None or target.as_lambda() is not None:
+            return None
+        return target if target.as_function() is not None else None
 
     def builtin_return_type(
         self,

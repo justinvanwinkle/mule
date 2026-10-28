@@ -95,12 +95,28 @@ def percent_decimal(pattern, values):
         index = percent + 1
         if index == size:
             raise ValueError("incomplete format")
-        if _text_character(pattern, index) == "%":
+        character = _text_character(pattern, index)
+        if character == "%":
             index += 1
             pieces.append("%")
             continue
+        # A bare conversion has no key, flags, width, or precision; most
+        # patterns use only these, so they skip the full specification parse.
+        if character == "s" or character == "r" or character == "a":
+            index += 1
+            if consumed == count:
+                raise TypeError("not enough arguments for format string")
+            value = _storage_read(values, consumed)
+            consumed += 1
+            if character == "s":
+                pieces.append(_string_protocol(value))
+            elif character == "r":
+                pieces.append(_representation_protocol(value))
+            else:
+                pieces.append(ascii_representation(value))
+            continue
         key = None
-        if _text_character(pattern, index) == "(":
+        if character == "(":
             close = index + 1
             while close < size and _text_character(pattern, close) != ")":
                 close += 1
@@ -115,7 +131,7 @@ def percent_decimal(pattern, values):
         plus = False
         space = False
         alternate = False
-        while index < size and _text_character(pattern, index) in "-0+ #":
+        while index < size:
             flag = _text_character(pattern, index)
             if flag == "-":
                 left = True
@@ -125,8 +141,10 @@ def percent_decimal(pattern, values):
                 plus = True
             elif flag == " ":
                 space = True
-            else:
+            elif flag == "#":
                 alternate = True
+            else:
+                break
             index += 1
         width = 0
         if index < size and _text_character(pattern, index) == "*":

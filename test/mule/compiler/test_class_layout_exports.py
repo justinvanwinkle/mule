@@ -151,7 +151,7 @@ def test_resolved_entry_domains_survive_both_foreign_interfaces(tmp_path):
     generic = ForeignFunction("generic", ("receiver", "key"), signature, False)
     functions = {function.name: function for function in (fast, generic)}
     module = ModuleInterface(functions, {}, {}, {}, {}, [])
-    builtins = BuiltinsInterface(functions, {}, {}, {}, {}, [], {}, {}, {})
+    builtins = BuiltinsInterface(functions, {}, {}, {}, {}, [], {}, {}, {}, {})
     for interface in (
         ModuleInterface.from_json(module.to_json()),
         BuiltinsInterface.from_json(builtins.to_json()),

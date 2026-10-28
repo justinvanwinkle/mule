@@ -92,8 +92,9 @@ OBJECT_SHARD_THRESHOLD = 2 << 20
 class BuiltinsInterface:
     """What units compiled against the builtins unit need from it: its
     functions by name, the methods programs may predict, the protocol entry
-    points, the modules it compiled, and the names its protocols install as
-    builtins."""
+    points, the modules it compiled, the names its protocols install as
+    builtins, and the function each builtin name is bound to, which later
+    units predict as the target of calls through that name."""
 
     functions: dict[str, ForeignFunction]
     methods: dict[str, list[str]]
@@ -104,6 +105,7 @@ class BuiltinsInterface:
     exported_types: dict[tuple[str, str], ValueType]
     storage_methods: dict[tuple[str, str], ValueType]
     builtin_return_types: dict[str, ValueType]
+    builtin_functions: dict[str, str]
 
     def to_json(self) -> str:
         return json.dumps(
@@ -141,6 +143,7 @@ class BuiltinsInterface:
                     name: vtype.to_dict()
                     for name, vtype in self.builtin_return_types.items()
                 },
+                "builtin_functions": self.builtin_functions,
                 "modules": {
                     name: {
                         **asdict(module),
@@ -213,6 +216,7 @@ class BuiltinsInterface:
             exported_types,
             storage_methods,
             builtin_return_types,
+            data["builtin_functions"],
         )
 
 
@@ -602,6 +606,11 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
         dict(unit.exported_types),
         dict(unit.storage_methods),
         dict(unit.builtin_return_types),
+        {
+            name: lambda_.name
+            for name, target in unit.builtin_targets.items()
+            if (lambda_ := target.as_lambda()) is not None
+        },
     )
 
 
@@ -954,6 +963,8 @@ def import_resolver(
     compiler.exported_types.update(interface.exported_types)
     compiler.storage_methods.update(interface.storage_methods)
     compiler.builtin_return_types.update(interface.builtin_return_types)
+    for name, function_name in interface.builtin_functions.items():
+        compiler.builtin_targets[name] = interface.functions[function_name]
     from .protocols import NATIVE_MODULE_TARGETS
 
     compiler.exported_targets.update(NATIVE_MODULE_TARGETS)

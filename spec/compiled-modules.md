@@ -942,8 +942,21 @@ real function objects. Native initialization is an explicit import variant: it
 populates the same namespace, returns owned success or null with an error, and
 uses the existing failure cache reset and reference cleanup. It has `__name__`
 but no fabricated `__file__`. Imports, aliases, passing callables, and module
-attribute rebinding retain ordinary Python behavior; no call-site spelling is
-rewritten. This does not introduce a separate runtime module registry or evaluator.
+attribute rebinding retain ordinary Python behavior. This does not introduce a
+separate runtime module registry or evaluator.
+
+Four exports only unpack their argument tuple around an existing protocol
+primitive: `type_of` (`_type_of`), `is_subclass` (`_class_is_subclass`),
+`is_class` (`_is_class`), and `is_instance` (`_is_instance`). In a protocol
+module whose only binding of a name is `from _mule_native import export`, a
+positional call of that name with the export's arity converts as a known call to
+the primitive (`protocols.NATIVE_EXPORT_PRIMITIVES`, `_NativeCallee` in
+`ir1tran.py`). This follows SBCL's `ir1-convert-combination`, which compiles a
+call to a known function through its translation rather than its full-call
+entry. The primitives carry the same derivation and branch constraints as the
+export targets. Other references to the name, other modules, and modules that
+rebind the name read the imported function object. The calls previously built
+an argument tuple per call; `issubclass` and `isinstance` use them on every call.
 
 Explicit module bindings, including import aliases, take precedence over implicit
 protocol primitive bindings, both for stores and for global reads inside functions.

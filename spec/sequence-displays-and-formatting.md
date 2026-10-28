@@ -108,3 +108,15 @@ operands are evaluated once before dispatch. Numeric modulo retains its existing
 negative-operand, float, bigint and zero-division behavior. Literal and dynamic
 format strings use the same compiled formatter, with normal owned-reference
 cleanup on errors.
+
+A text literal whose directives are only `%s`, `%r`, `%a`, and `%%`, applied to
+a tuple display without `*` elements and with one element per directive, is
+converted as the equivalent formatted string (`FunctionConverter.percent_format`
+in `ir1tran.py`). SBCL's `format` transform in `src/compiler/srctran.lisp`
+expands a constant control string the same way. The literal's `%` is
+`str.__mod__` and the display is the exact argument tuple, so the conversion
+keeps Python's order of effects: every element is evaluated first, then each
+is converted with `str`, `repr`, or `ascii` in order. Other patterns, other
+right operands, and arity mismatches keep the general operation and its errors.
+The compiled formatter also handles bare `%s`, `%r`, and `%a` directives before
+the full specification parse, and copies literal runs as slices joined once.

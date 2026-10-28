@@ -465,6 +465,7 @@ def compile_toplevel(
         for statement in tree.statements:
             statement.accept(shadows)
         converter.module_annotation_shadows = shadows.names
+        converter.module_binding_counts = shadows.counts
         shadows.register_declared_classes(converter, tree.statements)
         converter.interface_bindings = interface_bindings(tree.statements)
         binds_name = BindsName("__name__")

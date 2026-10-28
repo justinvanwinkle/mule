@@ -378,6 +378,10 @@ class Converter:
         ] = {}
         self.class_fields = {}
         self.module_annotation_shadows = set()
+        # Module bindings made by `from _mule_native import export`, by local
+        # name, and how many times the module binds each name anywhere.
+        self.native_imports: dict[str, str] = {}
+        self.module_binding_counts: dict[str, int] = {}
         self.interface_bindings = {}
         # Set once the module's lambdas have their own components. Functions
         # defined later, by cleanup code converted during environment
@@ -385,6 +389,16 @@ class Converter:
         self.split = False
         self.converting_late = False
         self.late: list[tuple[Component, list[Lambda]]] = []
+
+    def native_primitive(self, name: str, arity: int):
+        """The primitive a positional call of global ``name`` with ``arity``
+        arguments compiles to when the module binds the name exactly once, by
+        importing a `_mule_native` export that wraps that primitive; otherwise
+        None. Other uses of the name still read the imported function."""
+        export = self.native_imports.get(name)
+        if export is None or self.module_binding_counts.get(name) != 1:
+            return None
+        return self.primitives.get(f"_mule_native.{export}/{arity}")
 
     def class_identity(self, node: ast.ClassDefinition) -> str:
         identity = self.class_identities.get(id(node))
@@ -1060,6 +1074,13 @@ class FunctionConverter:
         callee.dest = node
         node.info = data
         info = callee.uses[0].accept(_KnownCallee()) if len(callee.uses) == 1 else None
+        if (
+            info is None
+            and len(callee.uses) == 1
+            and data is not None
+            and not data.keywords
+        ):
+            info = callee.uses[0].accept(_NativeCallee(self.converter, len(operands)))
         if info is not None:
             node.kind = CallKind.KNOWN
             node.fun_info = info
@@ -1842,6 +1863,32 @@ class _KnownCallee(NodeVisitor):
         return node.leaf.accept(_KnownFunctionInfo())
 
 
+class _NativeCallee(NodeVisitor, LeafVisitor):
+    """Retarget a callee reference to a once-bound `_mule_native` import
+    to the primitive the export wraps, returning the primitive's entry."""
+
+    def __init__(self, converter, arity: int):
+        self.converter = converter
+        self.arity = arity
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node):
+        info = node.leaf.accept(self)
+        if info is not None:
+            node.leaf.refs.remove(node)
+            node.leaf = self.converter.known(info)
+            node.leaf.refs.append(node)
+        return info
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_GlobalVar(self, leaf):
+        return self.converter.native_primitive(leaf.name, self.arity)
+
+
 class _KnownFunctionInfo(LeafVisitor):
     def visit_KnownFunction(self, leaf):
         return leaf.fun_info
@@ -2285,11 +2332,83 @@ class _Expressions(ast.Visitor):
     def visit_Binary(self, node):
         function = self.function
         start, next_, result = self.frame
+        if node.operator is ast.BinaryOperator.MODULO and self.percent_format(node):
+            return
         ctran, left = function.value(start, node.left)
         ctran, right = function.value(ctran, node.right)
         function.known(
             ctran, next_, result, fndb.BINARY[node.operator], (left, right), node
         )
+
+    def percent_format(self, node) -> bool:
+        """Convert ``"..." % (a, b)`` with a constant pattern of ``%s``, ``%r``,
+        ``%a``, and ``%%`` as the equivalent formatted string, as SBCL's
+        ``format`` transform in ``srctran.lisp`` expands a constant control
+        string. A text literal's ``%`` is ``str.__mod__``, and a tuple display
+        is the exact argument tuple, so the conversion keeps the order of
+        effects: every element is evaluated, then each is converted in turn.
+        Other patterns, other operands, and arity mismatches keep the general
+        operation, which raises the runtime's errors."""
+        pattern = node.left.accept(_TEXT_LITERAL_VALUE)
+        elements = node.right.accept(_PLAIN_TUPLE_ELEMENTS)
+        if pattern is None or elements is None:
+            return False
+        pieces = _simple_percent_pieces(pattern)
+        if pieces is None or sum(1 for _, field in pieces if field) != len(elements):
+            return False
+        function = self.function
+        start, next_, result = self.frame
+        current = start
+        values = []
+        for element in elements:
+            current, value = function.value(current, element)
+            values.append(value)
+        operands = iter(values)
+        parts = [
+            (text, next(operands) if conversion else None, conversion)
+            for text, conversion in pieces
+        ]
+        if not parts:
+            function.constant(current, next_, result, ast.TextLiteral(""))
+            return True
+        joined = None
+        for index, (text, value, conversion) in enumerate(parts):
+            last = index == len(parts) - 1
+            single = len(parts) == 1
+            ctran = next_ if single else Ctran()
+            part = result if single else Lvar()
+            if value is None:
+                function.constant(current, ctran, part, ast.TextLiteral(text))
+            else:
+                following, specification = Ctran(), Lvar()
+                function.constant(
+                    current, following, specification, ast.TextLiteral("")
+                )
+                function.known(
+                    following,
+                    ctran,
+                    part,
+                    fndb.FORMAT,
+                    (value, specification),
+                    node,
+                    FormatInfo(conversion),
+                )
+            current = ctran
+            if joined is None:
+                joined = part
+                continue
+            ctran = next_ if last else Ctran()
+            value = result if last else Lvar()
+            function.known(
+                current,
+                ctran,
+                value,
+                fndb.BINARY[ast.BinaryOperator.ADD],
+                (joined, part),
+                node,
+            )
+            current, joined = ctran, value
+        return True
 
     def visit_Unary(self, node):
         function = self.function
@@ -5383,6 +5502,10 @@ class _ImportBindings(ast.Visitor):
             self.converter.error(
                 "unsupported __future__ compiler directive", node, unsupported=True
             )
+        if node.module == "_mule_native" and not node.level:
+            for item in node.items:
+                self.converter.native_imports[item.alias or item.name] = item.name
+            return
         if node.module != "mule_types" or node.level:
             return
         for item in node.items:
@@ -6830,6 +6953,52 @@ class _TextLiteralValue(ast.Visitor):
 
 _TEXT_LITERAL_VALUE = _TextLiteralValue()
 _STRING_LITERAL_TUPLE = _StringLiteralTuple()
+
+
+class _PlainTupleElements(ast.Visitor):
+    """A tuple display's elements when none is ``*iterable``, else None."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Tuple(self, node: ast.Tuple):
+        if any(element.accept(_IS_UNPACK_NODE) for element in node.elements):
+            return None
+        return node.elements
+
+
+_PLAIN_TUPLE_ELEMENTS = _PlainTupleElements()
+
+
+def _simple_percent_pieces(pattern: str) -> list[tuple[str, str | None]] | None:
+    """Split a ``%`` pattern into literal text and ``%s``/``%r``/``%a``
+    fields, as ``(text, None)`` and ``("", conversion)``. None when the
+    pattern uses keys, flags, widths, precisions, or other conversions."""
+    pieces: list[tuple[str, str | None]] = []
+    literal = []
+    index = 0
+    while index < len(pattern):
+        percent = pattern.find("%", index)
+        if percent < 0:
+            literal.append(pattern[index:])
+            break
+        literal.append(pattern[index:percent])
+        if percent + 1 >= len(pattern):
+            return None
+        conversion = pattern[percent + 1]
+        if conversion == "%":
+            literal.append("%")
+        elif conversion in "sra":
+            if any(literal):
+                pieces.append(("".join(literal), None))
+            literal = []
+            pieces.append(("", conversion))
+        else:
+            return None
+        index = percent + 2
+    if any(literal):
+        pieces.append(("".join(literal), None))
+    return pieces
 
 
 class _SelfAttributeAssignment(ast.Visitor):
