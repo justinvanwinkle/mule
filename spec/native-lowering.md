@@ -48,6 +48,31 @@ between those phases. Older annotations and native-plan selections that did
 not compute a join use the current facts instead. The annotation is cleared
 after conversion.
 
+## LLVM provenance comments
+
+Generated LLVM includes single-line comments identifying source files, qualified
+function identifiers, and entry roles, including specialized and native bodies,
+external argument wrappers, and compiler-generated adapters. IR2 block comments
+identify the emitted block and its exception destination. Operation comments
+identify the source span, selected VOP, and IR1 call operation when available.
+Consecutive operations with the same provenance share one comment within a block.
+Spans use one-based lines and zero-based Unicode columns, with exclusive ends.
+Operations without a source span are explicitly compiler-generated.
+
+Shared helper comments identify their purpose and compiler emitter rather than
+attributing them to one of their potentially many source callers. Function
+comments use existing code metadata. Comments escape control characters and
+non-ASCII characters so filenames cannot introduce LLVM instructions or lines.
+They record existing provenance, not inferred explanations of optimization choices.
+
+This follows `src/compiler/codegen.lisp`, `generate-code`, which emits each
+operation under its originating VOP, and `src/compiler/assem.lisp`, `stmt`, which
+retains the VOP with each instruction. Mule renders the existing IR1/IR2 origin
+links as LLVM comments because its backend serializes LLVM rather than SBCL
+assembler statements. Comments do not change instructions or runtime behavior.
+LLVM drops them when it parses and re-emits the module. They are not debug
+metadata and do not establish provenance after optimization or LTO.
+
 ## Proven floats in object entries
 
 LTN distinguishes a proven, bound Python float from an unknown descriptor and

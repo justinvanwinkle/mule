@@ -107,6 +107,43 @@ if TYPE_CHECKING:
 OBJECT = vops.OBJECT
 logger = logging.getLogger(__name__)
 
+
+def _llvm_comment(text: str) -> str:
+    """Keep source filenames and other provenance on one LLVM comment line."""
+    return "; " + text.encode("unicode_escape").decode("ascii")
+
+
+def _function_comment(code: CodeInfo, entry: str) -> str:
+    return _llvm_comment(
+        f"source: {code.filename}:{code.firstlineno}; "
+        f"function: {code.qualname}; entry: {entry}"
+    )
+
+
+def _helper_comment(purpose: str) -> str:
+    return _llvm_comment(f"helper: {purpose}; emitter: mule/compiler/codegen.py")
+
+
+def _without_llvm_comments(text: str) -> str:
+    """Provenance must not create symbol dependencies from source filenames."""
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith(";")
+    )
+
+
+class _ProvenanceOperation(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node):
+        if node.fun_info is not None:
+            return node.fun_info.name
+        return f"{node.kind.name.lower()} call"
+
+
+_PROVENANCE_OPERATION = _ProvenanceOperation()
+
+
 DECLARATIONS = """declare ptr @mule_literal_integer(ptr)
 declare ptr @mule_literal_float(double)
 declare ptr @mule_literal_text(ptr, i64)
@@ -372,19 +409,25 @@ def _parsed_helpers(
     helper_defs: list[tuple[str, str]] = []
     current_symbol = None
     current_lines: list[str] = []
-    helper_text = vops.helpers(bootstrap=bootstrap) + "\n\n" + argument_layout.helpers()
-    for line in helper_text.splitlines():
-        if current_symbol is not None:
-            current_lines.append(line)
-            if line == "}":
-                helper_defs.append((current_symbol, "\n".join(current_lines)))
-                current_symbol = None
-                current_lines = []
-        elif line.startswith("define "):
-            current_symbol = line.split("(")[0].split()[-1]
-            current_lines = [line]
-        elif (entry := _declaration_symbol(line)) is not None:
-            intrinsics_lines.append(entry)
+    for emitter, helper_text in (
+        ("mule/compiler/vops.py", vops.helpers(bootstrap=bootstrap)),
+        ("mule/compiler/argument_layout.py", argument_layout.helpers()),
+    ):
+        for line in helper_text.splitlines():
+            if current_symbol is not None:
+                current_lines.append(line)
+                if line == "}":
+                    helper_defs.append((current_symbol, "\n".join(current_lines)))
+                    current_symbol = None
+                    current_lines = []
+            elif line.startswith("define "):
+                current_symbol = line.split("(")[0].split()[-1]
+                current_lines = [
+                    _llvm_comment(f"helper: {current_symbol}; emitter: {emitter}"),
+                    line,
+                ]
+            elif (entry := _declaration_symbol(line)) is not None:
+                intrinsics_lines.append(entry)
     return tuple(intrinsics_lines), tuple(helper_defs)
 
 
@@ -1157,7 +1200,9 @@ class ModuleGenerator:
                 ]
             body += ["  ret i32 0", "failure:", "  ret i32 -1"]
             definitions.append(
-                f"define {linkage} i32 {_symbol(f'mule.link:{namespace}')}(ptr %namespace) {{\n"
+                _helper_comment(f"global linkage for namespace {namespace}")
+                + "\n"
+                + f"define {linkage} i32 {_symbol(f'mule.link:{namespace}')}(ptr %namespace) {{\n"
                 + "\n".join(body)
                 + "\n}"
             )
@@ -1422,7 +1467,9 @@ class ModuleGenerator:
             for i in range(count)
         )
         self.auxiliary.append(
-            f"define internal ptr {symbol}({params}) {{\n"
+            _helper_comment(f"cached tuple packing; arity: {count}")
+            + "\n"
+            + f"define internal ptr {symbol}({params}) {{\n"
             "entry:\n"
             f"  %argv = alloca [{count} x ptr]\n"
             f"{stores}\n"
@@ -1482,6 +1529,9 @@ class ModuleGenerator:
         """Construct the cached tuple on first use; main releases initialized roots."""
         packer = self.tuple_pack_helper(len(operations))
         lines = [
+            _helper_comment(
+                f"tuple constant initialization; unit: {self.program.unit}"
+            ),
             f"define internal ptr {symbol}() {{",
             "entry:",
             f"  %cached = load ptr, ptr {slot}",
@@ -1547,7 +1597,11 @@ class ModuleGenerator:
             )
         )
         self.auxiliary.append(
-            f"define internal ptr {symbol}({params}) {{\n"
+            _helper_comment(
+                f"protocol adapter: {name}; target: {self.sequence_functions[name].name}"
+            )
+            + "\n"
+            + f"define internal ptr {symbol}({params}) {{\n"
             "entry:\n"
             "  %globals = call ptr @mule_protocol_globals()\n"
             "  %status = call i32 @mule_enter_frame()\n"
@@ -1570,7 +1624,9 @@ class ModuleGenerator:
         self.protocol_helpers["$getitem.fast"] = symbol
         slow = self.protocol_helper("getitem", 2)
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %sequence, ptr %index) alwaysinline {{\n"
+            _helper_comment("getitem protocol dispatch")
+            + "\n"
+            + f"define internal ptr {symbol}(ptr %sequence, ptr %index) alwaysinline {{\n"
             "entry:\n"
             "  %fast = call ptr @mule_fast_getitem(ptr %sequence, ptr %index)\n"
             "  %matched = icmp ne ptr %fast, null\n"
@@ -1595,7 +1651,9 @@ class ModuleGenerator:
         make_slice = self.protocol_helper("make_slice", 3)
         slow = self.protocol_helper("getitem", 2)
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %sequence, ptr %start, ptr %stop, ptr %step) {{\n"
+            _helper_comment("slice protocol dispatch")
+            + "\n"
+            + f"define internal ptr {symbol}(ptr %sequence, ptr %start, ptr %stop, ptr %step) {{\n"
             "entry:\n"
             "  %fast = call ptr @mule_fast_getslice(ptr %sequence, ptr %start, ptr %stop, ptr %step)\n"
             "  %matched = icmp ne ptr %fast, null\n"
@@ -1633,7 +1691,9 @@ class ModuleGenerator:
         )
         item_arg = "%item" if move else "%owned.item"
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) alwaysinline {{\n"
+            _helper_comment(f"setitem protocol dispatch; move: {move}")
+            + "\n"
+            + f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) alwaysinline {{\n"
             "entry:\n"
             f"  %matched = call i32 {fast_fn}(ptr %sequence, ptr %index, ptr %item)\n"
             "  %valid = icmp ne i32 %matched, 0\n"
@@ -1664,7 +1724,9 @@ class ModuleGenerator:
         )
         slow_arg = "%sequence" if move else "%owned"
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %sequence) alwaysinline {{\n"
+            _helper_comment(f"iteration protocol dispatch; move: {move}")
+            + "\n"
+            + f"define internal ptr {symbol}(ptr %sequence) alwaysinline {{\n"
             "entry:\n"
             f"  %fast = call ptr {fast_fn}(ptr %sequence)\n"
             "  %ok = icmp ne ptr %fast, null\n"
@@ -1687,7 +1749,9 @@ class ModuleGenerator:
         self.protocol_helpers["$next_item.fast"] = symbol
         slow = self.protocol_helper("next_item", 1)
         self.auxiliary.append(
-            f"define internal i32 {symbol}(ptr %iterator, ptr %out) alwaysinline {{\n"
+            _helper_comment("iterator next protocol dispatch")
+            + "\n"
+            + f"define internal i32 {symbol}(ptr %iterator, ptr %out) alwaysinline {{\n"
             "entry:\n"
             "  %status = call i32 @mule_fast_next_item(ptr %iterator, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
@@ -1714,7 +1778,9 @@ class ModuleGenerator:
         self.protocol_helpers[key] = symbol
         slow = self.protocol_helper("next_item", 1)
         self.auxiliary.append(
-            f"define internal i32 {symbol}(ptr %iterator, ptr %unpack.out, ptr %out) alwaysinline {{\n"
+            _helper_comment(f"iterator next with unpacking; arity: {arity}")
+            + "\n"
+            + f"define internal i32 {symbol}(ptr %iterator, ptr %unpack.out, ptr %out) alwaysinline {{\n"
             "entry:\n"
             f"  %status = call i32 @mule_fast_next_unpack(ptr %iterator, i64 {arity}, ptr %unpack.out, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
@@ -1751,7 +1817,9 @@ class ModuleGenerator:
             )
         copies_block = "\n".join(copies)
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %value, ptr %count, ptr %out) alwaysinline {{\n"
+            _helper_comment(f"unpack into result slots; arity: {arity}")
+            + "\n"
+            + f"define internal ptr {symbol}(ptr %value, ptr %count, ptr %out) alwaysinline {{\n"
             "entry:\n"
             "  %already = icmp eq ptr %value, null\n"
             "  br i1 %already, label %fast.done, label %check\n"
@@ -1785,7 +1853,9 @@ class ModuleGenerator:
         self.protocol_helpers[key] = symbol
         slow = self.protocol_helper("unpack", 2)
         self.auxiliary.append(
-            f"define internal ptr {symbol}(ptr %value, ptr %count) alwaysinline {{\n"
+            _helper_comment(f"unpack protocol dispatch; arity: {arity}")
+            + "\n"
+            + f"define internal ptr {symbol}(ptr %value, ptr %count) alwaysinline {{\n"
             "entry:\n"
             f"  %valid = call i1 @mule.fast.tuple.shape(ptr %value, i64 {arity})\n"
             "  br i1 %valid, label %tuple, label %list.check\n"
@@ -1814,7 +1884,9 @@ class ModuleGenerator:
         params = ", ".join(["ptr %globals", *(f"ptr %arg.{i}" for i in range(arity))])
         if not self.needs_frame_depth_check(function):
             self.auxiliary.append(
-                f"define internal ptr {symbol}({params}) {{\n"
+                _helper_comment(f"compiled call; target: {function.name}")
+                + "\n"
+                + f"define internal ptr {symbol}({params}) {{\n"
                 "entry:\n"
                 f"  %result = call ptr {body}({params})\n"
                 "  ret ptr %result\n"
@@ -1825,7 +1897,9 @@ class ModuleGenerator:
             f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
         )
         self.auxiliary.append(
-            f"define internal ptr {symbol}({params}) {{\n"
+            _helper_comment(f"compiled call with frame check; target: {function.name}")
+            + "\n"
+            + f"define internal ptr {symbol}({params}) {{\n"
             "entry:\n"
             "  %status = call i32 @mule_enter_frame()\n"
             "  %bad = icmp slt i32 %status, 0\n"
@@ -1847,7 +1921,11 @@ class ModuleGenerator:
         symbol = f"@mule.call.borrowed.{arity}" if borrowed else f"@mule.call.{arity}"
         self.protocol_helpers[key] = symbol
         params = ", ".join(["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))])
-        lines = [f"define internal ptr {symbol}({params}) {{", "entry:"]
+        lines = [
+            _helper_comment(f"positional call; arity: {arity}; borrowed: {borrowed}"),
+            f"define internal ptr {symbol}({params}) {{",
+            "entry:",
+        ]
         if arity:
             lines.append(f"  %argv = alloca [{arity} x ptr]")
             for i in range(arity):
@@ -1880,7 +1958,11 @@ class ModuleGenerator:
                 *(f"ptr %arg.{i}" for i in range(arity)),
             ]
         )
-        lines = [f"define internal ptr {symbol}({params}) {{", "entry:"]
+        lines = [
+            _helper_comment(f"resolved method call; arity: {arity}"),
+            f"define internal ptr {symbol}({params}) {{",
+            "entry:",
+        ]
         if arity:
             lines.append(f"  %argv = alloca [{arity} x ptr]")
             for i in range(arity):
@@ -1920,7 +2002,13 @@ class ModuleGenerator:
         ]
         ordered = [*positional, *(val for _, val in named)]
         names = self.names(tuple(name for name, _ in named))
-        lines = [f"define internal ptr {symbol}({', '.join(params)}) {{", "entry:"]
+        lines = [
+            _helper_comment(
+                f"keyword call; arguments: {keywords}; resolved: {resolved}"
+            ),
+            f"define internal ptr {symbol}({', '.join(params)}) {{",
+            "entry:",
+        ]
         if ordered:
             lines.append(f"  %argv = alloca [{len(ordered)} x ptr]")
             for i, val in enumerate(ordered):
@@ -2007,6 +2095,10 @@ class ModuleGenerator:
         )
         builder = _HelperBuilder(self)
         builder.lines = [
+            _helper_comment(
+                "method call dispatch; candidates: "
+                + ", ".join(function.name for function in functions)
+            ),
             f"define internal ptr {symbol}({', '.join(params)}) {{",
             "entry:",
             "  %fn.globals.slot = alloca ptr",
@@ -2514,7 +2606,11 @@ class ModuleGenerator:
                 )
             builder.line("  ret ptr %fallback.res")
         builder.lines.append("}")
-        self.auxiliary.append("\n".join(builder.lines))
+        self.auxiliary.append(
+            _helper_comment(f"direct call; target: {function.name}")
+            + "\n"
+            + "\n".join(builder.lines)
+        )
         return symbol
 
     def return_contract_helper(self, contract, *, unpacked_arity=None):
@@ -2526,7 +2622,11 @@ class ModuleGenerator:
         symbol = _symbol(f"mule.return.check.{len(self.protocol_helpers)}")
         self.protocol_helpers[key] = symbol
         builder = _HelperBuilder(self, failure_result="i32 -1")
-        builder.lines = [f"define internal i32 {symbol}(ptr %value) {{", "entry:"]
+        builder.lines = [
+            _helper_comment("return contract check"),
+            f"define internal i32 {symbol}(ptr %value) {{",
+            "entry:",
+        ]
         if unpacked_arity is None:
             contract.accept(vops._ContractAssertion(builder, "%value"))
         else:
@@ -2767,7 +2867,11 @@ class ModuleGenerator:
                 ]
             )
         builder.lines.append("}")
-        self.auxiliary.append("\n".join(builder.lines))
+        self.auxiliary.append(
+            _helper_comment(f"unpacked direct call; target: {function.name}")
+            + "\n"
+            + "\n".join(builder.lines)
+        )
         return symbol
 
     def contexts(self, lambda_: Lambda):
@@ -2886,6 +2990,9 @@ class ModuleGenerator:
         has_descriptors = any(sc is DESCRIPTOR for sc in convention.parameters)
         frame_fail_label = "frame.failed" if has_descriptors else "failed"
         builder.lines = [
+            _helper_comment(
+                f"guarded numeric call; target: {entry.function.name}; context: {entry.context.id}"
+            ),
             f"define internal {ret_type} {symbol}({', '.join(params)}) {{",
             "entry:",
             "  %fn.globals.slot = alloca ptr",
@@ -3190,14 +3297,15 @@ class ModuleGenerator:
         ]
         body_text = "\n\n".join(body_sections)
         intrinsics_lines, helper_defs = _parsed_helpers(program.bootstrap)
-        referenced = set(_MULE_SYMBOL_RE.findall(body_text))
+        body_code = _without_llvm_comments(body_text)
+        referenced = set(_MULE_SYMBOL_RE.findall(body_code))
         for llvm_sym in (
             "@llvm.assume",
             "@llvm.sadd.with.overflow.i64",
             "@llvm.ssub.with.overflow.i64",
             "@llvm.smul.with.overflow.i64",
         ):
-            if llvm_sym in body_text:
+            if llvm_sym in body_code:
                 referenced.add(llvm_sym)
         kept_helpers: list[str] = []
         kept_symbols: set[str] = set()
@@ -3209,7 +3317,7 @@ class ModuleGenerator:
                 if symbol not in kept_symbols and f"{symbol}(" in search_text:
                     kept_symbols.add(symbol)
                     kept_helpers.append(chunk)
-                    search_text += "\n" + chunk
+                    search_text += "\n" + _without_llvm_comments(chunk)
                     changed = True
         kept_decls = [
             line
@@ -3271,7 +3379,9 @@ class ModuleGenerator:
                 "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] "
                 f"[{{ i32, ptr, ptr }} {{ i32 65535, ptr {entry}, ptr null }}]"
             ),
-            f"define internal void {entry}() {{\nentry:\n"
+            _helper_comment(f"compiled import registration; unit: {self.program.unit}")
+            + "\n"
+            + f"define internal void {entry}() {{\nentry:\n"
             + "\n".join(calls)
             + "\n  ret void\n}",
         ]
@@ -3282,7 +3392,9 @@ class ModuleGenerator:
         if target not in self.owned:
             return None
         return (
-            "define ptr @mule.attribute.lookup(ptr %receiver, ptr %name) {\n"
+            _helper_comment(f"attribute lookup adapter; target: {target.name}")
+            + "\n"
+            + "define ptr @mule.attribute.lookup(ptr %receiver, ptr %name) {\n"
             "entry:\n"
             "  %frame = call i32 @mule_enter_frame()\n"
             "  %bad = icmp slt i32 %frame, 0\n"
@@ -3322,7 +3434,9 @@ class ModuleGenerator:
             links.append("  %protocol.globals = call ptr @mule_protocol_globals()")
             links += self.link(PROTOCOL_NAMESPACE, target, "link.failed", 0)
         initialize = (
-            f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
+            _helper_comment(f"unit initialization; unit: {self.program.unit}")
+            + "\n"
+            + f"define {linkage}ptr {unit_initializer(self.program.unit)}() {{\n"
             "entry:\n"
             + "".join(line + "\n" for line in links)
             + "  ret ptr inttoptr (i64 1 to ptr)\n"
@@ -3359,7 +3473,9 @@ class ModuleGenerator:
             ]
         )
         finalize = (
-            f"define {linkage}void {unit_finalizer(self.program.unit)}() {{\n"
+            _helper_comment(f"unit finalization; unit: {self.program.unit}")
+            + "\n"
+            + f"define {linkage}void {unit_finalizer(self.program.unit)}() {{\n"
             "entry:\n"
             + "".join(
                 f"  {value} = load ptr, ptr {slot}\n"
@@ -3398,7 +3514,9 @@ class ModuleGenerator:
                 f"unit.ready.{index}:",
             ]
         definitions.append(
-            "define internal ptr @mule.initialize.protocols(ptr %globals, ptr %args) {\n"
+            _helper_comment(f"protocol startup; unit: {program.unit}")
+            + "\n"
+            + "define internal ptr @mule.initialize.protocols(ptr %globals, ptr %args) {\n"
             "entry:\n"
             + "\n".join(startup)
             + "\n"
@@ -3435,7 +3553,11 @@ class ModuleGenerator:
         )
         if program.argument_constructor is not None:
             definitions.append(
-                "define internal ptr @mule.arguments.construct(ptr %class, ptr %view) {\n"
+                _helper_comment(
+                    f"argument constructor adapter; target: {program.argument_constructor.name}"
+                )
+                + "\n"
+                + "define internal ptr @mule.arguments.construct(ptr %class, ptr %view) {\n"
                 "entry:\n"
                 "  %globals = call ptr @mule_protocol_globals()\n"
                 "  %owned.class = call ptr @mule.fast.retain(ptr %class)\n"
@@ -3455,7 +3577,9 @@ class ModuleGenerator:
                 f"ptr {self.text(clang_cmd)}, ptr {self.text(rustc_cmd)}, i64 {opt_lvl})\n"
             )
         definitions.append(
-            "define i32 @main(i32 %argc, ptr %argv) {\n"
+            _helper_comment(f"executable entry; unit: {program.unit}")
+            + "\n"
+            + "define i32 @main(i32 %argc, ptr %argv) {\n"
             "entry:\n"
             "  call void @mule_set_process_arguments(i32 %argc, ptr %argv)\n"
             + f"  call void @mule_set_image_search_path(ptr {paths}, i64 {len(program.search_paths)})\n"
@@ -3536,6 +3660,7 @@ class ModuleGenerator:
         symbol = self.import_symbol(info)
         return "\n".join(
             [
+                _helper_comment(f"missing import lookup; module: {info.module_name}"),
                 f"define {linkage} ptr {symbol}() {{",
                 "entry:",
                 f"  %module = call ptr @mule_import_missing(ptr {self.text(info.module_name)})",
@@ -3557,6 +3682,7 @@ class ModuleGenerator:
         cache = self.import_cache(info)
         self.auxiliary.append(f"{cache} = {linkage or 'internal '}global ptr null")
         legacy = [
+            _helper_comment(f"import initialization; module: {info.module_name}"),
             f"define {linkage}ptr {symbol}() {{",
             "entry:",
             f"  %cached = load ptr, ptr {cache}",
@@ -3585,6 +3711,7 @@ class ModuleGenerator:
             "}",
         ]
         lines = [
+            _helper_comment(f"import namespace creation; module: {info.module_name}"),
             f"define {linkage}ptr {self.import_create_symbol(info)}() {{",
             "entry:",
             *self.unit_startup(info),
@@ -3668,6 +3795,9 @@ class ModuleGenerator:
         )
         create = "\n".join(lines)
         lines = [
+            _helper_comment(
+                f"import execution; module: {info.module_name}; source: {info.filename}"
+            ),
             f"define {linkage}ptr {self.import_execute_symbol(info)}(ptr %globals) {{",
             "entry:",
             f"  %previous = load ptr, ptr {cache}",
@@ -5658,6 +5788,25 @@ class FunctionGenerator:
 
     # Function emission
 
+    def function_comment(self, entry: str) -> str:
+        return _function_comment(self.module.code(self.lambda_), entry)
+
+    def operation_comment(self, vop) -> str:
+        node = vop.node
+        source = None if node is None else node.source
+        location = "compiler-generated"
+        if source is not None and source.span is not None:
+            start, end = source.span.start, source.span.end
+            location = (
+                f"{self.module.code(self.lambda_).filename}:"
+                f"{start.line}:{start.column}-{end.line}:{end.column}"
+            )
+        operation = None if node is None else node.accept(_PROVENANCE_OPERATION)
+        origin = f"source: {location}"
+        if operation is not None:
+            origin += f"; operation: {operation}"
+        return _llvm_comment(f"{origin}; VOP: {vop.info.name}")
+
     def emit(self) -> str:
         if self.raw:
             return self.emit_raw()
@@ -5723,6 +5872,20 @@ class FunctionGenerator:
                 for index, sc in enumerate(parameter_scs)
             ]
             + (["ptr %tuple.out"] if self.unpacked else [])
+        )
+        entry = "general body"
+        if self.unpacked:
+            entry = "unpacked return body"
+        elif self.convention is not None:
+            entry = "internal numeric body"
+        elif self.context.rejected_fixnum_guard is not None:
+            entry = "rejected fixnum guard fallback body"
+        elif plan is not None:
+            entry = "boxed fallback body"
+        elif self.context.id is not None:
+            entry = "specialized body"
+        self.lines.append(
+            self.function_comment(f"{entry}; context: {self.context.id or 'general'}")
         )
         self.lines.append(
             f"define {linkage}{returned.llvm_type} {self.body}({parameters}) {{"
@@ -5856,8 +6019,19 @@ class FunctionGenerator:
                 if target is not None and target in self.component.ir2_blocks
                 else None
             )
+            self.line(
+                _llvm_comment(
+                    f"IR2 block: {block.label}; "
+                    f"exception target: {self.exception_target or 'function error'}"
+                )
+            )
+            previous_origin = None
             for vop in block.vops:
                 self.vop = vop
+                origin = self.operation_comment(vop)
+                if origin != previous_origin:
+                    self.line(origin)
+                    previous_origin = origin
                 self.unpacked_remaining_slots = (
                     self.component.tuple_delivery.remaining.get(vop, ())
                 )
@@ -5900,6 +6074,7 @@ class FunctionGenerator:
         parameters.extend(f"ptr {value}" for value in self.dependencies.values())
         returned = plan.returned
         self.lines = [
+            self.function_comment("native body; context: native"),
             f"define internal {returned.llvm_type} {plan.entry}({', '.join(parameters)}) {{",
             "entry:",
         ]
@@ -6062,6 +6237,11 @@ class FunctionGenerator:
             else f"define ptr {entry}(ptr %globals, ptr %args) {{"
         )
         lines = [
+            self.function_comment(
+                "ordinary argument view"
+                if ordinary_view
+                else "external argument wrapper"
+            ),
             header,
             "entry:",
         ]
@@ -6181,6 +6361,7 @@ class FunctionGenerator:
         if ordinary_view:
             return "\n".join(lines)
         bound_lines = [
+            self.function_comment("keyword binding wrapper"),
             f"define internal ptr {binding}(ptr %globals, ptr %args) noinline {{",
             "entry:",
             "  br label %binding",
@@ -6478,6 +6659,7 @@ class FunctionGenerator:
         fixed = count - int(variadic)
         check = "mule_check_rest_args" if variadic else "mule_check_args"
         lines = [
+            self.function_comment("external argument wrapper"),
             f"define ptr {module.functions[lambda_]}(ptr %globals, ptr %args) {{",
             "entry:",
             f"  %status = call i32 @{check}(ptr %args, i32 {fixed})",
@@ -6523,6 +6705,7 @@ def native_adapter(
         ["ptr %globals", *(f"ptr %parameter.{i}" for i in range(len(plan.parameters)))]
     )
     gen.lines = [
+        gen.function_comment("boxed-to-native adapter"),
         f"define {linkage}ptr {gen.body}({parameters}) {{",
         "entry:",
     ]
@@ -6624,6 +6807,7 @@ def native_callbacks(module: ModuleGenerator, layout) -> str:
     initializer = layout.methods["__init__"]
     count = len(initializer.vars) - 1
     constructor = [
+        _function_comment(module.code(initializer), "native constructor callback"),
         f"define internal ptr {layout.constructor}(ptr %globals, ptr %class, i64 %count, ptr %args) {{",
         "entry:",
         f"  %wrong = icmp ne i64 %count, {count}",
@@ -6656,6 +6840,7 @@ def native_callbacks(module: ModuleGenerator, layout) -> str:
         or not initializer.signature.positional_body
     ):
         constructor = [
+            _function_comment(module.code(initializer), "native constructor callback"),
             f"define internal ptr {layout.constructor}(ptr %globals, ptr %class, i64 %count, ptr %args) {{",
             "entry:",
             "  %result = call ptr @mule_construct_arguments(ptr %class, i64 %count, ptr %args)",
@@ -6669,6 +6854,9 @@ def native_callbacks(module: ModuleGenerator, layout) -> str:
         "  %owned.instance = call ptr @mule.fast.retain(ptr %instance)",
     ]
     getter = [
+        _function_comment(
+            module.code(layout.protocols["get_field"]), "native field getter callback"
+        ),
         f"define internal ptr {layout.getter}(ptr %globals, ptr %instance, i64 %index) {{",
         "entry:",
         *index,
@@ -6677,6 +6865,9 @@ def native_callbacks(module: ModuleGenerator, layout) -> str:
         "}",
     ]
     setter = [
+        _function_comment(
+            module.code(layout.protocols["set_field"]), "native field setter callback"
+        ),
         f"define internal i32 {layout.setter}(ptr %globals, ptr %instance, i64 %index, ptr %value) {{",
         "entry:",
         *index,
