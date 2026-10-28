@@ -1286,6 +1286,7 @@ class _CloneIR1Node(NodeVisitor):
             var,
             self.map_lvar(node.value),
             missing_ok=node.missing_ok,
+            final_binding=node.final_binding,
         )
         if node in var.sets:
             var.sets[var.sets.index(node)] = cloned

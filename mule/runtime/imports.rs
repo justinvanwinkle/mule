@@ -573,11 +573,12 @@ pub unsafe fn import_or_compile_module(name: &str) -> Option<Value> {
         }
         if let Some((parent, child)) = name.rsplit_once('.') {
             if let Ok(Some(parent_mod)) = crate::builtins::find_loaded_module(parent) {
-                let saved = object::save_error();
-                let _ = object::bind(parent_mod, child, module);
-                object::clear_error();
-                object::restore_error(saved);
+                let bound = object::bind(parent_mod, child, module);
                 object::release(parent_mod);
+                if !bound {
+                    object::release(module);
+                    return None;
+                }
             }
         }
         Some(module)

@@ -2327,10 +2327,11 @@ pub unsafe extern "C" fn mule_class_delete(
             return 0;
         };
         match bindings.take(attribute) {
-            value if !value.is_null() => {
+            Ok(value) if !value.is_null() => {
                 object::release(value);
                 0
             }
+            Err(()) => -1,
             _ if missing_ok != 0 => 0,
             _ => {
                 object::error("NameError", &format!("name '{attribute}' is not defined"));
@@ -3781,7 +3782,9 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
             if !receiver.is_null() && !object::is_fixnum(receiver) {
                 match &mut (*receiver).data {
                     Data::Namespace(bindings) => {
-                        let removed = bindings.take(attribute);
+                        let Ok(removed) = bindings.take(attribute) else {
+                            return std::ptr::null_mut();
+                        };
                         if !removed.is_null() {
                             object::release(removed);
                             return object::none_value();
@@ -3791,7 +3794,9 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
                         let Data::Namespace(bindings) = &mut (**attributes).data else {
                             unreachable!()
                         };
-                        let removed = bindings.take(attribute);
+                        let Ok(removed) = bindings.take(attribute) else {
+                            return std::ptr::null_mut();
+                        };
                         if !removed.is_null() {
                             object::release(removed);
                             return object::none_value();
@@ -3803,7 +3808,9 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
                             let Data::Namespace(bindings) = &mut (*typed).data else {
                                 unreachable!()
                             };
-                            let removed = bindings.take(attribute);
+                            let Ok(removed) = bindings.take(attribute) else {
+                                return std::ptr::null_mut();
+                            };
                             if !removed.is_null() {
                                 object::release(removed);
                                 return object::none_value();
@@ -3866,6 +3873,9 @@ unsafe fn delete_attribute_with(receiver: Value, attribute: &str, hooks: bool) -
         }
         if remove_instance_binding(receiver, layout, attribute, true) {
             return object::none_value();
+        }
+        if object::has_error() {
+            return std::ptr::null_mut();
         }
         missing(Some(layout), true, &attribute)
     }
@@ -4294,7 +4304,9 @@ unsafe fn remove_instance_binding(
         let Data::Namespace(bindings) = &mut (*attributes).data else {
             unreachable!("instance attributes use namespace storage");
         };
-        let old = bindings.take(attribute);
+        let Ok(old) = bindings.take(attribute) else {
+            return false;
+        };
         if old.is_null() {
             return false;
         }
@@ -4317,7 +4329,12 @@ unsafe extern "C" fn instance_delete_binding(_: Value, args: Value) -> Value {
         if !layout.dict_allowed {
             return missing(Some(layout), true, "__dict__");
         }
-        object::bool_value(remove_instance_binding(receiver, layout, &attribute, false))
+        let removed = remove_instance_binding(receiver, layout, &attribute, false);
+        if object::has_error() {
+            std::ptr::null_mut()
+        } else {
+            object::bool_value(removed)
+        }
     }
 }
 
@@ -4411,7 +4428,10 @@ unsafe extern "C" fn namespace_unbind(_: Value, args: Value) -> Value {
             return std::ptr::null_mut();
         }
         let removed = match &mut (*namespace).data {
-            Data::Namespace(bindings) => bindings.take(&name),
+            Data::Namespace(bindings) => match bindings.take(&name) {
+                Ok(value) => value,
+                Err(()) => return std::ptr::null_mut(),
+            },
             _ => {
                 object::error("TypeError", "a namespace is required");
                 return std::ptr::null_mut();

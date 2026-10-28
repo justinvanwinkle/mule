@@ -29,7 +29,7 @@ unsafe fn load_global(namespace: Value, name: *const std::ffi::c_char) -> Value 
 
 /// Bind a global through its linked cell, as compiled code does.
 unsafe fn store_global(namespace: Value, name: *const std::ffi::c_char, value: Value) -> i32 {
-    unsafe { mule_store_global(linked(namespace, name), name, value) }
+    unsafe { mule_store_global(linked(namespace, name), name, value, 0) }
 }
 
 /// The cell a unit would link for `name` in `namespace`, linked on first

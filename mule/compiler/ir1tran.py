@@ -51,6 +51,7 @@ from .annotation_types import (
     TupleContract,
     union_contract,
 )
+from .final_functions import FinalFunctions
 from .ir1util import (
     aver,
     change_block_successor,
@@ -58,6 +59,7 @@ from .ir1util import (
     insert_cast_before,
     link_blocks,
     link_node_to_previous_ctran,
+    made_function,
     use_continuation,
     use_ctran,
     use_lvar,
@@ -384,6 +386,7 @@ class Converter:
         # name, and how many times the module binds each name anywhere.
         self.native_imports: dict[str, str] = {}
         self.module_binding_counts: dict[str, int] = {}
+        self.final_functions = FinalFunctions({})
         self.interface_bindings = {}
         # Set once the module's lambdas have their own components. Functions
         # defined later, by cleanup code converted during environment
@@ -1125,6 +1128,10 @@ class FunctionConverter:
     def set_var(
         self, start, next_, var, value: Lvar | None, source, *, missing_ok: bool = False
     ) -> Set:
+        if var.accept(
+            _IS_GLOBAL_VAR
+        ) and not self.converter.final_functions.allows_store(var.name, source):
+            self.error(f"cannot reassign or delete final function '{var.name}'", source)
         node = Set(self.lexenv, source, var, value, missing_ok=missing_ok)
         if value is not None:
             value.dest = node
@@ -1801,7 +1808,7 @@ class FunctionConverter:
             held.append(temporary)
         return current, held
 
-    def apply_decorators(self, start, held, value, decorators):
+    def apply_decorators(self, start, held, value, decorators, *, final_steps=()):
         """Call the evaluated decorators on ``value``, innermost first."""
         if not held:
             return start, value
@@ -1809,6 +1816,29 @@ class FunctionConverter:
         current = Ctran()
         self.set_var(start, current, result, value, decorators[-1])
         for temporary, decorator in reversed(tuple(zip(held, decorators, strict=True))):
+            original = result.sets[0].value
+            if (
+                any(decorator is step for step in final_steps)
+                and original is not None
+                and made_function(original.use()) is not None
+            ):
+                # Keep the marker effect without hiding a proven function
+                # behind the decorator's otherwise unknown call result.
+                ctran, receiver = Ctran(), Lvar()
+                self.ref(current, ctran, receiver, result, decorator)
+                following, marker = Ctran(), Lvar()
+                self.constant(ctran, following, marker, ast.BooleanLiteral(True))
+                current = Ctran()
+                self.known(
+                    following,
+                    current,
+                    None,
+                    fndb.SETATTR,
+                    (receiver, marker),
+                    decorator,
+                    AttributeInfo("__final__", self.converter.location(decorator)),
+                )
+                continue
             ctran, callee = Ctran(), Lvar()
             self.ref(current, ctran, callee, temporary, decorator, final=True)
             following, argument = Ctran(), Lvar()
@@ -1824,10 +1854,30 @@ class FunctionConverter:
                 CallInfo((), self.converter.location(decorator)),
             )
             current = Ctran()
+            result = self.temporary()
             self.set_var(ctran, current, result, decorated, decorator)
         ctran, value = Ctran(), Lvar()
         self.ref(current, ctran, value, result, decorators[0], final=True)
         return ctran, value
+
+    def final_decorator_steps(self, definition):
+        if not self.is_module or self.class_scopes:
+            return ()
+        return self.converter.final_functions.steps(definition)
+
+    def store_function(self, start, next_, definition, value):
+        declarations = self.converter.final_functions
+        if (
+            self.is_module
+            and not self.class_scopes
+            and declarations.declares(definition)
+        ):
+            var = self.variable(definition.name)
+            var.final_function = made_function(value.use())
+            store = self.set_var(start, next_, var, value, definition)
+            store.final_binding = True
+            return
+        self.store(start, next_, definition.name, value, definition)
 
     def define_function(self, start, next_, result, lambda_, definition, public_name):
         """Evaluate the definition's defaults in this scope, left to right, then
@@ -3766,8 +3816,14 @@ class _Statements(ast.Visitor):
         )
         ctran, created = Ctran(), Lvar()
         function.define_function(current, ctran, created, lambda_, node, node.name)
-        ctran, created = function.apply_decorators(ctran, held, created, decorators)
-        function.store(ctran, next_, node.name, created, node)
+        ctran, created = function.apply_decorators(
+            ctran,
+            held,
+            created,
+            decorators,
+            final_steps=function.final_decorator_steps(node),
+        )
+        function.store_function(ctran, next_, node, created)
 
     def visit_ClassDefinition(self, node):
         """Python's class statement: decorators and bases are evaluated, the
@@ -4113,8 +4169,14 @@ class _Statements(ast.Visitor):
             node,
             CallInfo((), converter.location(node)),
         )
-        ctran, result = function.apply_decorators(following, held, result, decorators)
-        function.store(ctran, next_, node.name, result, node)
+        ctran, result = function.apply_decorators(
+            following,
+            held,
+            result,
+            decorators,
+            final_steps=function.final_decorator_steps(node),
+        )
+        function.store_function(ctran, next_, node, result)
 
     def generic_function(self, node):
         """The generic function's definition inside its annotation scope."""

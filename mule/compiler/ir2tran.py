@@ -2974,7 +2974,7 @@ class _StoreVar(LeafVisitor):
                 vops.STORE_GLOBAL,
                 node,
                 args=(converter.lvar_tn(node.value),),
-                info=leaf,
+                info=(leaf, node.final_binding),
             )
 
 

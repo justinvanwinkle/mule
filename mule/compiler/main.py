@@ -33,6 +33,7 @@ from .ctype import ValueType
 from .debug import check_ir1_consistency
 from .dfo import find_dfo, find_initial_dfo
 from .envanal import environment_analyze
+from .final_functions import FinalFunctions
 from .import_dependencies import discover as import_dependencies
 from .interface_annotations import imported_bindings as interface_bindings
 from .ir1tran import (
@@ -466,6 +467,7 @@ def compile_toplevel(
             statement.accept(shadows)
         converter.module_annotation_shadows = shadows.names
         converter.module_binding_counts = shadows.counts
+        converter.final_functions = FinalFunctions.scan(tree.statements, shadows.counts)
         shadows.register_declared_classes(converter, tree.statements)
         converter.interface_bindings = interface_bindings(tree.statements)
         binds_name = BindsName("__name__")
