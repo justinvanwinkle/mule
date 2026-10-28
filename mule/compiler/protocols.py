@@ -379,6 +379,7 @@ def _propagate_storage_length(visitor, node) -> ValueType | None:
             exact_len = lit.accept(_STORAGE_LITERAL_LENGTH)
         if exact_len is not None:
             return IntegerType(exact_len, exact_len)
+        return visitor.sequence_length_type(args[0])
     return None
 
 
@@ -389,11 +390,13 @@ def _propagate_text_length(visitor, node) -> ValueType | None:
         text_type = visitor.type_of(args[0])
         if text_type is BOTTOM:
             return BOTTOM
+        visitor.prove_argument_type(args[0], TEXT_TYPE)
         exact_len = text_type.exact_length()
         if exact_len is None and (lit := bound_constant_literal(args[0])) is not None:
             exact_len = lit.accept(_TEXT_LITERAL_LENGTH)
         if exact_len is not None:
             return IntegerType(exact_len, exact_len)
+        return visitor.sequence_length_type(args[0])
     return None
 
 
@@ -498,20 +501,6 @@ def _propagate_allocate_instance(visitor, node) -> ValueType | None:
         if arg_type is BOTTOM:
             return BOTTOM
         return visitor.walk.allocated_instance_type(arg_type)
-    return None
-
-
-@defpropagate("_text_length")
-def _propagate_text_length(visitor, node) -> ValueType | None:
-    args = node.args
-    if len(args) == 1:
-        arg_type = visitor.type_of(args[0])
-        if arg_type is BOTTOM:
-            return BOTTOM
-        visitor.prove_argument_type(args[0], TEXT_TYPE)
-        exact_len = arg_type.exact_length()
-        if exact_len is not None:
-            return IntegerType(exact_len, exact_len)
     return None
 
 

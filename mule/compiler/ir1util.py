@@ -469,11 +469,23 @@ def delete_ref(ref: Ref) -> None:
 
 
 class _ReleasedReference(LeafVisitor):
-    """A lambda that loses its last reference may now be deleted."""
+    """A lambda that loses its last reference may now be deleted; a local
+    ``LambdaVar`` that loses its last reference marks its stores' blocks for
+    dead-code flushing (``delete-lambda-var``, ``src/compiler/ir1util.lisp``)."""
 
     def visit_Lambda(self, leaf):
         if not leaf.refs and leaf.kind.name not in ("OPTIONAL", "DELETED", "TOPLEVEL"):
             linked(leaf.component, leaf, "component").reanalyze = True
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        leaf.ever_used = True
+        if not leaf.refs and not leaf.indirect:
+            for store in leaf.sets:
+                if store.prev is not None:
+                    block = store.block
+                    block.flush_p = True
+                    if block.component is not None:
+                        block.component.reoptimize = True
 
 
 def delete_set(node: Set) -> None:
@@ -749,8 +761,101 @@ def is_pure_bound_ref(lvar: Lvar) -> bool:
     return len(lvar.uses) == 1 and is_flushable_ref(lvar.uses[0])
 
 
+def flushable_combination_p(node: Combination) -> bool:
+    """Whether ``node`` is a known call that may be flushed when unused
+    (``flushable-combination-p``, ``src/compiler/ir1util.lisp``)."""
+    if node.kind is not CallKind.KNOWN or node.fun_info is None:
+        return False
+    info = node.fun_info
+    if info.flushable:
+        return True
+    if info.flushable_test is not None:
+        return info.flushable_test(node)
+    return False
+
+
+class _IsFlushableValueNode(NodeVisitor):
+    """Whether a single-use producer node will be completely flushed if its
+    destination lvar is detached."""
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Combination(self, node: Combination) -> bool:
+        return flushable_combination_p(node)
+
+    def visit_Cast(self, node: Cast) -> bool:
+        if node.value is None:
+            return False
+        derived = (
+            node.value.derived_type if node.value.derived_type is not None else UNKNOWN
+        )
+        if derived is UNKNOWN and len(node.value.uses) == 1:
+            use_dt = node.value.uses[0].derived_type
+            if use_dt is not None:
+                derived = use_dt
+        if not (
+            not node.type_check
+            or not node.safety
+            or (
+                derived is not UNKNOWN
+                and not derived.may_be_unbound
+                and derived.fits(node.contract.checked_type)
+                and not node.contract.has_element_contracts()
+            )
+        ):
+            return False
+        return _is_flushable_value_lvar(node.value)
+
+
+_IS_FLUSHABLE_VALUE_NODE = _IsFlushableValueNode()
+
+
+def _is_flushable_value_lvar(lvar: Lvar | None) -> bool:
+    return (
+        lvar is not None
+        and len(lvar.uses) == 1
+        and lvar.uses[0].accept(_IS_FLUSHABLE_VALUE_NODE)
+    )
+
+
+class _FlushDeadSet(LeafVisitor):
+    """Flush a dead store to an unreferenced local ``LambdaVar``
+    (``flush-dead-code``, ``src/compiler/ir1opt.lisp``)."""
+
+    def __init__(self, node: Set):
+        self.node = node
+
+    def visit_Leaf(self, leaf):
+        pass
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        node = self.node
+        if (
+            node.value is None
+            or not leaf.ever_used
+            or leaf.refs
+            or leaf.indirect
+            or leaf.home is None
+            or leaf.home.coroutine_body
+            or leaf in leaf.home.vars
+            or len(leaf.sets) != 1
+            or not _is_flushable_value_lvar(node.value)
+        ):
+            return
+        contract = leaf.home.local_annotations.get(leaf.name)
+        if contract is not None and contract.has_element_contracts():
+            return
+        _flush_operand(node.value)
+        delete_set(node)
+        unlink_node(node)
+        if not leaf.sets and leaf in leaf.home.locals:
+            leaf.home.locals.remove(leaf)
+
+
 class _FlushDeadReference(NodeVisitor):
-    """Deletes an unused reference or flushable call whose evaluation has no effect."""
+    """Deletes an unused reference, cast, dead local store, or flushable call
+    whose evaluation has no effect (``flush-dead-code``, ``src/compiler/ir1opt.lisp``)."""
 
     def visit_Ref(self, node: Ref):
         if node.lvar is None and is_flushable_ref(node):
@@ -758,13 +863,35 @@ class _FlushDeadReference(NodeVisitor):
             unlink_node(node)
 
     def visit_Combination(self, node: Combination):
-        if (
-            node.lvar is None
-            and node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.flushable
-        ):
+        if node.lvar is None and flushable_combination_p(node):
             flush_combination(node)
+
+    def visit_Cast(self, node: Cast):
+        if node.lvar is not None or node.value is None:
+            return
+        derived = (
+            node.value.derived_type if node.value.derived_type is not None else UNKNOWN
+        )
+        if derived is UNKNOWN and len(node.value.uses) == 1:
+            use_dt = node.value.uses[0].derived_type
+            if use_dt is not None:
+                derived = use_dt
+        if (
+            not node.type_check
+            or not node.safety
+            or (
+                derived is not UNKNOWN
+                and not derived.may_be_unbound
+                and derived.fits(node.contract.checked_type)
+                and not node.contract.has_element_contracts()
+            )
+        ):
+            _flush_operand(node.value)
+            unlink_node(node)
+
+    def visit_Set(self, node: Set):
+        if node.lvar is None:
+            node.var.accept(_FlushDeadSet(node))
 
 
 _FLUSH_DEAD_REFERENCE = _FlushDeadReference()
@@ -1335,6 +1462,9 @@ def clone_lambda_component(lambda_: Lambda):
         list(lambda_.entries),
         list(lambda_.locals),
     )
+    saved_ever_used = {
+        leaf: leaf.ever_used for leaf in (*saved_refs.keys(), *saved_sets.keys())
+    }
     lambda_.component = new_component
     if lambda_.bind is not None:
         lambda_.bind = cloner.bind_map.get(lambda_.bind, lambda_.bind)
@@ -1352,6 +1482,8 @@ def clone_lambda_component(lambda_: Lambda):
             leaf.refs[:] = refs
         for var, sets in saved_sets.items():
             var.sets[:] = sets
+        for leaf, ever_used in saved_ever_used.items():
+            leaf.ever_used = ever_used
         (
             lambda_.component,
             lambda_.bind,

@@ -53,6 +53,7 @@ from .ctype import (
     ValueType,
 )
 from .ir1opt import (
+    almost_immediately_used_p,
     constant_lvar_value,
     is_imported_module_global,
     lvar_type,
@@ -62,6 +63,7 @@ from .ir1opt import (
 from .ir1util import (
     _flush_operand,
     delete_ref,
+    flushable_combination_p,
     is_flushable_ref,
     is_pure_bound_ref,
     replace_combination_with_lvar,
@@ -695,6 +697,78 @@ def _transform_max(node: Combination) -> bool:
     left, right = node.args
     retarget_known_combination(node, fndb.MAX2, [left, right])
     return True
+
+
+class _FlushableSubtree(NodeVisitor):
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Ref(self, node: Ref) -> bool:
+        return is_flushable_ref(node)
+
+    def visit_Combination(self, node: Combination) -> bool:
+        return flushable_combination_p(node) and all(
+            _is_flushable_lvar_tree(arg) for arg in node.args
+        )
+
+
+_FLUSHABLE_SUBTREE = _FlushableSubtree()
+
+
+def _is_flushable_lvar_tree(lvar: Lvar) -> bool:
+    return len(lvar.uses) == 1 and lvar.uses[0].accept(_FLUSHABLE_SUBTREE)
+
+
+@deftransform("%min2", (INTEGER, INTEGER))
+def _transform_min2_int(node: Combination) -> bool:
+    left, right = node.args
+    left_t, right_t = lvar_type(left), lvar_type(right)
+    if left_t.may_be_unbound or right_t.may_be_unbound:
+        return False
+    if (
+        left_t.maximum is not None
+        and right_t.minimum is not None
+        and left_t.maximum <= right_t.minimum
+        and _is_flushable_lvar_tree(right)
+        and almost_immediately_used_p(left, flushable=True, effectless_calls=True)
+    ):
+        replace_combination_with_lvar(node, left)
+        return True
+    if (
+        right_t.maximum is not None
+        and left_t.minimum is not None
+        and right_t.maximum <= left_t.minimum
+        and _is_flushable_lvar_tree(left)
+    ):
+        replace_combination_with_lvar(node, right)
+        return True
+    return False
+
+
+@deftransform("%max2", (INTEGER, INTEGER))
+def _transform_max2_int(node: Combination) -> bool:
+    left, right = node.args
+    left_t, right_t = lvar_type(left), lvar_type(right)
+    if left_t.may_be_unbound or right_t.may_be_unbound:
+        return False
+    if (
+        left_t.minimum is not None
+        and right_t.maximum is not None
+        and left_t.minimum >= right_t.maximum
+        and _is_flushable_lvar_tree(right)
+        and almost_immediately_used_p(left, flushable=True, effectless_calls=True)
+    ):
+        replace_combination_with_lvar(node, left)
+        return True
+    if (
+        right_t.minimum is not None
+        and left_t.maximum is not None
+        and right_t.minimum >= left_t.maximum
+        and _is_flushable_lvar_tree(left)
+    ):
+        replace_combination_with_lvar(node, right)
+        return True
+    return False
 
 
 def _is_unit_slice_step(step_lvar: Lvar) -> bool:

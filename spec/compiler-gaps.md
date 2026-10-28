@@ -975,27 +975,33 @@ SBCL compiler mechanism in `~/checkout/sbcl/src/`, and the required replacement.
      codepoints.
   3. Delete `_fuse_text_codepoint_comparisons` from `ir2tran.py`.
 
-### 6E. Symbolic sequence-length constraints and dead-allocation flushing (`equality-constraints.lisp` / `ir1opt.lisp`)
+### 6E. Symbolic sequence-length constraints and dead-allocation flushing (`equality-constraints.lisp` / `ir1opt.lisp`) (completed)
 
-- **Current special case**: `_fuse_concat_length` and
-  `_match_concat_local_store` (`mule/compiler/seqtran.py:663-796, 966-1031`)
-  pattern-match `tag = a + b; ...; len(tag)`, bail out if `tag` has a local type
-  annotation (`leaf.name in leaf.home.local_annotations`), require `tag` to have
-  no later uses, and manually delete `Set(tag)`.
-- **SBCL reference**: `vector-length-constraint`, `concatenate-constraints`, and
-  `subseq-bounds` in `src/compiler/equality-constraints.lisp`, combined with
-  `flush-dead-code` in `src/compiler/ir1opt.lisp`.
-- **Required implementation**:
-  1. Transform `_text_length(x)` and `_storage_length(x)` in `seqtran.py` (and
-     propagate length constraints in `constraint.py`) when `x` matches
-     `str + str`, `list + list`, `str[a:b]`, or `[elem] * n` via `lvar_matches`,
-     rewriting `len(x)` to the sum/difference of operand lengths regardless of
-     whether `x` carries a type annotation or has other uses.
-  2. Mark pure sequence allocations on proven operand types as flushable in
-     `fndb.py` so `ir1opt.py` flushes `tag = a + b` automatically when its last
-     reference is removed.
-  3. Delete `_fuse_concat_length` and `_match_concat_local_store` from
-     `seqtran.py`.
+- **Implemented architecture**:
+  - `_transform_known_length_primitive` in `mule/compiler/seqtran.py` transforms
+    `_text_length(x)` and `_storage_length(x)` when `x` matches `%add`
+    (`str + str`, `bytes + bytes`, `bytearray + bytearray`, `list + list`,
+    `tuple + tuple`), `_text_slice`, `%getslice`, `%_list_fill` (`[elem] * n`),
+    or `%multiply` (`seq * n`) via `lvar_matches` (looking through satisfied
+    `Cast`s and local `LambdaVar` aliases), rewriting `len(x)` to arithmetic on
+    operand lengths regardless of whether `x` carries a local type annotation
+    or has other uses.
+  - `FunInfo.flushable_test` (`mule/compiler/knownfun.py` and
+    `mule/compiler/fndb.py`), `flushable_combination_p`, and
+    `_FlushDeadReference` (`mule/compiler/ir1util.py` and
+    `mule/compiler/ir1opt.py`) mark pure sequence allocations and numeric
+    operations on proven operand types as flushable and flush dead `Set` and
+    satisfied `Cast` nodes when a local `LambdaVar` loses its last reference
+    (`_ReleasedReference.visit_LambdaVar`), following SBCL's
+    `flushable-combination-p`, `delete-lambda-var`, and `flush-dead-code`.
+  - `mule/compiler/constraint.py` and `mule/compiler/protocols.py` track
+    symbolic sequence-length variables (`(_SEQ_LEN, var)`) and propagate
+    sequence-length intervals and relational difference bounds across
+    concatenation, slicing, list fill, and repetition (`_SequenceProducerLength`
+    and `_LinearUpdate`), while invalidating mutable container lengths on
+    container mutation or escape.
+  - `_fuse_concat_length` and `_match_concat_local_store` have been deleted from
+    `mule/compiler/seqtran.py`.
 
 ### 6F. Per-value identity escape for float representation selection (`represent.lisp`)
 

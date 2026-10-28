@@ -19,14 +19,17 @@ from .ctype import (
     BOOLEAN_FALSE,
     BOOLEAN_TRUE,
     BOTTOM,
+    BYTEARRAY_TYPE,
     BYTES_TYPE,
     DICT_TYPE,
     EMPTY_LIST_TYPE,
     FLOAT,
     FUNCTION_TYPE,
     INTEGER,
+    LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
+    REAL,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -37,6 +40,8 @@ from .ctype import (
 )
 from .knownfun import defknown, fun_info
 from .node import CallKind, LeafVisitor, NodeVisitor
+
+_TUPLE_TYPE = TupleType()
 
 
 class _DerivationMode(local):
@@ -201,6 +206,124 @@ def _derive_unpack(node) -> ValueType | None:
     return TupleType(None)
 
 
+def _is_builtin_sequence_type(t: ValueType) -> bool:
+    return (
+        t.fits_text(TEXT_TYPE)
+        or t.fits(BYTES_TYPE)
+        or t.fits(BYTEARRAY_TYPE)
+        or t.fits(LIST_TYPE)
+        or t.fits_tuple(_TUPLE_TYPE)
+    )
+
+
+def _is_bounded_repeat_count(t: ValueType, max_bound: int = 1 << 30) -> bool:
+    return (
+        t.fits(PYTHON_INTEGER)
+        and t.minimum is not None
+        and t.maximum is not None
+        and -(1 << 63) <= t.minimum
+        and t.maximum <= max_bound
+    )
+
+
+def _flushable_add(node) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    if left.may_be_unbound or right.may_be_unbound:
+        return False
+    return (
+        (left.fits(REAL) and right.fits(REAL))
+        or (left.fits_text(TEXT_TYPE) and right.fits_text(TEXT_TYPE))
+        or (
+            (left.fits(BYTES_TYPE) or left.fits(BYTEARRAY_TYPE))
+            and (right.fits(BYTES_TYPE) or right.fits(BYTEARRAY_TYPE))
+        )
+        or (left.fits(LIST_TYPE) and right.fits(LIST_TYPE))
+        or (left.fits_tuple(_TUPLE_TYPE) and right.fits_tuple(_TUPLE_TYPE))
+    )
+
+
+def _flushable_subtract(node) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    return (
+        not left.may_be_unbound
+        and not right.may_be_unbound
+        and left.fits(REAL)
+        and right.fits(REAL)
+    )
+
+
+def _flushable_multiply(node) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    if left.may_be_unbound or right.may_be_unbound:
+        return False
+    if left.fits(REAL) and right.fits(REAL):
+        return True
+    for seq_t, cnt_t in ((left, right), (right, left)):
+        if _is_builtin_sequence_type(seq_t) and _is_bounded_repeat_count(cnt_t):
+            return True
+    return False
+
+
+def _flushable_getslice(node) -> bool:
+    if len(node.args) != 4:
+        return False
+    seq_t, start_t, stop_t, step_t = (_arg_type(arg) for arg in node.args)
+    if (
+        seq_t.may_be_unbound
+        or start_t.may_be_unbound
+        or stop_t.may_be_unbound
+        or step_t.may_be_unbound
+    ):
+        return False
+    return (
+        _is_builtin_sequence_type(seq_t)
+        and (start_t.fits(PYTHON_INTEGER) or start_t.fits_none(NONE_TYPE))
+        and (stop_t.fits(PYTHON_INTEGER) or stop_t.fits_none(NONE_TYPE))
+        and (
+            step_t.fits_none(NONE_TYPE)
+            or (
+                step_t.fits(PYTHON_INTEGER)
+                and (
+                    (step_t.minimum is not None and step_t.minimum > 0)
+                    or (step_t.maximum is not None and step_t.maximum < 0)
+                )
+            )
+        )
+    )
+
+
+def _flushable_compare(node, op: ast.ComparisonOperator) -> bool:
+    if len(node.args) != 2:
+        return False
+    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    if left.may_be_unbound or right.may_be_unbound:
+        return False
+    if op in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
+        return True
+    if op in (ast.ComparisonOperator.IN, ast.ComparisonOperator.NOT_IN):
+        return False
+    return (
+        (left.fits(REAL) and right.fits(REAL))
+        or (left.fits_text(TEXT_TYPE) and right.fits_text(TEXT_TYPE))
+        or (
+            (left.fits(BYTES_TYPE) or left.fits(BYTEARRAY_TYPE))
+            and (right.fits(BYTES_TYPE) or right.fits(BYTEARRAY_TYPE))
+        )
+    )
+
+
+_BINARY_FLUSHABLE_TESTS = {
+    ast.BinaryOperator.ADD: _flushable_add,
+    ast.BinaryOperator.SUBTRACT: _flushable_subtract,
+    ast.BinaryOperator.MULTIPLY: _flushable_multiply,
+}
+
 # Binary operators: one known per operator and one per in-place form.
 BINARY = {
     operator: defknown(
@@ -211,6 +334,7 @@ BINARY = {
             if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).binary(op, _arg_type(node.args[1]))
         ),
+        flushable_test=_BINARY_FLUSHABLE_TESTS.get(operator),
         numeric=True,
     )
     for operator in ast.BinaryOperator
@@ -249,6 +373,7 @@ COMPARE = {
             if _DERIVATION_MODE.active
             else _arg_type(node.args[0]).comparison(op, _arg_type(node.args[1]))
         ),
+        flushable_test=lambda node, op=operator: _flushable_compare(node, op),
         numeric=(
             operator
             not in (
@@ -441,6 +566,7 @@ GETSLICE = defknown(
     "call",
     "unsafe",
     derive_type=_derive_getslice,
+    flushable_test=_flushable_getslice,
     numeric=True,
     non_integer_first_arg=True,
 )
@@ -609,6 +735,27 @@ _PROTOCOL_ARGUMENT_TYPES = {
     "dict_setitem": (DICT_TYPE, UNKNOWN, UNKNOWN),
 }
 
+
+def _flushable_list_fill(node) -> bool:
+    if len(node.args) != 2:
+        return False
+    elem_t, cnt_t = _arg_type(node.args[0]), _arg_type(node.args[1])
+    return (
+        not elem_t.may_be_unbound
+        and not cnt_t.may_be_unbound
+        and _is_bounded_repeat_count(cnt_t, (1 << 60) - 1)
+    )
+
+
+def _flushable_make_slice(node) -> bool:
+    return all(not _arg_type(arg).may_be_unbound for arg in node.args)
+
+
+_PROTOCOL_FLUSHABLE_TESTS = {
+    "_list_fill": _flushable_list_fill,
+    "make_slice": _flushable_make_slice,
+}
+
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
 PROTOCOLS = {
     name: defknown(
@@ -617,6 +764,7 @@ PROTOCOLS = {
         "unsafe",
         protocol=name,
         derive_type=_PROTOCOL_DERIVE_TYPES.get(name),
+        flushable_test=_PROTOCOL_FLUSHABLE_TESTS.get(name),
         propagate=_propagate_list_fill if name == "_list_fill" else None,
         numeric=(name == "make_slice"),
         non_integer_first_arg=(name in _NON_INTEGER_FIRST_PROTOCOLS),

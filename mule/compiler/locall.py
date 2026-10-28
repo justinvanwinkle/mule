@@ -517,6 +517,8 @@ class EntryContext:
     targets: dict[object, Lambda]
     return_type: ValueType
     element_contracts: dict[object, object] = field(default_factory=dict)
+    escape_facts: object = None
+    base_escape_facts: object = None
 
 
 @dataclass(slots=True)
@@ -4356,6 +4358,7 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
         if not (
             info.transforms
             or info.flushable
+            or info.flushable_test is not None
             or (info.optimizer is not None and info is not GETITEM)
         ):
             return
@@ -4468,6 +4471,7 @@ class _NodeHasContextTransform(NodeVisitor):
         if not (
             info.transforms
             or info.flushable
+            or info.flushable_test is not None
             or (info.optimizer is not None and info is not GETITEM)
             or (
                 loop.is_hoistable_op(info)

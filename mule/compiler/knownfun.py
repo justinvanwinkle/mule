@@ -42,6 +42,9 @@ class FunInfo:
     derive_type: Callable[[Combination], ValueType | None] | None = field(
         default=None, compare=False
     )
+    flushable_test: Callable[[Combination], bool] | None = field(
+        default=None, compare=False
+    )
     optimizer: Callable[[Combination], bool] | None = field(default=None, compare=False)
     transforms: tuple[Transform, ...] = field(default_factory=tuple, compare=False)
     propagate: Callable[..., object] | None = field(default=None, compare=False)
@@ -95,6 +98,7 @@ def defknown(
     result: bool = True,
     protocol=None,
     derive_type=None,
+    flushable_test=None,
     propagate=None,
     constrain_branch=None,
     numeric: bool = False,
@@ -110,6 +114,7 @@ def defknown(
         result=result,
         protocol=protocol,
         derive_type=derive_type,
+        flushable_test=flushable_test,
         propagate=propagate,
         constrain_branch=constrain_branch,
         numeric=numeric,

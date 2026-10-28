@@ -42,10 +42,12 @@ from .ctype import (
 from .ir1util import (
     _FLUSH_DEAD_REFERENCE,
     _flush_operand,
+    _is_flushable_value_lvar,
     aver,
     delete_ref,
     delete_set,
     flush_combination,
+    flushable_combination_p,
     flushable_lambda_var_ref_p,
     is_flushable_ref,
     is_pure_bound_ref,
@@ -239,7 +241,7 @@ def ir1_optimize(component: Component) -> bool:
         changed |= _optimize_block(block)
         if was_flush or block.flush_p:
             block.flush_p = False
-            _flush_dead_operands(block)
+            changed |= _flush_dead_operands(block)
     return changed
 
 
@@ -310,6 +312,8 @@ _INTERVENING_SET_VAR_ALLOWED = _InterveningSetVarAllowed()
 def _is_effectless_known_call(step: Combination) -> bool:
     if step.kind is not CallKind.KNOWN or step.fun_info is None:
         return False
+    if flushable_combination_p(step):
+        return True
     info = step.fun_info
     if info.flushable and not info.unsafe:
         return True
@@ -447,6 +451,19 @@ class _MatchKnownCombination(NodeVisitor):
             and (self.arg_count is None or len(node.args) == self.arg_count)
         ):
             return node
+        return None
+
+    def visit_Cast(self, node: Cast):
+        if (
+            node.value is not None
+            and len(node.value.uses) == 1
+            and (
+                not node.type_check
+                or not node.safety
+                or lvar_type(node.value).fits(node.contract.checked_type)
+            )
+        ):
+            return node.value.uses[0].accept(self)
         return None
 
 
@@ -804,7 +821,7 @@ class _OptimizeNode(NodeVisitor):
                 self.visit_Combination(node)
             return True
         info = linked(node.fun_info, node, "function info")
-        if node.lvar is None and info.flushable:
+        if node.lvar is None and flushable_combination_p(node):
             flush_combination(node)
             return True
         if info.name == "%build_tuple" and info.foldable and _constant_fold_tuple(node):
@@ -820,7 +837,7 @@ class _OptimizeNode(NodeVisitor):
             return True
         if self._run_transforms(node, info):
             return True
-        if info.flushable and _fold_call_derived_to_constant(node):
+        if flushable_combination_p(node) and _fold_call_derived_to_constant(node):
             return True
         return canonicalized
 
@@ -1170,7 +1187,9 @@ def _constant_operand_literal(lvar: Lvar):
 def _fold_call_derived_to_constant(node: Combination) -> bool:
     """Fold a flushable known call whose derived type is a singleton constant
     (``fold-call-derived-to-constant``, ``ir1opt.lisp:2450``)."""
-    if node.lvar is None or not all(is_pure_bound_ref(arg) for arg in node.args):
+    if node.lvar is None or not all(
+        is_pure_bound_ref(arg) or _is_flushable_value_lvar(arg) for arg in node.args
+    ):
         return False
     derived = node.accept(_DERIVE_NODE_TYPE)
     literal = derived.accept(_SINGLETON_LITERAL)
@@ -1403,14 +1422,20 @@ def replace_combination_with_constant(node: Combination, literal) -> None:
     reoptimize_lvar(lvar)
 
 
-def _flush_dead_operands(block) -> None:
+def _flush_dead_operands(block) -> bool:
     """Delete nodes whose value is unused and whose evaluation has no
     effect, walking backwards so producers exposed by flushing a call
     are deleted in the same pass (``flush-dead-code``)."""
+    changed = False
     for node in reversed(list(block.nodes())):
         if node.prev is None:
             continue
         node.accept(_FLUSH_DEAD_REFERENCE)
+        if node.prev is None:
+            changed = True
+    if changed and block.component is not None:
+        block.component.reoptimize = True
+    return changed
 
 
 class _LiteralTruth(ast.Visitor):

@@ -534,7 +534,7 @@ class LeafVisitor:
 class Leaf:
     """Something a ``Ref`` can reference: a constant, variable, or function."""
 
-    __slots__ = ("info", "number", "refs", "source_name", "type")
+    __slots__ = ("ever_used", "info", "number", "refs", "source_name", "type")
 
     # Only a local can be a capture belonging to expression evaluation.
     expression_temporary = False
@@ -542,6 +542,7 @@ class Leaf:
     def __init__(self, source_name: str | None = None):
         self.source_name = source_name
         self.refs: list[Ref] = []
+        self.ever_used = False
         self.type = None
         self.info = None
         self.number = _number()
