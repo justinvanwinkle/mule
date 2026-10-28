@@ -10,7 +10,6 @@ import subprocess
 import sys
 import time
 import tomllib
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -436,8 +435,9 @@ def main():
     parser.add_argument(
         "--jobs",
         type=int,
-        default=4,
-        help="number of scenarios to build or measure concurrently (default: 4)",
+        choices=(1,),
+        default=1,
+        help="run one build or measurement command at a time (only 1 is supported)",
     )
     args = parser.parse_args()
     available = {
@@ -558,9 +558,8 @@ def main():
             build.update(entry["error"])
 
     prior_runs = history.load(args.history)
-    if build_tasks:
-        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            list(pool.map(_run_build, build_tasks))
+    for task in build_tasks:
+        _run_build(task)
     write_report(report, output, history_runs=prior_runs)
 
     def _measure_case(case):
@@ -592,9 +591,8 @@ def main():
 
     def _measure_all():
         rows = []
-        with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-            for case_rows in pool.map(_measure_case, cases):
-                rows.extend(case_rows)
+        for case in cases:
+            rows.extend(_measure_case(case))
         return rows
 
     def _record_attempt(attempt):
