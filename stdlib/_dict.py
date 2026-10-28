@@ -40,6 +40,7 @@ _MASK_LIMIT = 0x1FFFFFFFFFFFFFF
 _PRIME_1 = 11400714785074694791
 _PRIME_2 = 14029467366897019727
 _PRIME_5 = 2870177450012600261
+_TUPLE_TAIL = 2870177450013471926
 
 
 class _Deleted:
@@ -59,6 +60,29 @@ def _signed(value):
     return value - (1 << 64) if value >= 1 << 63 else value
 
 
+def _lanes_to_signed_hash(acc_hi, acc_lo):
+    acc_hi = _integer_storage(acc_hi) & 0xFFFFFFFF
+    acc_lo = _integer_storage(acc_lo) & 0xFFFFFFFF
+    if acc_hi < 0x40000000:
+        return (acc_hi << 32) | acc_lo
+    if acc_hi >= 0xC0000000:
+        return ((acc_hi - 0x100000000) << 32) | acc_lo
+    return _signed((acc_hi << 32) | acc_lo)
+
+
+def _lanes_to_table_hash(acc_hi, acc_lo):
+    acc_hi = _integer_storage(acc_hi) & 0xFFFFFFFF
+    acc_lo = _integer_storage(acc_lo) & 0xFFFFFFFF
+    if acc_hi < 0x40000000:
+        return (acc_hi << 32) | acc_lo
+    if acc_hi >= 0xC0000000:
+        return ((acc_hi - 0x100000000) << 32) | acc_lo
+    folded = ((acc_hi & 0x3FFFFFFF) << 32) | acc_lo
+    if acc_hi < 0x80000000:
+        return folded ^ 1
+    return folded ^ 0x3FFFFFFFFFFFFFFE
+
+
 def _integer_hash(value):
     value = _integer_storage(value)
     if value > -_MODULUS:
@@ -71,19 +95,99 @@ def _integer_hash(value):
 
 
 def _tuple_hash(value):
-    accumulator = _PRIME_5
-    for index in range(_storage_length(value)):
+    count = _storage_length(value)
+    acc_hi = 0x27D4EB2F
+    acc_lo = 0x165667C5
+    index = 0
+    while index < count:
         item = _storage_read(value, index)
-        lane = hash(item) & _WORD
-        accumulator = (accumulator + lane * _PRIME_2) & _WORD
-        accumulator = ((accumulator << 31) | (accumulator >> 33)) & _WORD
-        accumulator = (accumulator * _PRIME_1) & _WORD
-    accumulator = (
-        accumulator + (_storage_length(value) ^ (_PRIME_5 ^ 3527539))
-    ) & _WORD
-    if accumulator == _WORD:
+        item_hash = _storage_hash(item)
+        if item_hash is not None:
+            lane_lo = item_hash & 0xFFFFFFFF
+            lane_hi = (item_hash >> 32) & 0xFFFFFFFF
+        else:
+            raw_hash = _tuple_hash(item) if _tuple_storage(item) else hash(item)
+            lane_lo = raw_hash & 0xFFFFFFFF
+            lane_hi = (raw_hash >> 32) & 0xFFFFFFFF
+        low_prod = acc_lo + lane_lo * 0x27D4EB4F
+        acc_lo = low_prod & 0xFFFFFFFF
+        acc_hi = (
+            acc_hi
+            + (low_prod >> 32)
+            + lane_hi * 0x27D4EB4F
+            + lane_lo * 0x02B2AE3D
+            + (((lane_lo & 3) * 3) << 30)
+        ) & 0xFFFFFFFF
+        rot_lo = ((acc_lo & 1) << 31) | (acc_hi >> 1)
+        rot_hi = ((acc_hi & 1) << 31) | (acc_lo >> 1)
+        p1_low = rot_lo * 0x05EBCA87 + ((rot_lo & 1) << 31)
+        acc_lo = p1_low & 0xFFFFFFFF
+        acc_hi = (
+            (p1_low >> 32)
+            + (rot_lo >> 1)
+            + rot_hi * 0x05EBCA87
+            + ((rot_hi & 1) << 31)
+            + rot_lo * 0x1E3779B1
+            + ((rot_lo & 1) << 31)
+        ) & 0xFFFFFFFF
+        index += 1
+    tail = count ^ _TUPLE_TAIL
+    end_lo = acc_lo + (tail & 0xFFFFFFFF)
+    acc_lo = end_lo & 0xFFFFFFFF
+    acc_hi = (acc_hi + (end_lo >> 32) + (tail >> 32)) & 0xFFFFFFFF
+    if acc_hi == 0xFFFFFFFF and acc_lo == 0xFFFFFFFF:
         return 1546275796
-    return _signed(accumulator)
+    return _lanes_to_signed_hash(acc_hi, acc_lo)
+
+
+def _tuple_table_hash(value):
+    count = _storage_length(value)
+    acc_hi = 0x27D4EB2F
+    acc_lo = 0x165667C5
+    index = 0
+    while index < count:
+        item = _storage_read(value, index)
+        item_hash = _storage_hash(item)
+        if item_hash is not None:
+            lane_lo = item_hash & 0xFFFFFFFF
+            lane_hi = (item_hash >> 32) & 0xFFFFFFFF
+        elif _tuple_storage(item):
+            sub_hash = _tuple_table_hash(item)
+            lane_lo = sub_hash & 0xFFFFFFFF
+            lane_hi = (sub_hash >> 32) & 0xFFFFFFFF
+        else:
+            raw_hash = hash(item)
+            lane_lo = raw_hash & 0xFFFFFFFF
+            lane_hi = (raw_hash >> 32) & 0xFFFFFFFF
+        low_prod = acc_lo + lane_lo * 0x27D4EB4F
+        acc_lo = low_prod & 0xFFFFFFFF
+        acc_hi = (
+            acc_hi
+            + (low_prod >> 32)
+            + lane_hi * 0x27D4EB4F
+            + lane_lo * 0x02B2AE3D
+            + (((lane_lo & 3) * 3) << 30)
+        ) & 0xFFFFFFFF
+        rot_lo = ((acc_lo & 1) << 31) | (acc_hi >> 1)
+        rot_hi = ((acc_hi & 1) << 31) | (acc_lo >> 1)
+        p1_low = rot_lo * 0x05EBCA87 + ((rot_lo & 1) << 31)
+        acc_lo = p1_low & 0xFFFFFFFF
+        acc_hi = (
+            (p1_low >> 32)
+            + (rot_lo >> 1)
+            + rot_hi * 0x05EBCA87
+            + ((rot_hi & 1) << 31)
+            + rot_lo * 0x1E3779B1
+            + ((rot_lo & 1) << 31)
+        ) & 0xFFFFFFFF
+        index += 1
+    tail = count ^ _TUPLE_TAIL
+    end_lo = acc_lo + (tail & 0xFFFFFFFF)
+    acc_lo = end_lo & 0xFFFFFFFF
+    acc_hi = (acc_hi + (end_lo >> 32) + (tail >> 32)) & 0xFFFFFFFF
+    if acc_hi == 0xFFFFFFFF and acc_lo == 0xFFFFFFFF:
+        return 1546275796
+    return _lanes_to_table_hash(acc_hi, acc_lo)
 
 
 def hash(value, /):
@@ -121,6 +225,8 @@ def _integer_storage_kind(value):
 
 
 def _table_hash_fallback(key):
+    if _tuple_storage(key):
+        return _tuple_table_hash(key)
     code = hash(key)
     if code < _FIXNUM_MIN:
         return (code ^ (code >> 62)) & _PERTURB_MASK
@@ -977,7 +1083,10 @@ def _set_lookup_fallback(self, key):
 def _set_lookup(self, key):
     code = _storage_hash(key)
     if code is None:
-        return _set_lookup_fallback(self, key)
+        if _tuple_storage(key):
+            code = _tuple_table_hash(key)
+        else:
+            return _set_lookup_fallback(self, key)
     mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
@@ -1004,7 +1113,7 @@ def _set_remove_fallback(self, key):
 
 
 def _set_remove(self, key):
-    if _storage_hash(key) is not None:
+    if _storage_hash(key) is not None or _tuple_storage(key):
         return _set_remove_entry(self, key)
     return _set_remove_fallback(self, key)
 
@@ -1458,20 +1567,43 @@ class frozenset(_SetBase):
     def __hash__(self):
         _require_frozenset(self)
         # CPython's frozenset hash: an order-independent mix of element hashes.
-        accumulator = 0
+        acc_hi = 0
+        acc_lo = 0
         count = _storage_length(_instance_field(self, "_keys"))
         index = 0
         while index < count:
             if _storage_read(_instance_field(self, "_keys"), index) is not _DELETED:
-                code = _storage_read(_instance_field(self, "_hashes"), index) & _WORD
-                accumulator ^= ((code ^ 89869747) ^ (code << 16)) * 3644798167 & _WORD
+                code = _storage_read(_instance_field(self, "_hashes"), index)
+                c_lo = code & 0xFFFFFFFF
+                c_hi = (code >> 32) & 0xFFFFFFFF
+                x_lo = ((c_lo ^ 89869747) ^ ((c_lo & 0xFFFF) << 16)) & 0xFFFFFFFF
+                x_hi = (c_hi ^ (c_lo >> 16) ^ ((c_hi & 0xFFFF) << 16)) & 0xFFFFFFFF
+                m_lo = (x_lo & 0xFFFF) * 3644798167
+                m_mid = (x_lo >> 16) * 3644798167 + (m_lo >> 16)
+                b_lo = ((m_mid & 0xFFFF) << 16) | (m_lo & 0xFFFF)
+                b_hi = (
+                    (m_mid >> 16)
+                    + (x_hi & 0xFFFF) * 3644798167
+                    + (((x_hi >> 16) * 0x34D7) << 16)
+                ) & 0xFFFFFFFF
+                acc_lo ^= b_lo
+                acc_hi ^= b_hi
             index += 1
-        accumulator ^= (_instance_field(self, "_used") + 1) * 1927868237 & _WORD
-        accumulator ^= (accumulator >> 11) ^ (accumulator >> 25)
-        accumulator = (accumulator * 69069 + 907133923) & _WORD
-        if accumulator == _WORD:
-            accumulator = 590923713
-        return _signed(accumulator)
+        u = ((_instance_field(self, "_used") & 0x3FFFFFFF) + 1) * 1927868237
+        acc_lo ^= u & 0xFFFFFFFF
+        acc_hi ^= (u >> 32) & 0xFFFFFFFF
+        s11_lo = ((acc_hi & 0x7FF) << 21) | (acc_lo >> 11)
+        s11_hi = acc_hi >> 11
+        s25_lo = ((acc_hi & 0x1FFFFFF) << 7) | (acc_lo >> 25)
+        s25_hi = acc_hi >> 25
+        acc_lo ^= s11_lo ^ s25_lo
+        acc_hi ^= s11_hi ^ s25_hi
+        fin_lo = acc_lo * 69069 + 907133923
+        acc_lo = fin_lo & 0xFFFFFFFF
+        acc_hi = (acc_hi * 69069 + (fin_lo >> 32)) & 0xFFFFFFFF
+        if acc_hi == 0xFFFFFFFF and acc_lo == 0xFFFFFFFF:
+            return 590923713
+        return _lanes_to_signed_hash(acc_hi, acc_lo)
 
 
 def _empty_table(cls):
@@ -1512,8 +1644,9 @@ def _empty_dict():
 def build_dict(flat):
     """A dict display's keys and values, evaluated left to right as pairs."""
     result = _empty_dict()
+    length = _storage_length(flat)
     index = 0
-    while index < _storage_length(flat):
+    while index < length:
         _table_insert(
             result, _storage_read(flat, index), _storage_read(flat, index + 1)
         )
@@ -1523,6 +1656,9 @@ def build_dict(flat):
 
 def build_set(items):
     result = _empty_table(set)
-    for item in items:
-        _set_insert(result, item)
+    count = _storage_length(items)
+    index = 0
+    while index < count:
+        _set_insert(result, _storage_read(items, index))
+        index += 1
     return result
