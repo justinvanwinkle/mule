@@ -338,6 +338,7 @@ def _propagate_storage_write(visitor, node) -> ValueType | None:
     args = node.args
     if len(args) == 3:
         seq_type = visitor.type_of(args[0])
+        visitor.record_in_bounds(node, args[0], args[1])
         exact_len = seq_type.exact_length()
         max_idx = (
             exact_len - 1 if exact_len is not None and exact_len > 0 else (1 << 60) - 1
@@ -354,9 +355,12 @@ def _propagate_storage_read(visitor, node) -> ValueType | None:
         seq_type = visitor.type_of(args[0])
         idx_type = visitor.type_of(args[1])
         if seq_type is BOTTOM or idx_type is BOTTOM:
+            visitor.walk.in_bounds_nodes.discard(node)
             return BOTTOM
         if seq_type == EMPTY_LIST_TYPE and idx_type.fits(PYTHON_INTEGER):
+            visitor.walk.in_bounds_nodes.discard(node)
             return BOTTOM
+        visitor.record_in_bounds(node, args[0], args[1])
         exact_len = seq_type.exact_length()
         max_idx = (
             exact_len - 1 if exact_len is not None and exact_len > 0 else (1 << 60) - 1

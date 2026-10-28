@@ -432,13 +432,18 @@ def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class
     nested_spec = llvm.split('define internal ptr @"mule_fn_sum_nested_pairs.spec.0"(')[
         1
     ].split("\n}")[0]
-    assert "@mule.fast.next_unpack.2(" in nested_spec
+    assert "@mule.fast.unpack.slots.2(" in nested_spec
+    assert "@mule.fast.iterate" not in nested_spec
+    assert "@mule.fast.next_unpack.2(" not in nested_spec
     assert "@llvm.sadd.with.overflow.i64(" in nested_spec
 
     matrix_spec = llvm.split('define internal ptr @"mule_fn_sum_matrix.spec.0"(')[
         1
     ].split("\n}")[0]
-    assert "@mule_list_getitem(" in matrix_spec
+    assert "getelementptr ptr, ptr " in matrix_spec
+    assert "@mule_list_getitem" not in matrix_spec
+    assert "@mule.fast.iterate" not in matrix_spec
+    assert "@mule.fast.next_item(" not in matrix_spec
     assert "@llvm.sadd.with.overflow.i64(" in matrix_spec
 
     lookup_spec = llvm.split('define internal ptr @"mule_fn_lookup_add.spec.0"(')[
@@ -541,3 +546,55 @@ print(callbacks[0](([[value, 2], [3, 4]], [[5, 6], [7, value]])))
     assert "@mule_integer_in_bounds(" not in optimized
     for value in ("3\n", "-7\n"):
         case.compare(value)
+
+
+def test_sequence_iteration_and_indexed_loop_eliminate_iterators_and_bounds_checks(
+    tmp_path,
+):
+    source = (
+        "def sum_iter(items: list[int]) -> int:\n"
+        " total = 0\n"
+        " for item in items:\n"
+        "  total += item\n"
+        " return total\n"
+        "\n"
+        "def sum_indexed(items: list[int]) -> int:\n"
+        " total = 0\n"
+        " for i in range(len(items)):\n"
+        "  total += items[i]\n"
+        " return total\n"
+        "\n"
+        "def sum_tuple(items: tuple[int, ...]) -> int:\n"
+        " total = 0\n"
+        " for item in items:\n"
+        "  if item < 0:\n"
+        "   continue\n"
+        "  if item > 100:\n"
+        "   break\n"
+        "  total += item\n"
+        " else:\n"
+        "  total += 1000\n"
+        " return total\n"
+        "\n"
+        "fns = [sum_iter, sum_indexed, sum_tuple]\n"
+        "print(fns[0]([10, 20, 30, 40]))\n"
+        "print(fns[1]([10, 20, 30, 40]))\n"
+        "print(fns[2]((10, -5, 20, 30)))\n"
+        "print(fns[2]((10, 20, 999, 30)))\n"
+    )
+    llvm = emit_llvm(source)
+    for fn_name in ("sum_iter", "sum_indexed", "sum_tuple"):
+        spec = llvm.split(f'define internal ptr @"mule_fn_{fn_name}.spec.0"(')[1].split(
+            "\n}"
+        )[0]
+        assert "getelementptr ptr, ptr " in spec
+        assert "@mule.fast.iterate" not in spec
+        assert "@mule.fast.next_item" not in spec
+        assert "@mule_list_getitem" not in spec
+        assert "@mule.fast.getitem" not in spec
+        assert "@mule_catch_exception" not in spec
+        assert "@mule.fast.retain" not in spec
+
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "100\n100\n1060\n30\n"

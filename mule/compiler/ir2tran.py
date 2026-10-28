@@ -51,7 +51,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
-from .ir1util import block_exception_target, made_lambda
+from .ir1util import block_exception_target, block_start_cleanup, made_lambda
 from .ltn import EntryContext, primitive_type_of, template_results_ok
 from .node import (
     Bind,
@@ -468,6 +468,15 @@ class BranchTargets:
     alternative: str
 
 
+@dataclass(frozen=True, slots=True)
+class DirectSequenceIteration:
+    seq_type: ValueType
+    iterator_local: object
+    index_tn: object
+    seq_local: object | None = None
+    borrow_element: bool = False
+
+
 def ir2_convert(
     lambda_: Lambda, context: EntryContext, *, ltn_token: object | None = None
 ) -> IR2Component:
@@ -483,7 +492,7 @@ def ir2_convert(
     converter.prepare_environment()
     blocks = list(linked(lambda_.component, lambda_, "component").blocks())
     for index, block in enumerate(blocks):
-        ir2_block = IR2Block(block, index)
+        ir2_block = IR2Block(block, index, block_exception_target(block))
         component.ir2_blocks[block] = ir2_block
         component.blocks.append(ir2_block)
     for block in blocks:
@@ -499,6 +508,7 @@ def ir2_convert(
             ):
                 vop.codegen_info = replace(vop.codegen_info, reuse_local=None)
     _fuse_text_codepoint_comparisons(component)
+    _specialize_sequence_iterations(component)
     _mark_last_local_reads(component)
     _propagate_local_aliases(component)
     _mark_boolean_comparisons(component)
@@ -664,6 +674,7 @@ def select_tuple_delivery(component, arities, method_targets):
                             if (
                                 advance is not None
                                 and advance.info.name == "sequence-available"
+                                and advance.codegen_info is None
                             ):
                                 plan.sequence_available[advance] = arity
             occupied.update(interval)
@@ -925,6 +936,179 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             const_tn.type = IntegerType(code, code)
 
 
+def _enclosing_exception_target(block):
+    cleanup = block_start_cleanup(block)
+    if cleanup is not None:
+        cleanup = cleanup.parent
+    while cleanup is not None:
+        if cleanup.target is not None:
+            return cleanup.target
+        cleanup = cleanup.parent
+    return None
+
+
+def _prune_unreachable_ir2_blocks(component: IR2Component) -> None:
+    if not component.blocks:
+        return
+    ir2_blocks = component.ir2_blocks
+    reachable: set[IR2Block] = set()
+    pending = [component.blocks[0]]
+    while pending:
+        cur = pending.pop()
+        if cur in reachable:
+            continue
+        reachable.add(cur)
+        for succ in cur.block.succ:
+            succ_ir2 = ir2_blocks.get(succ)
+            if succ_ir2 is not None and succ_ir2 not in reachable:
+                pending.append(succ_ir2)
+        exc_ir2 = ir2_blocks.get(cur.exception_target)
+        if exc_ir2 is not None and exc_ir2 not in reachable:
+            pending.append(exc_ir2)
+    if len(reachable) == len(component.blocks):
+        return
+    component.blocks = [b for b in component.blocks if b in reachable]
+    component.ir2_blocks = {
+        b: ir2_b for b, ir2_b in ir2_blocks.items() if ir2_b in reachable
+    }
+    component.reads.clear()
+    component.writes.clear()
+    for block in component.blocks:
+        for vop in block.vops:
+            for ref in vop.args:
+                component.reads[ref.tn].append((vop, ref))
+            for ref in vop.results:
+                component.writes[ref.tn].append((vop, ref))
+    component.tns = [
+        tn
+        for tn in component.tns
+        if tn.leaf is not None
+        or (tn.name is not None and tn.name.startswith("$"))
+        or tn in component.reads
+        or tn in component.writes
+    ]
+
+
+def _specialize_sequence_iterations(component: IR2Component) -> None:
+    """Specialize ``for`` loops over proven exact ``list``, ``tuple``, and ``bytes``
+    sequences to iterate directly over the sequence buffer with a stack-allocated
+    ``i64`` index instead of heap-allocating a ``SeqIter`` iterator object."""
+    if component.context.plan is not None or component.lambda_.coroutine_body:
+        return
+    reads = component.reads
+    writes = component.writes
+    vop_blocks = {vop: block for block in component.blocks for vop in block.vops}
+    pruned_handlers = False
+    for block in component.blocks:
+        for vop in block.vops:
+            if (
+                vop.info.name != "protocol-iterate"
+                or len(vop.args) != 1
+                or not vop.results
+            ):
+                continue
+            seq_tn = vop.args[0].tn
+            seq_type = seq_tn.type or UNKNOWN
+            if seq_type.may_be_unbound or not (
+                seq_type.is_exact_list or seq_type.is_exact_tuple
+            ):
+                continue
+            iter_res = vop.results[0].tn
+            iter_reads = reads.get(iter_res, ())
+            if len(iter_reads) != 1:
+                continue
+            move_vop, _ = iter_reads[0]
+            if move_vop.info is not vops.MOVE or not move_vop.results:
+                continue
+            iterator_local = move_vop.results[0].tn
+            if (
+                not _plain_local(iterator_local)
+                or iterator_local.leaf is None
+                or not iterator_local.leaf.hidden
+                or iterator_local.leaf in component.environment.cells
+                or iterator_local.leaf in component.environment.copies
+                or len(writes.get(iterator_local, ())) != 1
+            ):
+                continue
+            local_reads = reads.get(iterator_local, ())
+            avail_vops = []
+            valid = True
+            for load_vop, _ in local_reads:
+                if (
+                    load_vop.info is not vops.LOAD_LOCAL
+                    or load_vop.codegen_info is None
+                    or not load_vop.codegen_info.bound
+                    or not load_vop.results
+                ):
+                    valid = False
+                    break
+                loaded_tn = load_vop.results[0].tn
+                loaded_reads = reads.get(loaded_tn, ())
+                if len(loaded_reads) != 1:
+                    valid = False
+                    break
+                consumer, _ = loaded_reads[0]
+                if consumer.info.name == "sequence-available":
+                    avail_vops.append(consumer)
+                elif consumer.info is not vops.DISCARD:
+                    valid = False
+                    break
+            if not valid or len(avail_vops) != 1:
+                continue
+            next_vops = [
+                step
+                for b in component.blocks
+                for step in b.vops
+                if step.info.name == "protocol-next_item"
+                and step.node is not None
+                and step.node.info is iterator_local.leaf
+            ]
+            if len(next_vops) != 1:
+                continue
+            seq_local = None
+            seq_writes = writes.get(seq_tn, ())
+            if len(seq_writes) == 1:
+                seq_writer, _ = seq_writes[0]
+                if (
+                    seq_writer.info is vops.LOAD_LOCAL
+                    and seq_writer.codegen_info is not None
+                    and seq_writer.codegen_info.bound
+                    and _plain_local(seq_writer.args[0].tn)
+                ):
+                    seq_local = seq_writer.args[0].tn
+            index_tn = component.tn(
+                FIXNUM, name=f"$seq_iter_idx.{iterator_local.number}"
+            )
+            index_tn.type = IntegerType(0, (1 << 62) - 1)
+            index_tn.sc = SIGNED
+            iter_res.type = seq_type
+            iterator_local.type = seq_type
+            for load_vop, _ in local_reads:
+                load_vop.results[0].tn.type = seq_type
+            info = DirectSequenceIteration(
+                seq_type=seq_type,
+                iterator_local=iterator_local,
+                index_tn=index_tn,
+                seq_local=seq_local,
+            )
+            vop.codegen_info = info
+            avail_vop = avail_vops[0]
+            avail_vop.codegen_info = info
+            next_vops[0].codegen_info = info
+            avail_block = vop_blocks.get(avail_vop)
+            if avail_block is not None and all(
+                step.info.name
+                in ("insert-safepoint", "load-local", "sequence-available", "branch")
+                for step in avail_block.vops
+            ):
+                avail_block.exception_target = _enclosing_exception_target(
+                    avail_block.block
+                )
+                pruned_handlers = True
+    if pruned_handlers:
+        _prune_unreachable_ir2_blocks(component)
+
+
 def _mark_boolean_comparisons(component: IR2Component) -> None:
     """Mark rich-comparison VOPs whose result is only tested for truthiness so
     the slow path coerces custom comparison results to ``bool`` once."""
@@ -1130,7 +1314,7 @@ class _BorrowedLifetime:
                 following = component.ir2_blocks.get(successor)
                 if following is not None:
                     self.predecessors[following].add((block, len(block.vops)))
-            handler = component.ir2_blocks.get(block_exception_target(block.block))
+            handler = component.ir2_blocks.get(block.exception_target)
             if handler is not None:
                 # An error can leave before the block's normal transfer. Include
                 # the throwing operation itself in each conservative predecessor.
@@ -1278,7 +1462,7 @@ class _BorrowedLifetime:
         ):
             return False
         pending = [(block, end + 1)]
-        handler = self.component.ir2_blocks.get(block_exception_target(block.block))
+        handler = self.component.ir2_blocks.get(block.exception_target)
         if handler is not None:
             pending.append((handler, 0))
         visited = set()
@@ -1295,9 +1479,7 @@ class _BorrowedLifetime:
                 continue
             if following.vops[position] in consumers:
                 return False
-            handler = self.component.ir2_blocks.get(
-                block_exception_target(following.block)
-            )
+            handler = self.component.ir2_blocks.get(following.exception_target)
             if handler is not None:
                 pending.append((handler, 0))
             pending.append((following, position + 1))
@@ -1361,7 +1543,7 @@ class _BorrowedLifetime:
                 and not self.transfers_to_consumer(step, source, consumers)
             ):
                 return False
-            handler = self.component.ir2_blocks.get(block_exception_target(block.block))
+            handler = self.component.ir2_blocks.get(block.exception_target)
             if handler is not None:
                 pending.append((handler, 0, live and step not in ends))
             pending.append((block, index + 1, live and step not in ends))
@@ -1569,6 +1751,11 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
     if name in _PURE_FIXNUM_VOPS and step.results:
         return (step.results[0].tn.type or UNKNOWN).is_fixnum and all(
             (arg.tn.type or UNKNOWN).is_fixnum for arg in step.args
+        )
+    if name == "protocol-next_item":
+        info = step.codegen_info
+        return info is not None and (
+            info.seq_type.is_exact_list or info.seq_type.is_exact_tuple
         )
     if name == "protocol-getitem" and len(step.args) == 2:
         seq_type = step.args[0].tn.type or UNKNOWN
@@ -1869,6 +2056,11 @@ def _safe_container_local_region_step(
             )
             for arg in step.args
         )
+    if name == "protocol-next_item":
+        info = step.codegen_info
+        return info is not None and (
+            info.seq_type.is_exact_list or info.seq_type.is_exact_tuple
+        )
     if name == "protocol-getitem" and len(step.args) == 2:
         seq_t = step.args[0].tn.type or UNKNOWN
         return (seq_t.is_exact_list or seq_t.is_exact_tuple) and (
@@ -2042,29 +2234,88 @@ def _specialize_list_getitems(component: IR2Component) -> None:
         positions: dict[VOP, int] | None = None
         for index, vop in enumerate(block.vops):
             name = vop.info.name
-            if (
-                vop.codegen_info not in (None, "list_owned", "tuple_owned")
-                or len(vop.args) != 2
-                or not vop.results
-            ):
+            if not vop.results:
                 continue
-            seq_type = vop.args[0].tn.type or UNKNOWN
-            idx_type = vop.args[1].tn.type or UNKNOWN
-            if not idx_type.is_fixnum:
-                continue
-            if name == "protocol-getitem":
-                if seq_type.is_exact_list:
-                    vop.codegen_info = "list_owned"
-                    borrow_info = "list_borrow"
-                elif seq_type.is_exact_tuple:
-                    vop.codegen_info = "tuple_owned"
-                    borrow_info = "tuple_borrow"
+            if name == "protocol-next_item":
+                info = vop.codegen_info
+                if (
+                    info is None
+                    or len(vop.args) != 1
+                    or not (info.seq_type.is_exact_list or info.seq_type.is_exact_tuple)
+                ):
+                    continue
+                if info.borrow_element:
+                    continue
+                borrow_info = replace(info, borrow_element=True)
+                seq_local = (
+                    info.seq_local
+                    if info.seq_local is not None
+                    else info.iterator_local
+                )
+                root_local = (
+                    info.iterator_local.borrowed_from
+                    if info.iterator_local.borrowed_from is not None
+                    else info.iterator_local
+                )
+                if positions is None:
+                    positions = {step: pos for pos, step in enumerate(block.vops)}
+                writer_index = index
+            else:
+                if (
+                    vop.codegen_info not in (None, "list_owned", "tuple_owned")
+                    or len(vop.args) != 2
+                ):
+                    continue
+                seq_type = vop.args[0].tn.type or UNKNOWN
+                idx_type = vop.args[1].tn.type or UNKNOWN
+                if not idx_type.is_fixnum:
+                    continue
+                if name == "protocol-getitem":
+                    if seq_type.is_exact_list:
+                        vop.codegen_info = "list_owned"
+                        borrow_info = "list_borrow"
+                    elif seq_type.is_exact_tuple:
+                        vop.codegen_info = "tuple_owned"
+                        borrow_info = "tuple_borrow"
+                    else:
+                        continue
+                elif name == "primitive-_storage_read":
+                    borrow_info = "storage_borrow"
                 else:
                     continue
-            elif name == "primitive-_storage_read":
-                borrow_info = "storage_borrow"
-            else:
-                continue
+                seq_tn = vop.args[0].tn
+                seq_writes = writes.get(seq_tn)
+                if seq_writes is None or len(seq_writes) != 1:
+                    continue
+                seq_writer, _ = seq_writes[0]
+                if (
+                    seq_writer.info is vops.LOAD_LOCAL
+                    and seq_writer.codegen_info is not None
+                    and seq_writer.codegen_info.bound
+                    and not seq_writer.codegen_info.move
+                ):
+                    seq_local = seq_writer.args[0].tn
+                    if not _plain_local(seq_local):
+                        continue
+                    root_local = (
+                        seq_local.borrowed_from
+                        if seq_local.borrowed_from is not None
+                        else seq_local
+                    )
+                elif (
+                    seq_writer.info.name in ("getattr", "physical-field-read-borrow")
+                    and seq_tn.borrowed_from is not None
+                    and _plain_local(seq_tn.borrowed_from)
+                ):
+                    seq_local = seq_tn.borrowed_from
+                    root_local = seq_local
+                else:
+                    continue
+                if positions is None:
+                    positions = {step: pos for pos, step in enumerate(block.vops)}
+                writer_index = positions.get(seq_writer)
+                if writer_index is None or writer_index >= index:
+                    continue
             res_tn = vop.results[0].tn
             if res_tn.leaf is not None or (
                 res_tn.name is not None and res_tn.name.startswith("$")
@@ -2079,48 +2330,12 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                 or len(res_reads) != 1
             ):
                 continue
-            seq_tn = vop.args[0].tn
-            seq_writes = writes.get(seq_tn)
-            if seq_writes is None or len(seq_writes) != 1:
-                continue
-            seq_writer, _ = seq_writes[0]
-            if (
-                seq_writer.info is vops.LOAD_LOCAL
-                and seq_writer.codegen_info is not None
-                and seq_writer.codegen_info.bound
-                and not seq_writer.codegen_info.move
-            ):
-                seq_local = seq_writer.args[0].tn
-                if not _plain_local(seq_local):
-                    continue
-                root_local = (
-                    seq_local.borrowed_from
-                    if seq_local.borrowed_from is not None
-                    else seq_local
-                )
-            elif (
-                seq_writer.info.name in ("getattr", "physical-field-read-borrow")
-                and seq_tn.borrowed_from is not None
-                and _plain_local(seq_tn.borrowed_from)
-            ):
-                seq_local = seq_tn.borrowed_from
-                root_local = seq_local
-            else:
-                continue
-            if positions is None:
-                positions = {step: pos for pos, step in enumerate(block.vops)}
-            writer_index = positions.get(seq_writer)
             reader, reader_ref = res_reads[0]
             reader_index = positions.get(reader)
-            if (
-                writer_index is None
-                or writer_index >= index
-                or reader_index is None
-                or reader_index <= index
-            ):
+            if reader_index is None or reader_index <= index:
                 continue
             if (
-                name == "protocol-getitem"
+                name in ("protocol-getitem", "protocol-next_item")
                 and reader.info.name == "structural-unpack"
                 and reader_index == index + 2
                 and _try_borrow_unpacked_getitem(
@@ -2437,7 +2652,7 @@ def _mark_last_local_reads(component: IR2Component) -> None:
     if (
         len(blocks) == 1
         and not blocks[0].block.succ
-        and block_exception_target(blocks[0].block) is None
+        and blocks[0].exception_target is None
     ):
         live = set()
         for vop in reversed(blocks[0].vops):
@@ -2460,9 +2675,7 @@ def _mark_last_local_reads(component: IR2Component) -> None:
         block: [ir2_blocks[succ] for succ in block.block.succ if succ in ir2_blocks]
         for block in blocks
     }
-    handlers = {
-        block: ir2_blocks.get(block_exception_target(block.block)) for block in blocks
-    }
+    handlers = {block: ir2_blocks.get(block.exception_target) for block in blocks}
     block_gen: dict[IR2Block, set] = {}
     block_kill: dict[IR2Block, set] = {}
     for block in blocks:
@@ -3474,6 +3687,8 @@ class _Converter(NodeVisitor):
                     args[0].leaf is not None and args[0].leaf.expression_temporary,
                 ),
             )
+        elif name == "%next_item":
+            self.emit_template(node, [self.lvar_tn(arg) for arg in node.args], None)
         else:
             self.convert_template(node, [self.lvar_tn(arg) for arg in node.args])
 
@@ -3481,6 +3696,9 @@ class _Converter(NodeVisitor):
         """Emit the template LTN selected (``ir2-convert-template``)."""
         if info is None:
             info = self.context.codegen_info.get(node, node.info)
+        self.emit_template(node, args, node.info if info is None else info)
+
+    def emit_template(self, node, args, info):
         template = node.template
         if template is None:
             raise ValueError(f"{node!r} has no template")
@@ -3491,14 +3709,12 @@ class _Converter(NodeVisitor):
                 node,
                 args=args,
                 results=(result,),
-                info=node.info if info is None else info,
+                info=info,
             )
             if discard:
                 self.emit_discard(node, result)
         else:
-            self.emit(
-                template, node, args=args, info=node.info if info is None else info
-            )
+            self.emit(template, node, args=args, info=info)
 
     def convert_full_call(self, node: Combination):
         local = self.context.local_environments

@@ -647,7 +647,34 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
     if (
         restriction is None
         and ref.tn.primitive_type is FIXNUM
-        and vop.info.name in ("branch", "discard")
+        and (
+            vop.info.name in ("branch", "discard")
+            or (
+                not raw
+                and vop.info.name == "protocol-getitem"
+                and len(vop.args) == 2
+                and ref is vop.args[1]
+                and vop.codegen_info
+                in ("list_borrow", "list_owned", "tuple_borrow", "tuple_owned")
+            )
+            or (
+                not raw
+                and vop.info.name == "primitive-_storage_read"
+                and len(vop.args) == 2
+                and ref is vop.args[1]
+                and (
+                    (vop.args[0].tn.type or UNKNOWN).is_exact_list
+                    or (vop.args[0].tn.type or UNKNOWN).is_exact_tuple
+                )
+            )
+            or (
+                not raw
+                and vop.info.name == "primitive-_storage_write"
+                and len(vop.args) == 3
+                and ref is vop.args[1]
+                and (vop.args[0].tn.type or UNKNOWN).is_exact_list
+            )
+        )
     ):
         return (IMMEDIATE, SIGNED)
     return ref.tn.primitive_type.operand_restriction(restriction, raw=raw)
