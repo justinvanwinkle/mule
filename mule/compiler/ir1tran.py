@@ -153,6 +153,8 @@ class ComprehensionScope:
     # Class bodies already being converted when the comprehension started;
     # the comprehension's names skip the innermost of them.
     class_depth: int
+    enclosing_statement: ast.Statement | None = None
+    enclosing_body: tuple[ast.Statement, ...] = ()
 
 
 @dataclass(slots=True, eq=False)
@@ -937,6 +939,111 @@ class FunctionConverter:
             return None
         return self.converter.module_annotations.get(name)
 
+    def unshadowed_global(self, name: str) -> bool:
+        return (
+            self.class_binding(name) is None
+            and self.class_reader(name) is None
+            and self.variable(name).accept(_IS_GLOBAL_VAR)
+        )
+
+    def unshadowed_builtin(self, name: str) -> bool:
+        shadows = self.converter.module_annotation_shadows
+        return (
+            self.lambda_.policy.safety < 3
+            and "*" not in shadows
+            and name not in shadows
+            and self.unshadowed_global(name)
+        )
+
+    def fusible_generator_expression(self, node: ast.Node) -> ast.Comprehension | None:
+        return node.accept(_FusibleGeneratorExpression(bool(self.class_scopes)))
+
+    def drive_iterable(
+        self,
+        start: Ctran,
+        next_: Ctran,
+        genexpr: ast.Comprehension,
+        consumer,
+        source: ast.Node,
+        *,
+        held: LambdaVar | None = None,
+        pre_statements=(),
+        post_statements=(),
+        short_circuit_stop=None,
+        enclosing_statement: ast.Statement | None = None,
+        enclosing_body: tuple[ast.Statement, ...] = (),
+    ) -> None:
+        """Open-code iteration over ``genexpr`` by inlining ``consumer`` at its
+        yield site inside a ``ComprehensionScope``, following SBCL's
+        ``dx-flet`` + ``(declare (inline wrapper))`` + ``%map`` expansion in
+        ``src/code/quantifiers.lisp`` and ``src/compiler/seqtran.lisp``."""
+        span = genexpr.span
+        targets: set[str] = set()
+        for clause in genexpr.clauses:
+            clause.target.accept(_BoundNames(targets))
+        outer_iterable = genexpr.clauses[0].iterable
+        current = start
+        if held is None:
+            direct_outer = (
+                not self.class_scopes
+                and (
+                    outer_iterable.accept(_RangeCandidate()) is not None
+                    or self.fusible_generator_expression(outer_iterable) is not None
+                )
+                and not outer_iterable.accept(_MentionsComprehensionScope(targets))
+            )
+            if not direct_outer:
+                ctran, iterable = self.value(start, outer_iterable)
+                held = self.temporary()
+                current = Ctran()
+                self.set_var(ctran, current, held, iterable, source)
+        variables = {name: self.temporary() for name in sorted(targets)}
+        body = consumer(genexpr.element, span)
+        for index in range(len(genexpr.clauses) - 1, -1, -1):
+            clause = genexpr.clauses[index]
+            for condition in reversed(clause.conditions):
+                body = [ast.If(condition, body, span=span)]
+            clause_source = (
+                clause.iterable
+                if index > 0 or held is None
+                else ast.Name(held.name, span=span)
+            )
+            for_stmt: ast.Statement = ast.For(
+                clause.target,
+                clause_source,
+                body,
+                is_async=clause.is_async,
+                span=span,
+            )
+            if short_circuit_stop is not None and index > 0:
+                body = [
+                    for_stmt,
+                    ast.If(
+                        short_circuit_stop(span),
+                        [ast.Break(span=span)],
+                        span=span,
+                    ),
+                ]
+            else:
+                body = [for_stmt]
+        statements = [*pre_statements, *body, *post_statements]
+        self.comprehension_scopes.append(
+            ComprehensionScope(
+                variables,
+                len(self.class_scopes),
+                enclosing_statement=enclosing_statement,
+                enclosing_body=enclosing_body,
+            )
+        )
+        try:
+            frontier = self.convert_body(current, statements)
+        finally:
+            self.comprehension_scopes.pop()
+        if held is not None:
+            self.discard(frontier, next_, held.name, source)
+        else:
+            self.flow(frontier, next_)
+
     # Node construction primitives
 
     def block(self, ctran: Ctran | None = None) -> Block:
@@ -1158,6 +1265,18 @@ class FunctionConverter:
         return ctran, lvar
 
     def convert_statement(self, start, next_, statement) -> None:
+        if (
+            self.comprehension_scopes
+            and self.comprehension_scopes[-1].enclosing_statement is statement
+        ):
+            scope = self.comprehension_scopes.pop()
+            try:
+                frontier = self.convert_body(start, scope.enclosing_body)
+                if frontier is not None:
+                    self.flow(frontier, next_)
+            finally:
+                self.comprehension_scopes.append(scope)
+            return
         self.frames.append((start, next_, None))
         try:
             visitor = self.statements_visitor or _Statements(self)
@@ -1491,7 +1610,13 @@ class FunctionConverter:
         )
         if positional_only and len(node.arguments) == 1:
             ctran, callee = self.value(start, node.function)
-            following, arguments = self.value(ctran, node.arguments[0].value)
+            arg_expr = node.arguments[0].value
+            genexpr = self.fusible_generator_expression(arg_expr)
+            if genexpr is not None:
+                arg_expr = replace(
+                    genexpr, kind=ast.ComprehensionKind.LIST, span=genexpr.span
+                )
+            following, arguments = self.value(ctran, arg_expr)
             self.protocol(
                 following,
                 next_,
@@ -1524,6 +1649,29 @@ class FunctionConverter:
             not in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED)
         ]
         for argument in ordered_arguments:
+            if argument.kind == ast.ArgumentKind.STARRED:
+                genexpr = self.fusible_generator_expression(argument.value)
+                if genexpr is not None:
+                    pos_name = ast.Name(positional.name, span=argument.span)
+                    following = Ctran()
+                    self.drive_iterable(
+                        current,
+                        following,
+                        genexpr,
+                        lambda elem, s, target_name=pos_name: [
+                            ast.ExpressionStatement(
+                                ast.Call(
+                                    ast.Attribute(target_name, "append", span=s),
+                                    [ast.CallArgument(elem, span=s)],
+                                    span=s,
+                                ),
+                                span=s,
+                            )
+                        ],
+                        argument,
+                    )
+                    current = following
+                    continue
             if argument.kind in (ast.ArgumentKind.POSITIONAL, ast.ArgumentKind.STARRED):
                 target, name = (
                     positional,
@@ -2109,65 +2257,50 @@ class _Expressions(ast.Visitor):
             self.generator_expression(node)
             return
         span = node.span
-        ctran, iterable = function.value(start, node.clauses[0].iterable)
-        held = function.temporary()
-        current = Ctran()
-        function.set_var(ctran, current, held, iterable, node)
-        targets = set()
-        for clause in node.clauses:
-            clause.target.accept(_BoundNames(targets))
-        variables = {name: function.temporary() for name in sorted(targets)}
         accumulator = function.temporary()
-        variables["$iterable"], variables["$result"] = held, accumulator
-
-        result_name = ast.Name("$result", span=span)
+        result_name = ast.Name(accumulator.name, span=span)
         if node.kind == ast.ComprehensionKind.DICT:
-            initial = ast.Dict([], span=span)
-            variables["$key"] = function.temporary()
-            key_name = ast.Name("$key", span=span)
-            body: list[ast.Statement] = [
-                ast.Assignment([key_name], node.key, span=span),
-                ast.Assignment(
-                    [ast.Subscript(result_name, key_name, span=span)],
-                    node.element,
-                    span=span,
-                ),
-            ]
+            initial: ast.Expression = ast.Dict([], span=span)
+            key_temp = function.temporary()
+            key_name = ast.Name(key_temp.name, span=span)
+
+            def consumer(elem: ast.Expression, s: ast.Span) -> list[ast.Statement]:
+                return [
+                    ast.Assignment([key_name], node.key, span=s),
+                    ast.Assignment(
+                        [ast.Subscript(result_name, key_name, span=s)],
+                        elem,
+                        span=s,
+                    ),
+                ]
+
         else:
             if node.kind == ast.ComprehensionKind.LIST:
                 initial, method = ast.List([], span=span), "append"
             else:
                 initial, method = ast.Set([], span=span), "add"
-            add = ast.ExpressionStatement(
-                ast.Call(
-                    ast.Attribute(result_name, method, span=span),
-                    [ast.CallArgument(node.element, span=span)],
-                    span=span,
-                ),
-                span=span,
-            )
-            body = [add]
-        for index in range(len(node.clauses) - 1, -1, -1):
-            clause = node.clauses[index]
-            for condition in reversed(clause.conditions):
-                body = [ast.If(condition, body, span=span)]
-            source = ast.Name("$iterable", span=span) if index == 0 else clause.iterable
-            body = [
-                ast.For(
-                    clause.target, source, body, is_async=clause.is_async, span=span
-                )
-            ]
-        statements = [ast.Assignment([result_name], initial, span=span), *body]
 
-        function.comprehension_scopes.append(
-            ComprehensionScope(variables, len(function.class_scopes))
-        )
-        try:
-            frontier = function.convert_body(current, statements)
-        finally:
-            function.comprehension_scopes.pop()
+            def consumer(elem: ast.Expression, s: ast.Span) -> list[ast.Statement]:
+                return [
+                    ast.ExpressionStatement(
+                        ast.Call(
+                            ast.Attribute(result_name, method, span=s),
+                            [ast.CallArgument(elem, span=s)],
+                            span=s,
+                        ),
+                        span=s,
+                    )
+                ]
+
         ctran = Ctran()
-        function.discard(frontier, ctran, held.name, node)
+        function.drive_iterable(
+            start,
+            ctran,
+            node,
+            consumer,
+            node,
+            pre_statements=[ast.Assignment([result_name], initial, span=span)],
+        )
         function.ref(ctran, next_, result, accumulator, node, final=True)
 
     def visit_List(self, node):
@@ -2198,10 +2331,8 @@ class _Expressions(ast.Visitor):
         current = Ctran()
         function.set_var(ctran, current, items, value, node)
         for element in node.elements:
-            ctran, held = Ctran(), Lvar()
-            function.ref(current, ctran, held, items, element)
             following = Ctran()
-            element.accept(_DisplayItem(function, ctran, following, held))
+            element.accept(_DisplayItem(function, current, following, items))
             current = following
         if conversion is None:
             function.ref(current, next_, result, items, node, final=True)
@@ -2500,26 +2631,50 @@ class _DisplayLowering(ast.Visitor):
 
 
 class _DisplayItem(ast.Visitor):
-    """Adds one display element to the list in ``held``."""
+    """Adds one display element to the list in ``items``."""
 
-    def __init__(self, function, start, next_, held):
+    def __init__(self, function: FunctionConverter, start, next_, items: LambdaVar):
         self.function = function
         self.start = start
         self.next = next_
-        self.held = held
+        self.items = items
 
     def visit_Node(self, node):
+        ctran, held = Ctran(), Lvar()
+        self.function.ref(self.start, ctran, held, self.items, node)
         self.function.protocol(
-            self.start, self.next, None, "append_argument", (self.held, node), node
+            ctran, self.next, None, "append_argument", (held, node), node
         )
 
     def visit_Unpack(self, node):
+        genexpr = self.function.fusible_generator_expression(node.value)
+        if genexpr is not None:
+            items_name = ast.Name(self.items.name, span=node.span)
+            self.function.drive_iterable(
+                self.start,
+                self.next,
+                genexpr,
+                lambda elem, s: [
+                    ast.ExpressionStatement(
+                        ast.Call(
+                            ast.Attribute(items_name, "append", span=s),
+                            [ast.CallArgument(elem, span=s)],
+                            span=s,
+                        ),
+                        span=s,
+                    )
+                ],
+                node,
+            )
+            return
+        ctran, held = Ctran(), Lvar()
+        self.function.ref(self.start, ctran, held, self.items, node)
         self.function.protocol(
-            self.start,
+            ctran,
             self.next,
             None,
             "extend_arguments",
-            (self.held, node.value),
+            (held, node.value),
             node,
         )
 
@@ -3342,6 +3497,36 @@ class _Statements(ast.Visitor):
                 function.error("'async for' outside async function", node)
             self.expanded(start, next_, _async_for(function, node))
             return
+        genexpr = (
+            function.fusible_generator_expression(node.iterable)
+            if not node.else_body
+            else None
+        )
+        if genexpr is not None and (
+            len(genexpr.clauses) == 1
+            or not any(stmt.accept(_CONTAINS_BREAK) for stmt in node.body)
+        ):
+            span = node.span
+            item_temp = function.temporary()
+            item_name = ast.Name(item_temp.name, span=span)
+            marker = ast.Pass(span=span)
+            enclosing_body = (
+                ast.Assignment([node.target], item_name, span=span),
+                *node.body,
+            )
+            function.drive_iterable(
+                start,
+                next_,
+                genexpr,
+                lambda elem, s: [
+                    ast.Assignment([item_name], elem, span=s),
+                    marker,
+                ],
+                node,
+                enclosing_statement=marker,
+                enclosing_body=enclosing_body,
+            )
+            return
         candidate = node.iterable.accept(_RangeCandidate())
         callee = None
         current = start
@@ -4005,21 +4190,10 @@ class _MatchLowering:
         )
 
     def unshadowed_global(self, name: str) -> bool:
-        fn = self.function
-        return (
-            fn.class_binding(name) is None
-            and fn.class_reader(name) is None
-            and fn.variable(name).accept(_IS_GLOBAL_VAR)
-        )
+        return self.function.unshadowed_global(name)
 
     def unshadowed_builtin(self, name: str) -> bool:
-        shadows = self.function.converter.module_annotation_shadows
-        return (
-            self.function.lambda_.policy.safety < 3
-            and "*" not in shadows
-            and name not in shadows
-            and self.unshadowed_global(name)
-        )
+        return self.function.unshadowed_builtin(name)
 
     def statements(self, node):
         elements = node.subject.accept(_UNPACK_FREE_SEQUENCE_SUBJECT)
@@ -6069,6 +6243,8 @@ class _CallTarget(ast.Visitor):
                 self.call,
             )
             return
+        if self.fuse_comprehension_call(node):
+            return
         if node.identifier != "super" or self.call.arguments:
             return self.visit_Node(node)
         parameters = function.lambda_.vars
@@ -6094,6 +6270,444 @@ class _CallTarget(ast.Visitor):
             self.call,
             CallInfo((), function.converter.location(self.call)),
         )
+
+    def fuse_comprehension_call(self, node: ast.Name) -> bool:
+        """Open-code a builtin sequence consumer applied to a generator
+        expression, following SBCL's ``src/code/quantifiers.lisp`` and
+        ``src/compiler/seqtran.lisp``."""
+        name = node.identifier
+        if name not in (
+            "list",
+            "set",
+            "tuple",
+            "frozenset",
+            "sorted",
+            "dict",
+            "any",
+            "all",
+            "sum",
+            "min",
+            "max",
+        ):
+            return False
+        function = self.function
+        arguments = self.call.arguments
+        if (
+            not arguments
+            or arguments[0].kind != ast.ArgumentKind.POSITIONAL
+            or not function.unshadowed_builtin(name)
+        ):
+            return False
+        genexpr = function.fusible_generator_expression(arguments[0].value)
+        if genexpr is None:
+            return False
+        span = self.call.span
+        if name == "list" and len(arguments) == 1:
+            function.convert(
+                self.start,
+                self.next,
+                self.result,
+                replace(genexpr, kind=ast.ComprehensionKind.LIST, span=span),
+            )
+            return True
+        if name == "set" and len(arguments) == 1:
+            function.convert(
+                self.start,
+                self.next,
+                self.result,
+                replace(genexpr, kind=ast.ComprehensionKind.SET, span=span),
+            )
+            return True
+        if name == "tuple" and len(arguments) == 1:
+            ctran, items = function.value(
+                self.start,
+                replace(genexpr, kind=ast.ComprehensionKind.LIST, span=span),
+            )
+            function.protocol(
+                ctran, self.next, self.result, "tuple_from_list", (items,), self.call
+            )
+            return True
+        if name == "frozenset" and len(arguments) == 1:
+            ctran, callee = function.value(self.start, node)
+            following, items = function.value(
+                ctran,
+                replace(genexpr, kind=ast.ComprehensionKind.SET, span=genexpr.span),
+            )
+            function.full_call(
+                following,
+                self.next,
+                self.result,
+                callee,
+                (items,),
+                self.call,
+                CallInfo((), function.converter.location(self.call)),
+            )
+            return True
+        if name == "sorted":
+            ctran, callee = function.value(self.start, node)
+            operands = (
+                replace(genexpr, kind=ast.ComprehensionKind.LIST, span=genexpr.span),
+                *(arg.value for arg in arguments[1:]),
+            )
+            function.full_call(
+                ctran,
+                self.next,
+                self.result,
+                callee,
+                operands,
+                self.call,
+                CallInfo(self.keywords(), function.converter.location(self.call)),
+            )
+            return True
+        if name == "dict" and len(arguments) == 1:
+            pair = genexpr.element.accept(_PlainPairElements())
+            if pair is not None:
+                key_expr, value_expr = pair
+                function.convert(
+                    self.start,
+                    self.next,
+                    self.result,
+                    replace(
+                        genexpr,
+                        kind=ast.ComprehensionKind.DICT,
+                        key=key_expr,
+                        element=value_expr,
+                        span=span,
+                    ),
+                )
+                return True
+            accumulator = function.temporary()
+            key_temp = function.temporary()
+            value_temp = function.temporary()
+            result_name = ast.Name(accumulator.name, span=span)
+            key_name = ast.Name(key_temp.name, span=span)
+            value_name = ast.Name(value_temp.name, span=span)
+            ctran = Ctran()
+            function.drive_iterable(
+                self.start,
+                ctran,
+                genexpr,
+                lambda elem, s: [
+                    ast.Assignment(
+                        [ast.Tuple([key_name, value_name], span=s)], elem, span=s
+                    ),
+                    ast.Assignment(
+                        [ast.Subscript(result_name, key_name, span=s)],
+                        value_name,
+                        span=s,
+                    ),
+                ],
+                self.call,
+                pre_statements=[
+                    ast.Assignment([result_name], ast.Dict([], span=span), span=span)
+                ],
+            )
+            function.ref(
+                ctran, self.next, self.result, accumulator, self.call, final=True
+            )
+            return True
+        if name in ("any", "all") and len(arguments) == 1:
+            short_circuit_on_true = name == "any"
+            accumulator = function.temporary()
+            result_name = ast.Name(accumulator.name, span=span)
+
+            def quantifier_consumer(
+                elem: ast.Expression, s: ast.Span
+            ) -> list[ast.Statement]:
+                test = (
+                    elem
+                    if short_circuit_on_true
+                    else ast.Unary(ast.UnaryOperator.NOT, elem, span=s)
+                )
+                return [
+                    ast.If(
+                        test,
+                        [
+                            ast.Assignment(
+                                [result_name],
+                                ast.BooleanLiteral(short_circuit_on_true, span=s),
+                                span=s,
+                            ),
+                            ast.Break(span=s),
+                        ],
+                        span=s,
+                    )
+                ]
+
+            def stop_condition(s: ast.Span) -> ast.Expression:
+                return (
+                    result_name
+                    if short_circuit_on_true
+                    else ast.Unary(ast.UnaryOperator.NOT, result_name, span=s)
+                )
+
+            ctran = Ctran()
+            function.drive_iterable(
+                self.start,
+                ctran,
+                genexpr,
+                quantifier_consumer,
+                self.call,
+                pre_statements=[
+                    ast.Assignment(
+                        [result_name],
+                        ast.BooleanLiteral(not short_circuit_on_true, span=span),
+                        span=span,
+                    )
+                ],
+                short_circuit_stop=stop_condition,
+            )
+            function.ref(
+                ctran, self.next, self.result, accumulator, self.call, final=True
+            )
+            return True
+        if name == "sum" and len(arguments) in (1, 2):
+            if len(arguments) == 2:
+                second = arguments[1]
+                if not (
+                    second.kind == ast.ArgumentKind.POSITIONAL
+                    or (
+                        second.kind == ast.ArgumentKind.KEYWORD
+                        and second.keyword == "start"
+                    )
+                ) or second.value.accept(_IS_REJECTED_SUM_START):
+                    return False
+            accumulator = function.temporary()
+            result_name = ast.Name(accumulator.name, span=span)
+            current = self.start
+            held = None
+            pre_statements: list[ast.Statement] = []
+            if len(arguments) == 2:
+                ctran, iterable = function.value(current, genexpr.clauses[0].iterable)
+                held = function.temporary()
+                current = Ctran()
+                function.set_var(ctran, current, held, iterable, self.call)
+                ctran, init_val = function.value(current, arguments[1].value)
+                current = Ctran()
+                function.set_var(ctran, current, accumulator, init_val, self.call)
+            else:
+                pre_statements.append(
+                    ast.Assignment(
+                        [result_name], ast.IntegerLiteral(0, span=span), span=span
+                    )
+                )
+            ctran = Ctran()
+            function.drive_iterable(
+                current,
+                ctran,
+                genexpr,
+                lambda elem, s: [
+                    ast.Assignment(
+                        [result_name],
+                        ast.Binary(ast.BinaryOperator.ADD, result_name, elem, span=s),
+                        span=s,
+                    )
+                ],
+                self.call,
+                held=held,
+                pre_statements=pre_statements,
+            )
+            function.ref(
+                ctran, self.next, self.result, accumulator, self.call, final=True
+            )
+            return True
+        if name in ("min", "max"):
+            if any(
+                arg.kind != ast.ArgumentKind.KEYWORD
+                or arg.keyword not in ("key", "default")
+                for arg in arguments[1:]
+            ):
+                return False
+            has_default_arg = any(arg.keyword == "default" for arg in arguments[1:])
+            if not has_default_arg and not function.unshadowed_builtin("ValueError"):
+                return False
+            greatest = name == "max"
+            accumulator = function.temporary()
+            has_best = function.temporary()
+            candidate = function.temporary()
+            result_name = ast.Name(accumulator.name, span=span)
+            has_best_name = ast.Name(has_best.name, span=span)
+            candidate_name = ast.Name(candidate.name, span=span)
+            current = self.start
+            held = None
+            key_temp: LambdaVar | None = None
+            if len(arguments) > 1:
+                ctran, iterable = function.value(current, genexpr.clauses[0].iterable)
+                held = function.temporary()
+                current = Ctran()
+                function.set_var(ctran, current, held, iterable, self.call)
+                for arg in arguments[1:]:
+                    ctran, kw_val = function.value(current, arg.value)
+                    current = Ctran()
+                    if arg.keyword == "key":
+                        key_temp = function.temporary()
+                        function.set_var(ctran, current, key_temp, kw_val, arg)
+                    else:
+                        function.set_var(ctran, current, accumulator, kw_val, arg)
+            pre_statements = []
+            if not has_default_arg:
+                pre_statements.append(
+                    ast.Assignment(
+                        [result_name], ast.NoneLiteral(None, span=span), span=span
+                    )
+                )
+            pre_statements.append(
+                ast.Assignment(
+                    [has_best_name], ast.BooleanLiteral(False, span=span), span=span
+                )
+            )
+            op = (
+                ast.ComparisonOperator.GREATER
+                if greatest
+                else ast.ComparisonOperator.LESS
+            )
+            if key_temp is None:
+
+                def extreme_consumer(
+                    elem: ast.Expression, s: ast.Span
+                ) -> list[ast.Statement]:
+                    return [
+                        ast.Assignment([candidate_name], elem, span=s),
+                        ast.If(
+                            has_best_name,
+                            [
+                                ast.If(
+                                    ast.Comparison(
+                                        candidate_name, [op], [result_name], span=s
+                                    ),
+                                    [
+                                        ast.Assignment(
+                                            [result_name], candidate_name, span=s
+                                        )
+                                    ],
+                                    span=s,
+                                )
+                            ],
+                            [
+                                ast.Assignment([result_name], candidate_name, span=s),
+                                ast.Assignment(
+                                    [has_best_name],
+                                    ast.BooleanLiteral(True, span=s),
+                                    span=s,
+                                ),
+                            ],
+                            span=s,
+                        ),
+                    ]
+
+            else:
+                best_key = function.temporary()
+                candidate_key = function.temporary()
+                best_key_name = ast.Name(best_key.name, span=span)
+                candidate_key_name = ast.Name(candidate_key.name, span=span)
+                key_fn_name = ast.Name(key_temp.name, span=span)
+                pre_statements.append(
+                    ast.Assignment(
+                        [best_key_name], ast.NoneLiteral(None, span=span), span=span
+                    )
+                )
+
+                def extreme_consumer(
+                    elem: ast.Expression, s: ast.Span
+                ) -> list[ast.Statement]:
+                    compute_key = ast.Conditional(
+                        ast.Comparison(
+                            key_fn_name,
+                            [ast.ComparisonOperator.IS],
+                            [ast.NoneLiteral(None, span=s)],
+                            span=s,
+                        ),
+                        candidate_name,
+                        ast.Call(
+                            key_fn_name,
+                            [ast.CallArgument(candidate_name, span=s)],
+                            span=s,
+                        ),
+                        span=s,
+                    )
+                    return [
+                        ast.Assignment([candidate_name], elem, span=s),
+                        ast.Assignment([candidate_key_name], compute_key, span=s),
+                        ast.If(
+                            has_best_name,
+                            [
+                                ast.If(
+                                    ast.Comparison(
+                                        candidate_key_name,
+                                        [op],
+                                        [best_key_name],
+                                        span=s,
+                                    ),
+                                    [
+                                        ast.Assignment(
+                                            [result_name], candidate_name, span=s
+                                        ),
+                                        ast.Assignment(
+                                            [best_key_name],
+                                            candidate_key_name,
+                                            span=s,
+                                        ),
+                                    ],
+                                    span=s,
+                                )
+                            ],
+                            [
+                                ast.Assignment([result_name], candidate_name, span=s),
+                                ast.Assignment(
+                                    [best_key_name], candidate_key_name, span=s
+                                ),
+                                ast.Assignment(
+                                    [has_best_name],
+                                    ast.BooleanLiteral(True, span=s),
+                                    span=s,
+                                ),
+                            ],
+                            span=s,
+                        ),
+                    ]
+
+            post_statements: list[ast.Statement] = []
+            if not has_default_arg:
+                post_statements.append(
+                    ast.If(
+                        ast.Unary(ast.UnaryOperator.NOT, has_best_name, span=span),
+                        [
+                            ast.Raise(
+                                ast.Call(
+                                    ast.Name("ValueError", span=span),
+                                    [
+                                        ast.CallArgument(
+                                            ast.TextLiteral(
+                                                "min/max arg is an empty sequence",
+                                                span=span,
+                                            ),
+                                            span=span,
+                                        )
+                                    ],
+                                    span=span,
+                                ),
+                                span=span,
+                            )
+                        ],
+                        span=span,
+                    )
+                )
+            ctran = Ctran()
+            function.drive_iterable(
+                current,
+                ctran,
+                genexpr,
+                extreme_consumer,
+                self.call,
+                held=held,
+                pre_statements=pre_statements,
+                post_statements=post_statements,
+            )
+            function.ref(
+                ctran, self.next, self.result, accumulator, self.call, final=True
+            )
+            return True
+        return False
 
     def visit_Attribute(self, node):
         function = self.function
@@ -6658,6 +7272,165 @@ class _ContainsYield(ast.Visitor):
     def visit_Comprehension(self, node):
         # Only the first iterable is evaluated in the enclosing function.
         return node.clauses[0].iterable.accept(self)
+
+
+class _ContainsComprehensionFrameIntrospection(ast.Visitor):
+    """Whether a generator expression body inspects its own function frame."""
+
+    def visit_Node(self, node) -> bool:
+        return any(child.accept(self) for child in node.children())
+
+    def visit_Name(self, node: ast.Name) -> bool:
+        return node.identifier in ("locals", "vars", "dir", "eval", "exec", "super")
+
+    def visit_Lambda(self, node) -> bool:
+        return any(
+            parameter.default is not None and parameter.default.accept(self)
+            for parameter in node.parameters
+        )
+
+    def visit_FunctionDefinition(self, node) -> bool:
+        return any(decorator.accept(self) for decorator in node.decorators) or any(
+            parameter.default is not None and parameter.default.accept(self)
+            for parameter in node.parameters
+        )
+
+    def visit_ClassDefinition(self, node) -> bool:
+        return any(child.accept(self) for child in (*node.decorators, *node.arguments))
+
+
+class _FusibleGeneratorExpression(ast.Visitor):
+    """Return ``node`` when it is a synchronous, non-yielding generator
+    expression that can be inlined into the current function scope."""
+
+    def __init__(self, has_class_scopes: bool):
+        self.has_class_scopes = has_class_scopes
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Comprehension(self, node: ast.Comprehension):
+        if node.kind != ast.ComprehensionKind.GENERATOR:
+            return None
+        if self.has_class_scopes and node.accept(_ComprehensionAssignment()):
+            return None
+        async_check = _ContainsAsync()
+        yield_check = _ContainsYield()
+        frame_check = _ContainsComprehensionFrameIntrospection()
+        if any(
+            child.accept(async_check)
+            or child.accept(yield_check)
+            or child.accept(frame_check)
+            for child in node.children()
+        ):
+            return None
+        return node
+
+
+class _MentionsComprehensionScope(ast.Visitor):
+    """Whether evaluating an outer comprehension iterable inside
+    ``ComprehensionScope`` could observe the comprehension scope."""
+
+    def __init__(self, targets: set[str]):
+        self.targets = targets
+
+    def visit_Node(self, node) -> bool:
+        return any(child.accept(self) for child in node.children())
+
+    def visit_Name(self, node: ast.Name) -> bool:
+        return node.identifier in self.targets or node.identifier in (
+            "locals",
+            "vars",
+            "dir",
+            "eval",
+            "exec",
+            "super",
+        )
+
+    def visit_Yield(self, node: ast.Yield) -> bool:
+        return True
+
+
+class _ContainsBreak(ast.Visitor):
+    """Whether a statement tree contains a ``break`` targeting the enclosing loop."""
+
+    def visit_Node(self, node) -> bool:
+        return any(child.accept(self) for child in node.children())
+
+    def visit_Break(self, node) -> bool:
+        return True
+
+    def visit_For(self, node) -> bool:
+        return any(stmt.accept(self) for stmt in node.else_body)
+
+    def visit_While(self, node) -> bool:
+        return any(stmt.accept(self) for stmt in node.else_body)
+
+    def visit_FunctionDefinition(self, node) -> bool:
+        return False
+
+    def visit_ClassDefinition(self, node) -> bool:
+        return False
+
+
+class _PlainPairElements(ast.Visitor):
+    """Return ``(key, value)`` when ``node`` is a 2-element tuple or list
+    display without starred unpacking."""
+
+    def __init__(self):
+        self.in_container = False
+
+    def visit_Node(self, node):
+        return None
+
+    def _sequence(self, node):
+        if self.in_container or len(node.elements) != 2:
+            return None
+        self.in_container = True
+        for element in node.elements:
+            if element.accept(self) is False:
+                return None
+        return node.elements[0], node.elements[1]
+
+    visit_Tuple = _sequence
+    visit_List = _sequence
+
+    def visit_Unpack(self, node):
+        return False
+
+
+class _IsTextOrBytesName(ast.Visitor):
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Name(self, node: ast.Name) -> bool:
+        return node.identifier in ("str", "bytes", "bytearray")
+
+
+class _IsRejectedSumStart(ast.Visitor):
+    """Whether a ``sum`` start expression may evaluate to ``str``, ``bytes``,
+    or ``bytearray``."""
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_TextLiteral(self, node) -> bool:
+        return True
+
+    def visit_BytesLiteral(self, node) -> bool:
+        return True
+
+    def visit_FormattedString(self, node) -> bool:
+        return True
+
+    def visit_Call(self, node: ast.Call) -> bool:
+        return node.function.accept(_IS_TEXT_OR_BYTES_NAME)
+
+
+_CONTAINS_BREAK = _ContainsBreak()
+_CONTAINS_YIELD = _ContainsYield()
+_IS_TEXT_OR_BYTES_NAME = _IsTextOrBytesName()
+_IS_REJECTED_SUM_START = _IsRejectedSumStart()
 
 
 def _comprehension_assignments(node):
@@ -7264,8 +8037,11 @@ class _AnnotationShadows(_ImportNames):
         self.visit_Node(node)
 
     def visit_Comprehension(self, node):
-        # Only the first iterable is evaluated in this scope.
+        # Only the first iterable is evaluated in this scope, but an
+        # assignment expression inside binds here (PEP 572).
         node.clauses[0].iterable.accept(self)
+        for name in _comprehension_assignments(node):
+            self.bind(name)
 
     def visit_Lambda(self, node):
         # Only defaults run in this scope; the body is another scope.
