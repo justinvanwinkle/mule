@@ -245,7 +245,7 @@ class If(Node):
 class Set(ValuedNode):
     """Assign ``value`` to ``var``; ``value=None`` unbinds the variable."""
 
-    __slots__ = ("missing_ok", "value", "var")
+    __slots__ = ("final_binding", "missing_ok", "value", "var")
 
     def __init__(
         self,
@@ -255,11 +255,13 @@ class Set(ValuedNode):
         value: Lvar | None,
         *,
         missing_ok: bool = False,
+        final_binding: bool = False,
     ):
         super().__init__(lexenv, source)
         self.var = var
         self.value = value
         self.missing_ok = missing_ok
+        self.final_binding = final_binding
 
     def accept(self, visitor):
         return visitor.visit_Set(self)
@@ -597,11 +599,12 @@ class BasicVar(Leaf):
 class GlobalVar(BasicVar):
     """A module-namespace binding, looked up at execution time."""
 
-    __slots__ = ("namespace",)
+    __slots__ = ("final_function", "namespace")
 
     def __init__(self, name: str, namespace: str):
         super().__init__(name)
         self.namespace = namespace
+        self.final_function: Lambda | None = None
 
     @property
     def name(self) -> str:

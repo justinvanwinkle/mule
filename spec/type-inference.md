@@ -99,6 +99,45 @@ the entire function. Likewise, returning a callable through a proven local
 helper preserves its identity, but a mutable global helper binding does not
 establish the returned code identity without an additional checked boundary.
 
+### Final module function bindings
+
+Mule gives `typing.final` on a module-level function a constant-binding contract.
+The declaration follows an unshadowed import of `typing.final`, including an
+import alias or a qualified `typing` import. A same-spelled user decorator is
+not a declaration. This extends Python's typing-only meaning: after the function
+definition initializes its module binding, reassignment and deletion are errors.
+Methods, classes, and nested function definitions retain their ordinary runtime
+decorator behavior.
+
+The frontend preserves the declaration's `__final__ = True` marker at its place
+in decorator order, while keeping the original function value visible to IR1.
+Other decorators still execute and may return different objects. A known target
+is recorded only when the resulting value actually identifies a compiled
+function. Existing local-call analysis then propagates arguments and selects
+specialized entries; it does not infer identity through an arbitrary wrapper.
+Calls still retain guards needed for callable code and pre-initialization reads.
+
+Other explicit stores and deletions of the declared module name are rejected
+with source context. Runtime namespace writes and deletions also reject changes
+to the initialized binding, including writes through module attributes and
+`globals()`. Repeated execution of the defining statement cannot replace an
+already initialized final binding. Bulk namespace operations retain their normal
+incremental behavior: a failed change to a final binding leaves that binding
+unchanged, but earlier changes to unrelated keys need not be rolled back.
+
+This follows SBCL's `src/code/symbol.lisp`, `set-symbol-global-value` and
+`makunbound`, which call `about-to-modify-symbol-value` before changing a symbol
+value. Its `:constant` declaration rejects or signals a continuable error for
+mutation. Mule makes that error noncontinuable, as required by its final-binding
+contract, at every safety level. IR1 uses the existing local-call propagation
+corresponding to `src/compiler/locall.lisp`, `propagate-to-args`.
+Python's function object and its
+module binding are separate, so Mule attaches this declaration to the module's
+existing global cell rather than treating the function's `__final__` attribute
+as evidence that every alias is constant. The low-level cell write-protection
+primitive enforces the declared storage invariant without adding another
+resolver, cache, or language-level evaluator.
+
 ### Checked inferred results within a compilation unit
 
 Status: implemented for unambiguous same-unit named definitions and supported

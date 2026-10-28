@@ -25,7 +25,8 @@ pub struct GlobalCell {
     /// The namespace's own value, else a copy of the builtin of the same
     /// name, else the undefined object; never NULL.
     value: Value,
-    /// Nonzero while the namespace itself binds the name.
+    /// Bit 0 marks an own binding; bit 1 protects its initialized storage.
+    /// Generated reads test nonzero, and sealed cells always remain bound.
     own: usize,
     /// The builtins' cell for the same name: what exact-semantics code reads
     /// and what `del` restores. NULL in the builtins' own cells.
@@ -36,6 +37,9 @@ pub struct GlobalCell {
 }
 
 impl GlobalCell {
+    const BOUND: usize = 1;
+    const SEALED: usize = 2;
+
     fn unbound(builtin: *mut GlobalCell, namespace: Value) -> Self {
         let mut cell = Self { value: undefined_value(), own: 0, builtin, namespace };
         cell.value = unsafe { cell.inherited() };
@@ -44,6 +48,27 @@ impl GlobalCell {
 
     fn bound(&self) -> bool {
         self.own != 0
+    }
+
+    fn ensure_writable(&self, name: &str) -> Result<(), ()> {
+        if self.own & Self::SEALED != 0 {
+            error("TypeError", &format!("cannot modify final binding '{name}'"));
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+
+    unsafe fn ensure_writable_c(&self, name: *const c_char) -> Result<(), ()> {
+        if self.own & Self::SEALED == 0 {
+            return Ok(());
+        }
+        unsafe {
+            let Some(name) = name_from_c(name) else {
+                return Err(());
+            };
+            self.ensure_writable(name)
+        }
     }
 
     /// The value the name has while the namespace does not bind it: the
@@ -147,39 +172,46 @@ impl Namespace {
 
     /// Bind `name` to `value`, which the cell takes over, and return what the
     /// cell held, owned: the previous binding, an inherited copy, or the
-    /// undefined object. `this` is the namespace object owning these bindings.
-    pub fn replace(&mut self, name: &str, value: Value, this: Value) -> Value {
+    /// undefined object. A sealed cell rejects the transfer and releases
+    /// `value`. `this` is the namespace object owning these bindings.
+    pub fn replace(&mut self, name: &str, value: Value, this: Value, final_binding: bool) -> Result<Value, ()> {
         let index = self.position(name).unwrap_or_else(|| {
             let cell = Box::into_raw(Box::new(GlobalCell::unbound(std::ptr::null_mut(), this)));
             self.entries.push(Entry { name: name.into(), cell, boxed: true });
             self.entries.len() - 1
         });
         let cell = unsafe { &mut *self.entries[index].cell };
+        if cell.ensure_writable(name).is_err() {
+            unsafe { release(value); }
+            return Err(());
+        }
         let previous = std::mem::replace(&mut cell.value, value);
-        if !cell.bound() {
-            cell.own = 1;
+        let newly_bound = !cell.bound();
+        cell.own = GlobalCell::BOUND | if final_binding { GlobalCell::SEALED } else { 0 };
+        if newly_bound {
             if index + 1 != self.entries.len() {
                 let entry = self.entries.remove(index);
                 self.entries.push(entry);
                 self.version = NEXT_NAMESPACE_VERSION.fetch_add(1, Ordering::Relaxed);
             }
         }
-        previous
+        Ok(previous)
     }
 
     /// Unbind `name`, returning its value, owned, or NULL when the namespace
     /// does not bind it. The cell goes back to inheriting the builtin.
-    pub fn take(&mut self, name: &str) -> Value {
+    pub fn take(&mut self, name: &str) -> Result<Value, ()> {
         let Some(index) = self.position(name) else {
-            return std::ptr::null_mut();
+            return Ok(std::ptr::null_mut());
         };
         let cell = unsafe { &mut *self.entries[index].cell };
+        cell.ensure_writable(name)?;
         if !cell.bound() {
-            return std::ptr::null_mut();
+            return Ok(std::ptr::null_mut());
         }
         cell.own = 0;
         let inherited = unsafe { cell.inherited() };
-        std::mem::replace(&mut cell.value, inherited)
+        Ok(std::mem::replace(&mut cell.value, inherited))
     }
 
     /// Register a unit's static `cell` for `name`. A value the runtime bound
@@ -1586,7 +1618,9 @@ pub unsafe fn bind(namespace: Value, name: &str, value: Value) -> bool {
             && matches!(&(*namespace).data, Data::Namespace(_))
         {
             if let Data::Namespace(bindings) = &mut (*namespace).data {
-                let previous = bindings.replace(name, retain(value), namespace);
+                let Ok(previous) = bindings.replace(name, retain(value), namespace, false) else {
+                    return false;
+                };
                 release(previous);
                 return true;
             }
@@ -4193,13 +4227,20 @@ pub unsafe extern "C" fn mule_load_global(cell: *mut GlobalCell, name: *const c_
         std::ptr::null_mut()
     }
 }
-/// Bind global `name` to `value` (borrowed).
+/// Bind global `name` to `value` (borrowed), optionally protecting the new
+/// storage before releasing the former value, whose destructor may reenter.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_store_global(cell: *mut GlobalCell, name: *const c_char, value: Value) -> i32 {
+pub unsafe extern "C" fn mule_store_global(cell: *mut GlobalCell, name: *const c_char, value: Value, final_binding: i32) -> i32 {
     unsafe {
         let cell = &mut *cell;
+        if cell.ensure_writable_c(name).is_err() {
+            return -1;
+        }
         if cell.bound() {
             let previous = std::mem::replace(&mut cell.value, retain(value));
+            if final_binding != 0 {
+                cell.own |= GlobalCell::SEALED;
+            }
             release(previous);
             return 0;
         }
@@ -4212,7 +4253,15 @@ pub unsafe extern "C" fn mule_store_global(cell: *mut GlobalCell, name: *const c
         }
         // A new binding takes its place in the namespace's order; it lands
         // in this same cell.
-        if bind(cell.namespace, name, value) { 0 } else { -1 }
+        let Data::Namespace(bindings) = &mut (*cell.namespace).data else {
+            error("SystemError", "global namespace storage is required");
+            return -1;
+        };
+        let Ok(previous) = bindings.replace(name, retain(value), cell.namespace, final_binding != 0) else {
+            return -1;
+        };
+        release(previous);
+        0
     }
 }
 /// Unbind global `name` (`del`).
@@ -4220,6 +4269,9 @@ pub unsafe extern "C" fn mule_store_global(cell: *mut GlobalCell, name: *const c
 pub unsafe extern "C" fn mule_delete_global(cell: *mut GlobalCell, name: *const c_char) -> i32 {
     unsafe {
         let cell = &mut *cell;
+        if cell.ensure_writable_c(name).is_err() {
+            return -1;
+        }
         if cell.bound() {
             cell.own = 0;
             let inherited = cell.inherited();
@@ -4232,14 +4284,18 @@ pub unsafe extern "C" fn mule_delete_global(cell: *mut GlobalCell, name: *const 
     }
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mule_unbind_global(cell: *mut GlobalCell) {
+pub unsafe extern "C" fn mule_unbind_global(cell: *mut GlobalCell, name: *const c_char) -> i32 {
     unsafe {
         let cell = &mut *cell;
+        if cell.ensure_writable_c(name).is_err() {
+            return -1;
+        }
         if cell.bound() {
             cell.own = 0;
             let inherited = cell.inherited();
             release(std::mem::replace(&mut cell.value, inherited));
         }
+        0
     }
 }
 #[unsafe(no_mangle)]
@@ -4583,6 +4639,76 @@ mod lifetime_tests {
 
     unsafe fn word<T: Copy>(value: Value, offset: usize) -> T {
         unsafe { *((value as *const u8).add(offset) as *const T) }
+    }
+
+    #[test]
+    fn sealed_global_cells_reject_mutation_without_changing_owned_values() {
+        unsafe {
+            let globals = namespace();
+            let original = new_value(Data::Text(Text::from_rust_str("original"), std::ptr::null_mut(), std::ptr::null_mut()));
+            let replacement = new_value(Data::Text(Text::from_rust_str("replacement"), std::ptr::null_mut(), std::ptr::null_mut()));
+            let cell = {
+                let Data::Namespace(bindings) = &mut (*globals).data else { unreachable!() };
+                bindings.cell("final_function", std::ptr::null_mut(), globals)
+            };
+            assert_eq!(mule_store_global(cell, c"final_function".as_ptr(), original, 1), 0);
+
+            // Same-value assignment is also a prohibited write.
+            assert!(!bind(globals, "final_function", original));
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            assert!(!bind(globals, "final_function", replacement));
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            assert_eq!(mule_store_global(cell, c"final_function".as_ptr(), replacement, 0), -1);
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            assert_eq!(mule_delete_global(cell, c"final_function".as_ptr()), -1);
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            assert_eq!(mule_unbind_global(cell, c"final_function".as_ptr()), -1);
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            let Data::Namespace(bindings) = &mut (*globals).data else { unreachable!() };
+            assert!(bindings.take("final_function").is_err());
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            assert_eq!(lookup(globals, "final_function"), original);
+            assert_eq!((*original).reference_count(), 2);
+            assert_eq!((*replacement).reference_count(), 1);
+            // Shutdown still detaches sealed storage and releases its ownership.
+            release(globals);
+            assert_eq!((*original).reference_count(), 1);
+            release(original);
+            release(replacement);
+        }
+    }
+
+    #[test]
+    fn final_initialization_survives_static_cell_linking() {
+        unsafe {
+            let globals = namespace();
+            let cell = {
+                let Data::Namespace(bindings) = &mut (*globals).data else { unreachable!() };
+                bindings.cell("final_function", std::ptr::null_mut(), globals)
+            };
+            assert!(lookup(globals, "final_function").is_null());
+            let value = small(42);
+            assert_eq!(mule_store_global(cell, c"final_function".as_ptr(), value, 1), 0);
+            let mut linked = GlobalCell::unbound(std::ptr::null_mut(), globals);
+            {
+                let Data::Namespace(bindings) = &mut (*globals).data else { unreachable!() };
+                assert!(bindings.link("final_function", &mut linked, std::ptr::null_mut(), globals).is_ok());
+            }
+            assert_eq!(linked.value, value);
+            assert_eq!(mule_store_global(&mut linked, c"final_function".as_ptr(), small(43), 0), -1);
+            assert_eq!(error_kind(), "TypeError");
+            clear_error();
+            assert_eq!(lookup(globals, "final_function"), value);
+            release(globals);
+            assert!(!linked.bound());
+            assert!(linked.namespace.is_null());
+        }
     }
 
     #[test]

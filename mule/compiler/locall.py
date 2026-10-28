@@ -747,7 +747,11 @@ class _GlobalFunctionStore(LeafVisitor):
             if self.definitions is not None:
                 self.definitions.setdefault(leaf.name, set()).add(None)
             return
-        lambda_ = made_function(self.store.value.use())
+        lambda_ = (
+            leaf.final_function
+            if self.store.final_binding
+            else made_function(self.store.value.use())
+        )
         if lambda_ is not None:
             self.namespace[leaf.name] = lambda_
             if self.leaves is not None:
