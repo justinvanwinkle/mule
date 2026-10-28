@@ -1,6 +1,7 @@
 """Sequence identities must forward exact immutable records, not copy them."""
 
 import re
+import subprocess
 from textwrap import dedent
 
 import pytest
@@ -9,6 +10,7 @@ from mule.compiler.debug import check_ir1_consistency
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source
 from test.mule.compiler.rewrite_support import build_case
+from test.python_host import python_host
 
 _OPERATIONS = (
     ("add_right", "record + {empty}"),
@@ -67,6 +69,13 @@ def test_sequence_identities_eliminate_ir1_operations_on_runtime_selected_record
             assert not list(known_calls(function, "%add")), name
             assert not list(known_calls(function, "%multiply")), name
     check_ir1_consistency(compilation.components)
+
+
+@pytest.mark.integration
+def test_sequence_identities_preserve_receiver_and_retained_aliases(tmp_path):
+    case = build_case(tmp_path, _record_source())
+    case.compare("0\n")
+    case.compare("1\n")
 
 
 @pytest.mark.integration
@@ -238,3 +247,38 @@ def test_sequence_identities_preserve_subclass_dispatch_type_errors_and_effects(
 ):
     case = build_case(tmp_path, _BOUNDARIES)
     case.compare(f"{operation}\ncustomer:runtime-record\n")
+
+
+@pytest.mark.integration
+def test_bytes_repetition_rejects_overflow_before_materialization(tmp_path):
+    case = build_case(
+        tmp_path,
+        """
+for reverse in (False, True):
+    for data, count in (
+        (b'abcd', 1 << 62),
+        (b'x', 1 << 63),
+        (b'', 1 << 100),
+        (b'abcd', -(1 << 63) - 1),
+    ):
+        try:
+            result = count * data if reverse else data * count
+            print('unexpected result', len(result))
+        except (OverflowError, MemoryError) as error:
+            print(type(error).__name__)
+""",
+    )
+    # Bound a failed regression instead of exhausting memory on an impossible size.
+    for command in (
+        [python_host(), str(case.source_path)],
+        [str(case.executable)],
+    ):
+        result = subprocess.run(
+            ["/bin/sh", "-c", 'ulimit -v 524288; exec "$@"', "limited", *command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "OverflowError\n" * 8

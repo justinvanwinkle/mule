@@ -148,7 +148,7 @@ for selected in (tuple_selected, list_selected):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("display", ["(7,)", "[7]"])
+@pytest.mark.parametrize("display", ["(7,)", "[7]", "(None,)", "[None]"])
 def test_singleton_primitive_element_uses_boolean_eq_not_custom_ne(tmp_path, display):
     case = build_case(
         tmp_path,

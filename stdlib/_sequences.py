@@ -2184,6 +2184,18 @@ def _repeat(sequence, count):
     return result
 
 
+def _bytes_repeat(sequence, count):
+    count = integer_index(count)
+    if count >= (1 << 63) or count < -(1 << 63):
+        raise OverflowError("cannot fit 'int' into an index-sized integer")
+    length = _storage_length(sequence)
+    if length and count > ((1 << 63) - 1) // length:
+        raise OverflowError("repeated bytes are too long")
+    if count == 1:
+        return _bytes_slice_result(sequence, 0, length)
+    return bytes_from_values(_repeat(sequence, count))
+
+
 def _sequence_order(left, right):
     """The pair that orders two sequences lexicographically: the first unequal
     elements, or else the two lengths."""
@@ -2402,7 +2414,7 @@ class ListStorage(_OrderedSequence):
     def __reversed__(self):
         return ListReverseIterator(self)
 
-    def append(self, value):
+    def append(self, value, /):
         _storage_append(self, value)
 
     def extend(self, iterable):
@@ -2413,7 +2425,7 @@ class ListStorage(_OrderedSequence):
     def insert(self, index, value):
         _storage_insert(self, _list_position(self, index), value)
 
-    def pop(self, index=-1):
+    def pop(self, index=-1, /):
         length = _storage_length(self)
         if length == 0:
             raise IndexError("pop from empty list")
@@ -3796,10 +3808,10 @@ class BytesStorage:
         return _make_bytes_translation_table(frm, to)
 
     def __mul__(self, count):
-        return bytes_from_values(_repeat(self, count))
+        return _bytes_repeat(self, count)
 
     def __rmul__(self, count):
-        return bytes_from_values(_repeat(self, count))
+        return _bytes_repeat(self, count)
 
 
 def sequence_equal(left, right):
@@ -3807,7 +3819,7 @@ def sequence_equal(left, right):
         return False
     if left is right:
         return True
-    if _storage_length(left) != _storage_length(right):
+    if not _tuple_storage(left) and _storage_length(left) != _storage_length(right):
         return False
     index = 0
     while index < _storage_length(left) and index < _storage_length(right):

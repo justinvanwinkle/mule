@@ -206,7 +206,13 @@ pub unsafe extern "C" fn mule_integer_storage(value: Value) -> Value {
         }
         if !value.is_null() {
             match &(*value).data {
-                Data::BigInt(..) => return object::retain(value),
+                Data::BigInt(integer, ty, ..) => {
+                    return if ty.is_null() {
+                        object::retain(value)
+                    } else {
+                        crate::numeric::integer_import(integer)
+                    };
+                }
                 Data::Bool(value) => return object::small(i64::from(*value)),
                 _ => (),
             }
@@ -267,6 +273,19 @@ pub unsafe extern "C" fn mule_exact_list(value: Value) -> i32 {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
             if let Data::List(_, class, ..) = &(*value).data {
+                return i32::from(class.is_null());
+            }
+        }
+        0
+    }
+}
+
+/// Exact builtin text excludes subclass overrides from specialized entries.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_exact_text(value: Value) -> i32 {
+    unsafe {
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::Text(_, class, ..) = &(*value).data {
                 return i32::from(class.is_null());
             }
         }
@@ -1319,9 +1338,11 @@ pub unsafe extern "C" fn mule_text_split(
                         match &(*maxsplit).data {
                             Data::Bool(flag) => Some(i64::from(*flag)),
                             Data::BigInt(number, int_ty, ..) if int_ty.is_null() => {
-                                Some(number.to_i64().unwrap_or_else(|| {
-                                    if number.sign() < 0 { -1 } else { i64::MAX }
-                                }))
+                                let Some(limit) = number.to_i64() else {
+                                    object::error("OverflowError", "Python int too large to convert to C ssize_t");
+                                    return null_mut();
+                                };
+                                Some(limit)
                             }
                             _ => None,
                         }

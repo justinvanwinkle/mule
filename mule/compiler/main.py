@@ -492,6 +492,11 @@ def compile_toplevel(
         compilation = Compilation(
             list(converter.functions), entry, components, converter
         )
+        # Unit preparation simplifies IR1 before the full IR1 phases. Publish
+        # namespace mutation before either optimizer can recognize builtins.
+        if locall.has_module_namespace_mutations(compilation.lambdas):
+            for component in compilation.components:
+                component.mutates_module_namespace = True
     logger.debug(
         "IR1 module %s: %d lambdas, %d components",
         filename,

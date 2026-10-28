@@ -177,8 +177,8 @@ pub unsafe extern "C" fn mule_storage_hash(value: Value) -> Value {
             Data::Bool(b) => i64::from(*b),
             Data::Text(text, ..) => text.hash(),
             Data::Bytes(bytes, ..) => fnv(bytes),
-            Data::Float(number, ..) if number.is_nan() => identity(value),
-            Data::Float(number, ..) => double_hash(*number),
+            Data::Float(number, ty, ..) if ty.is_null() && number.is_nan() => identity(value),
+            Data::Float(number, ty, ..) if ty.is_null() => double_hash(*number),
             _ => return object::none_value(),
         };
         integer(hash)

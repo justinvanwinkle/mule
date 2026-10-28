@@ -294,6 +294,7 @@ declare ptr @mule_tuple_storage(ptr)
 declare i32 @mule_tuple_shape_matches(ptr, i64) nounwind willreturn memory(read)
 declare i32 @mule_list_shape_matches(ptr, i64) nounwind willreturn memory(read)
 declare i32 @mule_exact_list(ptr) nounwind willreturn memory(read)
+declare i32 @mule_exact_text(ptr) nounwind willreturn memory(read)
 declare nonnull ptr @mule_tuple_slot(ptr, i64)
 declare ptr @mule_storage_compatible(ptr, ptr)
 declare ptr @mule_integer_storage(ptr)
@@ -4021,8 +4022,8 @@ class _ArgumentGuard(ValueTypeVisitor):
     def visit_TextType(self, fact: TextType) -> str:
         if fact.literal is not None or fact.interned:
             return self.visit_ValueType(fact)
-        matched = self.gen.operation(f"call ptr @mule_text_storage(ptr {self.value})")
-        return self.gen.operation(f"icmp eq ptr {matched}, @mule.true")
+        matched = self.gen.operation(f"call i32 @mule_exact_text(ptr {self.value})")
+        return self.gen.operation(f"icmp ne i32 {matched}, 0")
 
     def visit_FloatType(self, fact: ValueType) -> str:
         if fact.may_be_unbound:

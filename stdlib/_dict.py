@@ -16,6 +16,7 @@ per process, so their values are not part of the language contract.
 """
 
 from _descriptors import classmethod
+from _object import integer_hash
 from _mule_native import bind_instance_attribute
 from _mule_native import class_lookup_default
 from _mule_native import class_of
@@ -31,7 +32,6 @@ from _mule_native import storage_hash
 _EMPTY = -1
 _DUMMY = -2
 _MINIMUM_SIZE = 8
-_MODULUS = 2305843009213693951
 _WORD = 0xFFFFFFFFFFFFFFFF
 _FIXNUM_MIN = -0x4000000000000000
 _FIXNUM_MAX = 0x3FFFFFFFFFFFFFFF
@@ -81,17 +81,6 @@ def _lanes_to_table_hash(acc_hi, acc_lo):
     if acc_hi < 0x80000000:
         return folded ^ 1
     return folded ^ 0x3FFFFFFFFFFFFFFE
-
-
-def _integer_hash(value):
-    value = _integer_storage(value)
-    if value > -_MODULUS:
-        if value < _MODULUS:
-            return -2 if value == -1 else value
-    result = (-value if value < 0 else value) % _MODULUS
-    if value < 0:
-        result = -result
-    return -2 if result == -1 else result
 
 
 def _tuple_hash(value):
@@ -194,13 +183,13 @@ def hash(value, /):
     kind = _storage_hash(value)
     if kind is not None:
         return kind
-    if _integer_storage_kind(value):
-        return _integer_hash(_integer_storage(value))
+    if _type_of(value) is int or _type_of(value) is bool:
+        return integer_hash(value)
     if _tuple_storage(value):
         return _tuple_hash(value)
     if is_class(value):
         return _identity_hash(value)
-    owner = _raised_class(value)
+    owner = _type_of(value)
     if owner is None:
         if _type_name(value) == "list":
             raise TypeError("unhashable type: 'list'")
@@ -216,7 +205,7 @@ def hash(value, /):
         raise TypeError("__hash__ method should return an integer")
     result = _integer_storage(result)
     if result < -(1 << 63) or result >= 1 << 63:
-        return _integer_hash(result)
+        return integer_hash(result)
     return -2 if result == -1 else result
 
 

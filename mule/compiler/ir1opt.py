@@ -722,7 +722,9 @@ class _PredictableGlobalFunInfo(NodeVisitor, LeafVisitor):
             return None
         home = node.home_lambda
         if home is not None and (
-            home.policy.safety >= 3 or home.name.startswith(_PROTOCOL_PREFIXES)
+            home.policy.safety >= 3
+            or home.name.startswith(_PROTOCOL_PREFIXES)
+            or (home.component is not None and home.component.mutates_module_namespace)
         ):
             return None
         return node.leaf.accept(self)

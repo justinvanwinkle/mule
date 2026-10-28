@@ -71,7 +71,7 @@ def test_overlapping_nullable_unbound_and_unsupported_facts_keep_membership(body
 
 @pytest.mark.parametrize("display", ["(value,)", "[value]"])
 @pytest.mark.parametrize(
-    "operator, comparison", [("in", "%compare_equal"), ("not in", "%compare_not_equal")]
+    "operator, comparison", [("in", "%compare_equal"), ("not in", "%compare_equal")]
 )
 def test_late_singleton_element_fact_revisits_unchanged_container(
     display, operator, comparison
@@ -101,6 +101,9 @@ def test_late_singleton_element_fact_revisits_unchanged_container(
     assert not list(known_calls(function, "%build_tuple"))
     assert not list(known_calls(function, "%build_list"))
     assert list(known_calls(function, comparison))
+    if operator == "not in":
+        assert list(known_calls(function, "%unary_not"))
+        assert not list(known_calls(function, "%compare_not_equal"))
     check_ir1_consistency(compilation.components)
 
 

@@ -291,6 +291,9 @@ For a single `Lambda` and parameter tuple, `propagate()` runs a worklist over th
      - Direct/guarded local calls via the `resolve_call` callback supplied by `locall.analyze`.
 3. **Side-effect invalidation**:
    - After any node where `_node_may_run_user_code` is true (an unknown call, or an operation on potentially non-primitive operands that could invoke user dunder methods), `invalidate_globals` clears proven module-global callable identities and resets indirect (closed-over mutable cell) variables to their interprocedural `optimistic_type`.
+   - Global container references retain their origins for the same mutation tracking as local references. Predicted methods with unknown effects widen receiver and argument container facts.
+   - Method resolution marks its receiver as escaped when argument evaluation separates resolution and invocation across blocks. This discards stale size facts before block-local origins disappear.
+   - Conversion publishes dynamic namespace mutation before unit preparation optimizes IR1. Such namespaces do not permit predictable builtin-call folding.
 4. **Path-sensitive branch narrowing (`_ConstrainEdge` and `_ConstrainComparison`)**:
    - When a block ends with a two-way `If`, `constrain_edge(block, target)` inspects `node.test`:
      - If `test_type` is `BOOLEAN_FALSE` on the consequent edge or `BOOLEAN_TRUE` on the alternative edge, returns `None` (marking the control-flow edge dead).

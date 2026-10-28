@@ -2458,71 +2458,10 @@ pub unsafe fn binary(op: i32, left: Value, right: Value, inplace: bool) -> Value
                 _ => (),
             }
         }
-        if op == 2 {
-            let exact_integer = |v: Value| {
-                is_fixnum(v)
-                    || (!v.is_null()
-                        && match &(*v).data {
-                            Data::Bool(_) => true,
-                            Data::BigInt(_, ty, ..) => ty.is_null(),
-                            _ => false,
-                        })
-            };
-            let repeated = if !left.is_null()
-                && !is_fixnum(left)
-                && matches!(&(*left).data, Data::Bytes(_, ty, ..) if ty.is_null())
-                && exact_integer(right)
-            {
-                Some((left, right))
-            } else if !right.is_null()
-                && !is_fixnum(right)
-                && matches!(&(*right).data, Data::Bytes(_, ty, ..) if ty.is_null())
-                && exact_integer(left)
-            {
-                Some((right, left))
-            } else {
-                None
-            };
-            if let Some((bytes, count)) = repeated {
-                return repeat_bytes(bytes, count);
-            }
-        }
         if numeric_operand(left) && numeric_operand(right) {
             return numeric::binary(op, left, right);
         }
         dispatch_binary(op, left, right, inplace)
-    }
-}
-unsafe fn repeat_bytes(bytes: Value, count: Value) -> Value {
-    unsafe {
-        let Some(count) = numeric::integer_export(count) else {
-            return std::ptr::null_mut();
-        };
-        let Data::Bytes(data, ..) = &(*bytes).data else {
-            unreachable!()
-        };
-        let count = if count.sign() <= 0 || data.is_empty() {
-            0
-        } else {
-            let Some(count) = count
-                .to_u64()
-                .and_then(|value| usize::try_from(value).ok())
-                .filter(|count| data.len().checked_mul(*count).is_some())
-            else {
-                error("OverflowError", "repeated bytes are too large");
-                return std::ptr::null_mut();
-            };
-            count
-        };
-        let mut result = Vec::new();
-        if result.try_reserve_exact(data.len() * count).is_err() {
-            error("MemoryError", "repeated bytes allocation failed");
-            return std::ptr::null_mut();
-        }
-        for _ in 0..count {
-            result.extend_from_slice(data);
-        }
-        new_value(Data::Bytes(result, std::ptr::null_mut(), std::ptr::null_mut()))
     }
 }
 unsafe fn is_builtin_sequence_op(op: i32, left: Value, right: Value) -> bool {
@@ -2845,8 +2784,7 @@ pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
     unsafe {
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::Args(a, ty_a, ..), Data::Args(b, ty_b, ..))
-                | (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
+                (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
                     if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
                 {
                     return compare_sequence_storage(op, left, right, a.as_slice(), b.as_slice());
@@ -4372,8 +4310,7 @@ pub unsafe extern "C" fn mule_compare_bool(op: i32, left: Value, right: Value) -
     unsafe {
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::Args(a, ty_a, ..), Data::Args(b, ty_b, ..))
-                | (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
+                (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
                     if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
                 {
                     return compare_sequence_storage(op, left, right, a.as_slice(), b.as_slice());

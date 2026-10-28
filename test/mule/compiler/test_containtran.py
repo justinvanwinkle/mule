@@ -93,25 +93,27 @@ def test_empty_containment_preserves_unbound_or_side_effecting_left_operand():
 
 
 def test_single_element_tuple_and_list_containment_rewrites_to_equality():
-    # 1. x in (42,) -> x == 42
+    # Membership compares the element first and converts equality to bool.
     comp_tuple = compile_source("def f(x):\n return x in (42,)\n")
     fn_tuple = comp_tuple.lambdas[1]
     assert list(known_calls(fn_tuple, "%build_tuple")) == []
     assert list(known_calls(fn_tuple, "%compare_in")) == []
     eq_calls = list(known_calls(fn_tuple, "%compare_equal"))
     assert len(eq_calls) == 1
-    lit = constant_literal(eq_calls[0].args[1])
+    lit = constant_literal(eq_calls[0].args[0])
     assert isinstance(lit, ast.IntegerLiteral) and lit.value == 42
     check_ir1_consistency(comp_tuple.components)
 
-    # 2. x not in ['abc'] -> x != 'abc'
+    # Not-in negates equality's truth value, not a custom __ne__ result.
     comp_list = compile_source("def f(x):\n return x not in ['abc']\n")
     fn_list = comp_list.lambdas[1]
     assert list(known_calls(fn_list, "%build_list")) == []
     assert list(known_calls(fn_list, "%compare_not_in")) == []
-    neq_calls = list(known_calls(fn_list, "%compare_not_equal"))
-    assert len(neq_calls) == 1
-    lit_str = constant_literal(neq_calls[0].args[1])
+    eq_calls = list(known_calls(fn_list, "%compare_equal"))
+    assert len(eq_calls) == 1
+    assert not list(known_calls(fn_list, "%compare_not_equal"))
+    assert list(known_calls(fn_list, "%unary_not"))
+    lit_str = constant_literal(eq_calls[0].args[0])
     assert isinstance(lit_str, ast.TextLiteral) and lit_str.value == "abc"
     check_ir1_consistency(comp_list.components)
 
@@ -129,7 +131,9 @@ def test_single_element_tuple_and_list_containment_rewrites_to_equality():
     fn_left = comp_left.lambdas[1]
     assert list(known_calls(fn_left, "%build_tuple")) == []
     assert list(known_calls(fn_left, "%compare_not_in")) == []
-    assert len(list(known_calls(fn_left, "%compare_not_equal"))) == 1
+    assert len(list(known_calls(fn_left, "%compare_equal"))) == 1
+    assert not list(known_calls(fn_left, "%compare_not_equal"))
+    assert list(known_calls(fn_left, "%unary_not"))
     check_ir1_consistency(comp_left.components)
 
     # 5. Constant folding after rewriting: 42 in (42,) -> True

@@ -333,7 +333,7 @@ class socket:
     def listen(self, backlog=128):
         _checked(socket_listen(self._lease, max(0, _integer(backlog))))
 
-    def socket_accept(self):
+    def _accept(self):
         lease, raw = self._operation(socket_accept, False)
         return socket_detach(lease), _decode_address(raw)
 

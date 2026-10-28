@@ -176,3 +176,18 @@ def test_complex_literals_preserve_components_and_ignore_constructor_rebinding(
     assert result.stdout == (
         "True\n[True, True, True, True, True, True, True, True]\nTrue\nTrue True\n"
     )
+
+
+def test_decimal_text_accepts_python_whitespace_and_rejects_separators(tmp_path):
+    result = run_native(
+        tmp_path,
+        "for space in ('\\v', '\\x85', '\\xa0'):\n"
+        " print(int(space + '17' + space))\n"
+        "for separator in ('\\x1c', '\\x1d', '\\x1e', '\\x1f'):\n"
+        " try:\n"
+        "  int(separator + '17')\n"
+        " except ValueError:\n"
+        "  print('rejected')\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "17\n17\n17\n" + "rejected\n" * 4

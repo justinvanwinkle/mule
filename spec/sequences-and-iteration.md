@@ -436,6 +436,16 @@ required. Internal iterator state never becomes a language attribute/type tag.
 
 ## Implemented subset and limits
 
+Immutable text and bytes operations preserve exact builtin identity for a
+one-times repetition. Operations on subclasses produce builtin results unless
+an overridden operator handles the operation. Bytes repetition checks both the
+index-sized count and the result-size product before materializing values.
+
+Tuple equality compares shared elements before rejecting unequal lengths.
+Their equality and truth-conversion effects remain observable. Singleton
+membership compares the element with the query, converts equality to a boolean,
+and negates that boolean for `not in`; it does not substitute `__ne__`.
+
 `int` accepts `bytes` and `bytearray` digit sequences, with a default decimal
 base or an explicit base. Its compiled `stdlib/_object.py` constructor uses the
 base class's Latin-1 decoder to preserve byte values without invoking a subclass

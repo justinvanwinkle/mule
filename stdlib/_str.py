@@ -285,6 +285,8 @@ def _repeat(text, count):
         raise OverflowError("cannot fit 'int' into an index-sized integer")
     if count <= 0 or _text_length(text) == 0:
         return ""
+    if count == 1:
+        return _text_slice(text, 0, _text_length(text))
     pieces = []
     power = text
     while count > 0:
@@ -1142,7 +1144,8 @@ def str(object=_MISSING, encoding=_MISSING, errors=_MISSING):
             return ""
         if _type_of(object) is str:
             return object
-        return _string_protocol(object)
+        result = _string_protocol(object)
+        return _text_slice(result, 0, _text_length(result))
     if encoding is _MISSING:
         encoding = "utf-8"
     if object is _MISSING:
@@ -1206,6 +1209,7 @@ class TextStorage:
     __slots__ = ()
 
     def __getitem__(self, index):
+        _require_text(self, "descriptor '__getitem__' requires a 'str' object")
         if is_slice(index):
             start, stop, step, count = positions(index, _text_length(self))
             if step == 1:
@@ -1228,6 +1232,7 @@ class TextStorage:
         return TextIterator(self)
 
     def __len__(self):
+        _require_text(self, "descriptor '__len__' requires a 'str' object")
         return _text_length(self)
 
     def __contains__(self, item):
@@ -1243,9 +1248,9 @@ class TextStorage:
                 f'can only concatenate str (not "{_type_name(other)}") to str'
             )
         if _text_length(other) == 0:
-            return self
+            return _text_slice(self, 0, _text_length(self))
         if _text_length(self) == 0:
-            return other
+            return _text_slice(other, 0, _text_length(other))
         return _text_join((self, other))
 
     def __mul__(self, count):
@@ -1267,7 +1272,7 @@ class TextStorage:
         if self is other:
             return True
         if not _text_storage(other):
-            return False
+            return NotImplemented
         if _text_length(self) != _text_length(other):
             return False
         return _compare(self, other) == 0
@@ -1276,7 +1281,7 @@ class TextStorage:
         if self is other:
             return False
         if not _text_storage(other):
-            return True
+            return NotImplemented
         if _text_length(self) != _text_length(other):
             return True
         return _compare(self, other) != 0
@@ -1515,6 +1520,8 @@ class TextStorage:
             maxsplit = _index(maxsplit)
         else:
             maxsplit = _integer_storage(maxsplit)
+        if maxsplit < -9223372036854775808 or maxsplit > 9223372036854775807:
+            raise OverflowError("Python int too large to convert to C ssize_t")
         if sep is None:
             return _split_whitespace(self, maxsplit)
         if not _text_storage(sep):
@@ -1539,6 +1546,8 @@ class TextStorage:
             maxsplit = _index(maxsplit)
         else:
             maxsplit = _integer_storage(maxsplit)
+        if maxsplit < -9223372036854775808 or maxsplit > 9223372036854775807:
+            raise OverflowError("Python int too large to convert to C ssize_t")
         if sep is None:
             return _rsplit_whitespace(self, maxsplit)
         if not _text_storage(sep):
@@ -1614,6 +1623,7 @@ class TextStorage:
         )
 
     def join(self, iterable, /):
+        _require_text(self, "descriptor 'join' requires a 'str' object")
         if _type_of(iterable) is list or _tuple_storage(iterable):
             count = _storage_length(iterable)
             if count == 0:
@@ -1625,7 +1635,7 @@ class TextStorage:
                         f"sequence item 0: expected str instance, "
                         f"{_type_name(first)} found"
                     )
-                return first
+                return _text_slice(first, 0, _text_length(first))
             pieces = []
             sep_nonempty = _text_length(self) > 0
             index = 0
@@ -1652,7 +1662,8 @@ class TextStorage:
                 _storage_append(pieces, self)
             _storage_append(pieces, item)
         if _storage_length(pieces) == 1:
-            return _storage_read(pieces, 0)
+            first = _storage_read(pieces, 0)
+            return _text_slice(first, 0, _text_length(first))
         return _text_join(pieces)
 
     def strip(self, chars=None, /):
@@ -1716,6 +1727,7 @@ class TextStorage:
         return _text_from_codepoints(codes)
 
     def upper(self):
+        _require_text(self, "descriptor 'upper' requires a 'str' object")
         length = _text_length(self)
         if length == 0:
             return ""

@@ -1331,7 +1331,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
 
     def prove_argument_type(self, lvar, proven_type: ValueType) -> None:
         recv_var = self.origins.get(lvar)
-        if recv_var is not None and not recv_var.indirect:
+        if recv_var is not None and recv_var not in self.walk.indirect:
             if self.type_of(lvar) is UNKNOWN:
                 self.assign(recv_var, _fact(proven_type))
             elif proven_type.fits(INTEGER):
@@ -1586,6 +1586,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def visit_GlobalVar(self, leaf):
         fact = self.state[(_GLOBAL, leaf.name)]
         ref = self._current_ref
+        if ref is not None and ref.lvar is not None:
+            self.origins[ref.lvar] = (_GLOBAL, leaf.name)
         target = fact.target or self.walk.global_targets.get(leaf.name)
         if target is None and self.walk.imported_targets is not None:
             target = self.walk.imported_targets.get(leaf.name)
@@ -3263,6 +3265,20 @@ def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
     return _fact(item_type)
 
 
+@defpropagate("%resolve_method")
+def _propagate_resolve_method(visitor: _Propagation, node: Combination):
+    if (
+        node.lvar is not None
+        and node.lvar.dest is not None
+        and node.lvar.dest.block is not node.block
+    ):
+        # Argument evaluation can introduce control flow between method
+        # resolution and invocation. Origins are block-local, so the later
+        # call cannot attribute mutation to this receiver. Treat the bound
+        # receiver as escaped while its origin is still available.
+        visitor.widen_escaped_container(visitor.origins.get(node.args[0]))
+
+
 @defpropagate("%getattr")
 def _propagate_getattr(visitor: _Propagation, node: Combination):
     # A bound method such as ``add = items.append`` can mutate the receiver
@@ -3388,6 +3404,11 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                 )
             visitor.walk.method_targets[node] = method
             if not receiver_type.fits_set():
+                # A guarded target prediction does not prove the method's
+                # effects. Its receiver and arguments can escape or mutate.
+                visitor.widen_escaped_container(visitor.origins.get(receiver_lvar))
+                for argument in args[1:]:
+                    visitor.widen_escaped_container(visitor.origins.get(argument))
                 visitor.invalidate()
                 return UNKNOWN_FACT
         if (

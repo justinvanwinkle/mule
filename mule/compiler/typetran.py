@@ -306,6 +306,14 @@ def _disjoint_equality_comparison(
         and right_arity is not None
         and left_arity != right_arity
     ):
+        # Tuple equality compares shared elements before comparing lengths.
+        # Unlike text, its element comparisons can execute arbitrary code.
+        if (
+            left_family == "tuple"
+            and min(left_arity, right_arity) > 0
+            and (left_type.may_run_user_code or right_type.may_run_user_code)
+        ):
+            return None
         return False
     return None
 

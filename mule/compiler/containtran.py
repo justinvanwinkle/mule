@@ -32,12 +32,13 @@ from .ir1opt import (
     retarget_known_combination,
     splice_fun_args,
 )
-from .ir1util import is_pure_bound_ref, reoptimize_lvar
+from .ir1util import insert_node_after, is_pure_bound_ref, reoptimize_lvar, use_lvar
 from .knownfun import FunInfo, deftransform
 from .node import (
     CallKind,
     Combination,
     Constant,
+    KnownFunction,
     LambdaVar,
     LeafVisitor,
     Lvar,
@@ -399,6 +400,43 @@ class _RewriteRefToConstant(NodeVisitor, LeafVisitor):
 _BUILD_CONTAINER_NAMES = frozenset({"%build_tuple", "%build_list"})
 
 
+def _normalize_singleton_comparison(node, left, element, *, invert, single_info):
+    if _has_reflexive_equality(lvar_type(left)) and _has_reflexive_equality(
+        lvar_type(element)
+    ):
+        retarget_known_combination(node, single_info, [left, element])
+        return
+    # Membership compares element == query, converts the result to bool, and
+    # negates that bool for not-in. It never dispatches to a custom __ne__.
+    result = node.detach_value()
+    retarget_known_combination(
+        node, fndb.COMPARE[ast.ComparisonOperator.EQUAL], [element, left]
+    )
+    value = Lvar()
+    use_lvar(node, value)
+    previous = node
+    for index in range(1 if invert else 2):
+        info = fndb.UNARY[ast.UnaryOperator.NOT]
+        leaf = KnownFunction(info)
+        ref = Ref(node.lexenv, node.source, leaf)
+        leaf.refs.append(ref)
+        function = Lvar()
+        use_lvar(ref, function)
+        insert_node_after(previous, ref)
+        call = Combination(node.lexenv, node.source, function)
+        call.kind = CallKind.KNOWN
+        call.fun_info = info
+        call.args = [value]
+        function.dest = call
+        value.dest = call
+        output = result if index == (0 if invert else 1) else Lvar()
+        use_lvar(call, output)
+        insert_node_after(ref, call)
+        value = output
+        previous = call
+    reoptimize_lvar(result)
+
+
 def _transform_small_containment(
     node: Combination, *, empty_result: bool, single_info: FunInfo
 ) -> bool:
@@ -442,7 +480,13 @@ def _transform_small_containment(
             if not right_use.accept(_RewriteRefToConstant(elem_literal)):
                 return False
             right_lvar.derived_type = None
-            retarget_known_combination(node, single_info, [left_lvar, right_lvar])
+            _normalize_singleton_comparison(
+                node,
+                left_lvar,
+                right_lvar,
+                invert=empty_result,
+                single_info=single_info,
+            )
             reoptimize_lvar(right_lvar)
             return True
 
@@ -472,7 +516,9 @@ def _transform_small_containment(
     ):
         return False
     splice_fun_args(right_lvar, _BUILD_CONTAINER_NAMES)
-    retarget_known_combination(node, single_info, [left_lvar, elem_lvar])
+    _normalize_singleton_comparison(
+        node, left_lvar, elem_lvar, invert=empty_result, single_info=single_info
+    )
     return True
 
 

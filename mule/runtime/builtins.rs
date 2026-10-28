@@ -261,7 +261,12 @@ unsafe fn parse_integer_value(bytes: &[u8], mut base: i32) -> Option<Value> {
     Some(unsafe { numeric::integer_import(&result) })
 }
 unsafe fn parse_int_bytes_base10(bytes: &[u8]) -> Value {
-    let trimmed = bytes.trim_ascii();
+    // Python's decimal text grammar includes vertical tab, NEL, and NBSP.
+    // Rust's ASCII whitespace predicate excludes the latter three.
+    let whitespace = |byte: &u8| matches!(*byte, b' ' | b'\t'..=b'\r' | 0x85 | 0xa0);
+    let start = bytes.iter().position(|byte| !whitespace(byte)).unwrap_or(bytes.len());
+    let end = bytes.iter().rposition(|byte| !whitespace(byte)).map_or(start, |index| index + 1);
+    let trimmed = &bytes[start..end];
     let (negative, digits) = match trimmed.split_first() {
         Some((&b'-', rest)) => (true, rest),
         Some((&b'+', rest)) => (false, rest),

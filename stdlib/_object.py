@@ -29,6 +29,7 @@ from _mule_native import generic_get_attribute
 from _mule_native import generic_set_attribute
 from _mule_native import generic_delete_attribute
 from _mule_native import identity_hash
+from _mule_native import storage_hash
 from _mule_native import instance_items
 from _mule_native import instance_extra_items
 from _mule_native import instance_set_binding
@@ -1426,6 +1427,9 @@ class complex(object):
     def __mul__(self, other):
         if not is_instance(self, complex):
             raise TypeError(f"descriptor '__mul__' requires a 'complex' object but received a '{type_of(self).__name__}'")
+        if not is_instance(other, complex) and (is_instance(other, int) or is_instance(other, float)):
+            scalar = _convert_float(other)
+            return _make_complex(complex, self._real * scalar, self._imag * scalar)
         parts = _complex_parts(other)
         if parts is None:
             return NotImplemented
@@ -1624,7 +1628,24 @@ def _make_complex(cls, real, imag):
     return instance
 
 
+def integer_hash(value):
+    """Hash integer storage with Python's signed numeric-hash modulus."""
+    value = _integer_storage(value)
+    modulus = 2305843009213693951
+    if value > -modulus and value < modulus:
+        return -2 if value == -1 else value
+    result = (-value if value < 0 else value) % modulus
+    if value < 0:
+        result = -result
+    return -2 if result == -1 else result
+
+
 class int(object):
+    def __hash__(self):
+        if not is_instance(self, int):
+            raise TypeError(f"descriptor '__hash__' requires a 'int' object but received a '{type_of(self).__name__}'")
+        return integer_hash(self)
+
     def __repr__(self):
         if not is_instance(self, int):
             raise TypeError(f"descriptor '__repr__' requires a 'int' object but received a '{type_of(self).__name__}'")
@@ -2206,6 +2227,15 @@ def _round_ratio_to_float(num, den, negative):
 
 
 class float(object):
+    def __hash__(self):
+        if not is_instance(self, float):
+            raise TypeError(f"descriptor '__hash__' requires a 'float' object but received a '{type_of(self).__name__}'")
+        # The primitive copies binary64 storage without invoking __float__.
+        value = _convert_float(self)
+        if value != value:
+            return identity_hash(self)
+        return storage_hash(value)
+
     def __repr__(self):
         if not is_instance(self, float):
             raise TypeError(f"descriptor '__repr__' requires a 'float' object but received a '{type_of(self).__name__}'")
