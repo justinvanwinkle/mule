@@ -45,3 +45,23 @@ class OptimizationPolicy:
     def infers_return_contracts(self) -> bool:
         """Use checked definition-derived results unless optimization is disabled."""
         return not self.disables_optimization and not self.prevents_inlining
+
+    @property
+    def recognizes_self_calls(self) -> bool:
+        """SBCL ``recognize-self-calls``: bind self-calls directly when ``speed > debug``."""
+        return self.speed > self.debug
+
+    @property
+    def inserts_safepoints(self) -> bool:
+        """SBCL ``insert-safepoints``: poll safepoints at ``safety > 0``."""
+        return self.safety > 0
+
+    @property
+    def preserves_debug_variables(self) -> bool:
+        """SBCL ``preserve-single-use-debug-variables``."""
+        return self.debug >= 2 and self.speed < 3
+
+    @property
+    def converts_let(self) -> bool:
+        """SBCL ``let-conversion``: inline local-only functions when ``debug <= speed``."""
+        return self.debug <= self.speed

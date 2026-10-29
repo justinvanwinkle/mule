@@ -387,18 +387,24 @@ def host_library_check(program):
 
 
 def test_host_library_exports_annotation_markers_and_identity_policy():
-    expected = {marker for marker, _ in SIGNED + UNSIGNED} | set(FLOATS) | {"optimize"}
+    expected = (
+        {marker for marker, _ in SIGNED + UNSIGNED}
+        | set(FLOATS)
+        | {"optimize", "final"}
+    )
     host_library_check(
         f"expected = {expected!r}\n"
         + """
 assert set(library['__all__']) == expected
-for marker in expected - {'optimize'}:
+for marker in expected - {'optimize', 'final'}:
     assert library[marker].__name__ == marker
 def identity(value):
     return value
 assert library['optimize']()(identity) is identity
 assert library['optimize'](speed=0, safety=3, debug=3)(identity) is identity
 assert library['optimize'](speed=3, safety=0, debug=0)(identity)(42) == 42
+assert library['final'](identity) is identity
+assert getattr(identity, '__final__', False) is True
 """
     )
 

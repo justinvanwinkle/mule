@@ -143,3 +143,68 @@ def test_debug_levels_control_tracebacks_and_frames():
     )[1].split("}", 1)[0]
     assert "call i32 @mule_enter_frame()" in fib_helper2
     assert "call ptr @mule_frame_head_slot()" not in llvm_rec_safety2
+
+
+def test_policy_qualities_self_calls_and_safepoints():
+    llvm_self_call_default = emit_llvm(
+        "def countdown(n: int) -> int:\n"
+        "    if n <= 0:\n"
+        "        return 0\n"
+        "    return countdown(n - 1)\n",
+        "self_default.py",
+    )
+    default_direct = llvm_self_call_default.split(
+        'define internal i64 @"mule.numeric.mule_fn_countdown', 1
+    )[1].split("}", 1)[0]
+    assert "@mule_method_entry" in default_direct
+
+    llvm_self_call_speed2 = emit_llvm(
+        "from mule_types import optimize\n"
+        "@optimize(speed=2)\n"
+        "def countdown(n: int) -> int:\n"
+        "    if n <= 0:\n"
+        "        return 0\n"
+        "    return countdown(n - 1)\n",
+        "self_speed2.py",
+    )
+    assert (
+        'define internal i64 @"mule.numeric.mule_fn_countdown'
+        not in llvm_self_call_speed2
+    )
+    assert (
+        'define internal ptr @"mule.direct.mule_fn_countdown'
+        not in llvm_self_call_speed2
+    )
+    speed2_fix = llvm_self_call_speed2.split(
+        'define internal i64 @"mule_fn_countdown.numeric.fixnum"', 1
+    )[1].split("\n}", 1)[0]
+    assert "@mule_method_entry" not in speed2_fix
+    assert 'call i64 @"mule_fn_countdown.numeric.fixnum"' in speed2_fix
+
+    llvm_safety0 = emit_llvm(
+        "__safety__ = 0\n"
+        "def spin(n: int) -> int:\n"
+        "    s = 0\n"
+        "    while s < n:\n"
+        "        s += 1\n"
+        "    return s\n",
+        "safety0.py",
+    )
+    spin_body0 = llvm_safety0.split('define internal ptr @"mule_fn_spin.body"', 1)[
+        1
+    ].split("}", 1)[0]
+    assert "@mule_safepoint_requested" not in spin_body0
+
+    llvm_safety1 = emit_llvm(
+        "__safety__ = 1\n"
+        "def spin(n: int) -> int:\n"
+        "    s = 0\n"
+        "    while s < n:\n"
+        "        s += 1\n"
+        "    return s\n",
+        "safety1.py",
+    )
+    spin_body1 = llvm_safety1.split('define internal ptr @"mule_fn_spin.body"', 1)[
+        1
+    ].split("}", 1)[0]
+    assert "@mule_safepoint_requested" in spin_body1

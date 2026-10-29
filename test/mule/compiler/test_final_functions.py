@@ -52,15 +52,114 @@ def encode(data):
         r'call ptr @"(mule\.direct\.mule_fn_append_varint\.[^"]+)"\(',
         encode,
     )
-    assert direct_call is not None, "the final helper needs a guarded direct call"
+    assert direct_call is not None, "the final helper needs a known direct call"
 
     direct_adapter = _llvm_function(llvm, direct_call.group(1))
+    assert "@mule_method_entry(" not in direct_adapter
+    assert "@mule_function_matches(" not in direct_adapter
     observed_entry = re.search(
         r'call ptr @"(mule_fn_append_varint\.spec\.[^"]+)"\(', direct_adapter
     )
     assert observed_entry is not None, "the adapter must select an observed entry"
     specialized_body = _llvm_function(llvm, observed_entry.group(1))
     assert "@mule_bytearray_append_fast(" in specialized_body
+
+
+def test_final_call_before_definition_still_raises_name_error(tmp_path):
+    result = execute(
+        tmp_path,
+        {"typing.py": TYPING_SOURCE},
+        """\
+from typing import final
+
+def invoke():
+    return later(3)
+
+try:
+    invoke()
+except NameError:
+    print('unbound')
+
+@final
+def later(value):
+    return value + 1
+
+print(invoke())
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "unbound\n4\n"
+
+
+def test_final_call_observes_changed_defaults_without_rebinding(tmp_path):
+    result = execute(
+        tmp_path,
+        {"typing.py": TYPING_SOURCE},
+        """\
+from typing import final
+
+@final
+def read(value=3):
+    return value
+
+print(read())
+read.__defaults__ = (7,)
+print(read(), read(11))
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "3\n7 11\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            (
+                "def invoke():\n    return sum([1, 2])\n"
+                "print(invoke())\n"
+                "@final\ndef sum(values):\n    return 99\n"
+                "print(invoke())\n"
+            ),
+            "3\n99\n",
+        ),
+        (
+            (
+                "globals()['target'] = lambda value: 3\n"
+                "def initialize():\n"
+                "    globals()['target'] = lambda value: 4\n"
+                "    return 0\n"
+                "def invoke():\n    return target(initialize())\n"
+                "print(invoke())\n"
+                "@final\ndef target(value):\n    return 99\n"
+                "print(target(0))\n"
+            ),
+            "3\n99\n",
+        ),
+        (
+            (
+                "@final\ndef invoke(flag):\n"
+                "    if flag:\n        return later()\n"
+                "    return 17\n"
+                "print(invoke(False))\n"
+                "@final\ndef later():\n    return 99\n"
+                "print(invoke(True))\n"
+            ),
+            "17\n99\n",
+        ),
+    ],
+    ids=["builtin-before-definition", "callee-before-argument", "untaken-read"],
+)
+def test_final_fast_entry_preserves_uninitialized_binding_behavior(
+    tmp_path, source, expected
+):
+    result = execute(
+        tmp_path,
+        {"typing.py": TYPING_SOURCE},
+        "from typing import final\n" + source,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
 
 
 @pytest.mark.parametrize(

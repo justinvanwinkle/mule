@@ -130,6 +130,22 @@ changes only the qualities it names; omitted qualities keep the enclosing
 policy, as an SBCL `(declare (optimize speed))` leaves safety alone. Checked
 native classes use `safety=3` explicitly.
 
+Derived policy qualities follow SBCL `src/compiler/policies.lisp`:
+
+- **`recognizes_self_calls` (`speed > debug`, SBCL `recognize-self-calls`):**
+  When `speed > debug` (for example `@optimize(speed=2)` or `@optimize(speed=3)`
+  at the default `debug=1`, or `@optimize(debug=0)` at `speed=1`), recursive
+  self-calls inside a top-level function bound once in its module namespace
+  resolve directly to the enclosing lambda without a runtime binding guard, even
+  when the function is not declared `@final`.
+- **`inserts_safepoints` (`safety > 0`, SBCL `insert-safepoints`):**
+  Function-entry and loop-header safepoint polls (`@mule_safepoint_requested`)
+  are emitted at positive `safety` and omitted at `safety=0`.
+- **`preserves_debug_variables` (`debug >= 2 and speed < 3`, SBCL `preserve-single-use-debug-variables`):**
+  Controls whether single-use local variables are preserved for frame inspection.
+- **`converts_let` (`debug <= speed`, SBCL `let-conversion`):**
+  Controls local `let` call conversion.
+
 A module sets its own policy by assigning integer literals to `__speed__`,
 `__safety__` and `__debug_level__` (Python forbids assigning `__debug__`), as
 SBCL's top-level `declaim` sets the policy for the rest of a file. The policy

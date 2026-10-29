@@ -2383,6 +2383,7 @@ class ModuleGenerator:
         borrowed_arguments: frozenset[int] = frozenset(),
         local_environment: bool = False,
         result_contract=None,
+        inline: bool = False,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
@@ -2399,6 +2400,7 @@ class ModuleGenerator:
             borrowed_arguments,
             local_environment,
             result_contract,
+            inline,
         )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
@@ -2413,15 +2415,21 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
         builder = _HelperBuilder(self)
+        lambda_ = function.as_lambda()
+        inline_attribute = (
+            " alwaysinline"
+            if inline and lambda_ is not None and not lambda_.policy.prevents_inlining
+            else ""
+        )
         body_globals = "%globals" if proven and same_namespace else "%callee.globals"
         if proven and same_namespace:
             builder.lines = [
-                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                f"define internal ptr {symbol}({', '.join(params)}){inline_attribute} {{",
                 "entry:",
             ]
         elif proven:
             builder.lines = [
-                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                f"define internal ptr {symbol}({', '.join(params)}){inline_attribute} {{",
                 "entry:",
                 "  %fn.globals.slot = alloca ptr",
                 "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
@@ -2445,7 +2453,7 @@ class ModuleGenerator:
                     ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
                 )
             builder.lines = [
-                f"define internal ptr {symbol}({', '.join(params)}) {{",
+                f"define internal ptr {symbol}({', '.join(params)}){inline_attribute} {{",
                 "entry:",
                 "  %fn.globals.slot = alloca ptr",
                 "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
@@ -2938,7 +2946,26 @@ class ModuleGenerator:
             )
             for context in facts.variants
         ]
+        if facts.final_bindings and self.native_plans.get(lambda_) is None:
+            general = self.final_ready_context(lambda_, general, facts)
+            variants = [
+                self.final_ready_context(lambda_, context, facts)
+                for context in variants
+            ]
         return general, variants
+
+    def final_ready_context(self, function, context, facts):
+        fallback_id = "fallback.final." + str(context.id or "general")
+        fallback = replace(context, id=fallback_id)
+        self.backend_contexts[function, fallback_id] = fallback
+        types, targets = facts.ready_final_facts(context.types, context.targets)
+        return replace(
+            context,
+            types=types,
+            targets=targets,
+            final_bindings=facts.final_bindings,
+            final_fallback=fallback_id,
+        )
 
     def borrowed_context(self, function: Function, base, borrowed: frozenset[int]):
         if function not in self.owned:
@@ -5838,7 +5865,7 @@ class FunctionGenerator:
                 ]
             )
             return self.operation(f"call ptr {helper}({operands})")
-        proven = site.proven and not keywords
+        proven = site.proven and (not keywords or site.final_binding)
         helper = module.direct_call_helper(
             function,
             keywords,
@@ -5859,6 +5886,9 @@ class FunctionGenerator:
             ),
             local_environment=site.local_environment,
             result_contract=result_contract,
+            inline=site.final_binding
+            and proven
+            and not self.lambda_.policy.prevents_inlining,
         )
         operands = ", ".join(
             [
@@ -5974,6 +6004,40 @@ class FunctionGenerator:
             f"define {linkage}{returned.llvm_type} {self.body}({parameters}) {{"
         )
         self.lines.append("entry:")
+        if self.context.final_bindings:
+            ready = "true"
+            for binding in self.context.final_bindings:
+                cell = self.module.cell(binding.namespace, binding.name)
+                state = self.operation(
+                    f"getelementptr {{ptr, i64, ptr, ptr}}, ptr {cell}, i32 0, i32 1"
+                )
+                flags = self.operation(f"load i64, ptr {state}")
+                sealed = self.operation(f"and i64 {flags}, 2")
+                present = self.operation(f"icmp ne i64 {sealed}, 0")
+                ready = (
+                    present
+                    if ready == "true"
+                    else self.operation(f"and i1 {ready}, {present}")
+                )
+            self.line(f"br i1 {ready}, label %final.ready, label %final.fallback")
+            self.lines.append("final.fallback:")
+            operands = ["ptr %globals"]
+            if self.convention is not None:
+                operands.append("ptr %error.flag")
+            if self.module.closure_of(lambda_):
+                operands.append("ptr %closure")
+            operands.extend(
+                f"{sc.llvm_type} %parameter.{index}"
+                for index, sc in enumerate(parameter_scs)
+            )
+            if self.unpacked:
+                operands.append("ptr %tuple.out")
+            fallback = self.module.specialized[lambda_, self.context.final_fallback]
+            result = self.operation(
+                f"call {returned.llvm_type} {fallback}({', '.join(operands)})"
+            )
+            self.line(f"ret {returned.llvm_type} {result}")
+            self.lines.append("final.ready:")
         if self.context.id is not None:
             for index, fact in enumerate(self.context.parameters):
                 if parameter_scs[index] is not DESCRIPTOR:
