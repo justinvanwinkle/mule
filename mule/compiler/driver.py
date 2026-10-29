@@ -1050,6 +1050,7 @@ class Toolchain:
     rustc: str = "rustc"
     optimize: int = 1
     lto: bool = False
+    arch: str | None = None
 
     def __post_init__(self):
         if self.optimize not in (0, 1, 2, 3):
@@ -1084,10 +1085,13 @@ class Toolchain:
             ),
             "optimize": self.optimize,
             "lto": self.lto,
+            "arch": self.arch,
         }
 
     def compile_flags(self) -> list[str]:
         flags = [f"-O{self.optimize}"]
+        if self.arch is not None:
+            flags.append(f"-march={self.arch}")
         if self.lto:
             flags.append("-flto=full")
         else:
@@ -1096,6 +1100,8 @@ class Toolchain:
 
     def link_flags(self) -> list[str]:
         flags = [f"-O{self.optimize}"]
+        if self.arch is not None:
+            flags.append(f"-march={self.arch}")
         if self.lto:
             level = self.optimize
             flags.extend(
@@ -2074,13 +2080,14 @@ def link_llvm(
     rustc: str = "rustc",
     optimize: int = 1,
     lto: bool = False,
+    arch: str | None = None,
 ) -> Path:
     """Compile a main unit's LLVM, link it with the builtins unit and the
     Rust runtime, and replace ``output`` only on success.
 
     ``optimize`` selects the generated code's level (0 through 3, default 1). ``lto``
     independently requests full LTO across the program and Rust runtime."""
-    toolchain = Toolchain(clang, rustc, optimize, lto)
+    toolchain = Toolchain(clang, rustc, optimize, lto, arch)
     toolchain.require_target()
     with Graph() as graph:
         build = Build(graph, toolchain)
@@ -2212,6 +2219,7 @@ def build(
     rustc: str = "rustc",
     optimize: int = 1,
     lto: bool = False,
+    arch: str | None = None,
     workers: int | None = None,
 ) -> Path:
     """Compile a source file into a native executable, replacing output on success.
@@ -2232,7 +2240,7 @@ def build(
         source_text,
         str(source_path),
         roots=roots,
-        toolchain=Toolchain(clang, rustc, optimize, lto),
+        toolchain=Toolchain(clang, rustc, optimize, lto, arch),
         source_path=source_path.resolve(),
         workers=workers,
     )

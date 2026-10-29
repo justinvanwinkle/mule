@@ -14,7 +14,7 @@ version_command = ["{python}", "--version"]
 name = "mule-o2"
 cwd = ".."
 command = ["{binary}"]
-build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "2"]
+build = ["{python}", "-m", "mule.compiler", "{source}", "-o", "{binary}", "-O", "2", "--arch", "native"]
 # Append "--lto" to this build command to enable full link-time optimization.
 
 [[runtime]]
