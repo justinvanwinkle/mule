@@ -5040,6 +5040,10 @@ def _would_reoptimize_for_context(lambda_: Lambda, context: EntryContext) -> boo
         context.id not in ("fixnum", "observed")
         and not context.id.startswith("observed.")
         and not context.id.startswith("borrow.fixnum.")
+        and not (
+            context.id.startswith("borrow.observed.")
+            and context.convention is not None
+        )
     ):
         return False
     for block in component.blocks():
