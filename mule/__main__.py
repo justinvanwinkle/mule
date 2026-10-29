@@ -66,6 +66,7 @@ def help_parser():
         default=False,
         help="enable full link-time optimization (slower to link)",
     )
+    parser.add_argument("--arch", help="Clang target architecture (-march=ARCH)")
     parser.add_argument(
         "-v",
         action="count",
@@ -91,6 +92,7 @@ class Options:
     verbosity: int = 0
     optimize: int = 1
     lto: bool = False
+    arch: str | None = None
 
 
 def parse(argv, *, options=None):
@@ -115,6 +117,17 @@ def parse(argv, *, options=None):
         if argument in ("--lto", "--no-lto"):
             options.lto = argument == "--lto"
             continue
+        if argument == "--arch" or argument.startswith("--arch="):
+            arch = argument.partition("=")[2]
+            if argument == "--arch":
+                if index == len(argv) or argv[index].startswith("-"):
+                    raise UsageError("Argument expected for the --arch option")
+                arch = argv[index]
+                index += 1
+            if not arch:
+                raise UsageError("Argument expected for the --arch option")
+            options.arch = arch
+            continue
         if argument in ("-h", "-?", "--help"):
             return "help", None, []
         if argument[:2] in ("-c", "-m"):
@@ -136,7 +149,7 @@ def parse(argv, *, options=None):
     raise UsageError("interactive mode is not supported; give a script, -c, -m or -")
 
 
-def run(kind, value, arguments, *, optimize=1, lto=False):
+def run(kind, value, arguments, *, optimize=1, lto=False, arch=None):
     """Compile the selected program, then replace this process with it."""
     roots = search_path(Path.cwd())
     package = None
@@ -169,7 +182,7 @@ def run(kind, value, arguments, *, optimize=1, lto=False):
             filename,
             roots=roots,
             package=package,
-            toolchain=Toolchain(optimize=optimize, lto=lto),
+            toolchain=Toolchain(optimize=optimize, lto=lto, arch=arch),
             source_path=source_path,
         )
     logger.info("starting native program %s", executable)
@@ -190,7 +203,14 @@ def main() -> int:
         help_parser().print_help()
         return 0
     try:
-        return run(kind, value, arguments, optimize=options.optimize, lto=options.lto)
+        return run(
+            kind,
+            value,
+            arguments,
+            optimize=options.optimize,
+            lto=options.lto,
+            arch=options.arch,
+        )
     except KeyboardInterrupt:
         return 130
     except SyntaxError as error:

@@ -43,6 +43,7 @@ def main() -> int:
         "--emit-llvm", type=Path, metavar="PATH", help="save generated LLVM IR"
     )
     parser.add_argument("--clang", default="clang", help="Clang compiler executable")
+    parser.add_argument("--arch", help="Clang target architecture (-march=ARCH)")
     parser.add_argument("--rustc", default="rustc", help="Rust compiler executable")
     parser.add_argument(
         "-O",
@@ -79,7 +80,9 @@ def main() -> int:
                 args.dynamic_module,
                 roots=roots,
                 package_paths={k: tuple(v) for k, v in pkg_paths.items()},
-                toolchain=Toolchain(args.clang, args.rustc, args.level, False),
+                toolchain=Toolchain(
+                    args.clang, args.rustc, args.level, False, args.arch
+                ),
             )
         except (OSError, ValueError, SyntaxError, ToolchainError) as error:
             print(f"mule: {error}", file=sys.stderr)
@@ -97,6 +100,7 @@ def main() -> int:
             output,
             llvm_output=args.emit_llvm,
             clang=args.clang,
+            arch=args.arch,
             rustc=args.rustc,
             optimize=args.level,
             lto=args.lto,
