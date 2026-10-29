@@ -3673,6 +3673,22 @@ def analyze(
                 return UNKNOWN
         return callee.target.derive_return_type(arguments, keywords)
 
+    def _proven_globals_for(lam: Lambda) -> frozenset[str]:
+        if lam.kind is FunctionalKind.TOPLEVEL:
+            return frozenset()
+        base = proven_by_namespace.get(lam.namespace, frozenset())
+        sname = lam.source_name
+        if (
+            lam.policy.recognizes_self_calls
+            and lam.method_class is None
+            and sname is not None
+            and sname not in base
+            and global_counts.get(lam.namespace, {}).get(sname, 0) <= 1
+            and global_targets.get(lam.namespace, {}).get(sname) is lam
+        ):
+            return base | {sname}
+        return base
+
     def _propagate_for_deriver(
         target_lam: Lambda, param_types: tuple[ValueType, ...], mode: str
     ) -> Body | None:
@@ -3702,11 +3718,7 @@ def analyze(
             return None
         active_derivations.add(active_key)
         try:
-            proven_globals = (
-                proven_by_namespace.get(target_lam.namespace, frozenset())
-                if target_lam.kind is not FunctionalKind.TOPLEVEL
-                else frozenset()
-            )
+            proven_globals = _proven_globals_for(target_lam)
             with flow_propagation():
                 body = propagate(
                     target_lam,
@@ -3817,9 +3829,7 @@ def analyze(
                     _resolve_deriver_call,
                     AnnotationLedger(),
                     graph=_current_graph(target_lam),
-                    proven_globals=proven_by_namespace.get(
-                        target_lam.namespace, frozenset()
-                    ),
+                    proven_globals=_proven_globals_for(target_lam),
                     rebound_globals=rebound_by_namespace.get(
                         target_lam.namespace, frozenset()
                     ),
@@ -4008,11 +4018,7 @@ def analyze(
                     old_summary = summaries[key]
                 else:
                     consulted.clear()
-                    proven_globals = (
-                        proven_by_namespace.get(lambda_.namespace, frozenset())
-                        if lambda_.kind is not FunctionalKind.TOPLEVEL
-                        else frozenset()
-                    )
+                    proven_globals = _proven_globals_for(lambda_)
                     with flow_propagation():
                         body = propagate(
                             lambda_,

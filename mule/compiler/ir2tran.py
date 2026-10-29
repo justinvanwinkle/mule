@@ -3502,7 +3502,11 @@ class _Converter(NodeVisitor):
         self.current = self.component.ir2_blocks[block]
         # SBCL ir2-convert: Bind emits its own entry poll, while the loop
         # analysis identifies natural and strange loop heads here.
-        if block.loop is not None and block.loop.is_header(block):
+        if (
+            self.lambda_.policy.inserts_safepoints
+            and block.loop is not None
+            and block.loop.is_header(block)
+        ):
             self.emit(vops.INSERT_SAFEPOINT, block.start.next)
         self._skipped_nodes.clear()
         self._fused_range_prepares.clear()
@@ -3662,7 +3666,8 @@ class _Converter(NodeVisitor):
                     args=(environment.cells[var], value),
                 )
 
-        self.emit(vops.INSERT_SAFEPOINT, node)
+        if self.lambda_.policy.inserts_safepoints:
+            self.emit(vops.INSERT_SAFEPOINT, node)
 
     def cell(self, node, var):
         """Load the cell object of a captured-and-assigned variable."""
