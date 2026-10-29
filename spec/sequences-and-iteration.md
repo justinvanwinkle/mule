@@ -444,6 +444,34 @@ rich-comparison, `NotImplemented` handling and lexicographic list/tuple ordering
 remain limitations of the shared comparison implementation, not implemented by
 these reductions. Call-site argument expansion remains unsupported.
 
+## Generator exception boundaries
+
+Open-coded generator-expression consumers retain the generator's exception
+boundary without allocating a coroutine. Target binding, filters, nested
+iterable evaluation and element evaluation run inside that boundary. An escaping
+`StopIteration`, including a subclass, becomes `RuntimeError` with the original
+exception as its cause and context. The compiled Python `generator_exception`
+helper in `_sequences.py` uses the runtime-owned exception classes, independent
+of bindings in the consuming module. Other exceptions resume unchanged through
+the existing owned-exception transfer.
+
+The outer iterator is obtained at generator-expression creation, before later
+consumer arguments are evaluated. Iteration begins only after those arguments.
+The shared `for` preparation retains the iterator and range-call evidence for
+the loop rather than calling `__iter__` again. Normal exhaustion and consumer
+operations, including truth tests, additions, key functions and the surrounding
+`for` body, remain outside the generator's conversion boundary.
+
+SBCL `src/compiler/ir1-translators.lisp`, `%within-cleanup` and `catch`, attaches
+the protected body's cleanup to its lexical environment. Mule uses the same IR1
+cleanup mechanism while keeping consumer code in the enclosing cleanup.
+`src/compiler/seqtran.lisp`, `build-sequence-iterator`, keeps sequence preparation
+and the mapped function's result consumption in one open-coded loop. Python
+additionally distinguishes generator creation, yielded-value production and
+consumer execution, and requires PEP 479 exception conversion only while
+producing values. The compiled Python helper implements that language rule;
+there is no new Rust evaluator or iterator wrapper.
+
 Throwing an existing exception into a suspended generator resumes its saved
 traceback before installing the pending error. The suspended yield therefore
 prepends its frame without discarding the original failure chain. SBCL

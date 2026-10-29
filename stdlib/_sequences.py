@@ -600,6 +600,17 @@ def iteration_exhausted(value):
     return exception_matches(value, StopIteration)
 
 
+def generator_exception(value):
+    """Apply PEP 479 without re-raising unrelated exceptions or their tracebacks."""
+    if not iteration_exhausted(value):
+        return value
+    converted = RuntimeError("generator raised StopIteration")
+    converted.__cause__ = value
+    converted.__context__ = value
+    converted.__suppress_context__ = True
+    return converted
+
+
 def raise_value(value):
     """Prepare an exception; the source raise VOP installs pending state."""
     parent = _raised_class(value)
