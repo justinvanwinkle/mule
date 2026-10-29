@@ -487,3 +487,52 @@ def test_final_function_rejects_global_mutation_inside_earlier_function(
             "def read():\n"
             "    return 17\n",
         )
+
+
+def test_final_function_retains_non_borrowable_argument_and_unboxes_numeric_return(
+    tmp_path,
+):
+    result = execute(
+        tmp_path,
+        {"typing.py": TYPING_SOURCE},
+        """\
+from typing import final
+
+@final
+def append_varint(output, value):
+    if value < 0:
+        raise ValueError("negative")
+    while value >= 128:
+        output.append((value & 127) | 128)
+        value >>= 7
+    output.append(value)
+
+@final
+def general(data):
+    output = bytearray()
+    for byte in data:
+        append_varint(output, byte & 0x7F)
+    return output
+
+@final
+def measure(function, data, expected, repetitions):
+    for _ in range(repetitions):
+        result = function(data)
+    assert result == expected
+    return 1.5 * repetitions
+
+@final
+def main():
+    for value, expected in ((0, b"\\x00"), (127, b"\\x7f"), (128, b"\\x80\\x01")):
+        output = bytearray()
+        append_varint(output, value)
+        assert output == expected
+    data = bytes(range(16))
+    expected = bytes(range(16))
+    print(measure(general, data, expected, 4))
+
+main()
+""",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "6.0\n"

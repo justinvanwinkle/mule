@@ -3178,8 +3178,7 @@ class ModuleGenerator:
             or site.keywords
             or target not in self.owned
             or target is component.lambda_
-            or target.call_order((), len(call_args))
-            != tuple(range(len(target.vars)))
+            or target.call_order((), len(call_args)) != tuple(range(len(target.vars)))
         ):
             return None
         layout = vop.results[0].tn.primitive_type.boxed_layout
