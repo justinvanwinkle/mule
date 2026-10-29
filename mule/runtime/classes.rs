@@ -998,6 +998,11 @@ unsafe fn class_attribute(
 /// An attribute in the instance's `__dict__`, owned, if it has one.
 unsafe fn dict_attribute(receiver: Value, attribute: *const c_char) -> Option<Value> {
     unsafe {
+        if let Some(attr_name) = name(attribute) {
+            if let Some(val) = crate::capi::c_instance_dict_lookup(receiver, attr_name) {
+                return Some(val);
+            }
+        }
         let attributes = match &(*receiver).data {
             Data::Instance { attributes, .. } => *attributes,
             _ => object::typed_attributes(receiver, false),
@@ -2032,11 +2037,15 @@ unsafe fn create_class_with(
             .or_else(|| Some(bindings.get("__slots__")).filter(|value| !value.is_null()));
         let declared_slots =
             slots.map_or_else(Vec::new, |slots| declared_slot_names(class_name, slots));
+        let has_c_dict = crate::capi::has_c_tp_dictoffset(&mro);
         for index in 0..field_count as usize {
             let Some(attribute) = name(*field_names.add(index)) else {
                 return std::ptr::null_mut();
             };
             let is_slot = declared_slots.iter().any(|slot| slot == attribute);
+            if has_c_dict && !is_slot {
+                continue;
+            }
             if let Some(&existing) = field_lookup.get(attribute) {
                 if is_slot {
                     slot_fields[existing] = true;
@@ -2971,6 +2980,9 @@ unsafe fn set_attribute_with(
                         return -1;
                     };
                     if layout.dict_allowed {
+                        if crate::capi::c_instance_has_dict_slot(receiver) {
+                            return if crate::capi::c_instance_dict_set(receiver, attribute, value) { 0 } else { -1 };
+                        }
                         if let Data::Instance { attributes, .. } = &mut (*receiver).data {
                             if attributes.is_null() {
                                 *attributes = object::namespace();
@@ -2990,6 +3002,9 @@ unsafe fn set_attribute_with(
                         return -1;
                     };
                     if layout.dict_allowed {
+                        if crate::capi::c_instance_has_dict_slot(receiver) {
+                            return if crate::capi::c_instance_dict_set(receiver, attribute, value) { 0 } else { -1 };
+                        }
                         if let Data::Instance { attributes, .. } = &mut (*receiver).data {
                             if attributes.is_null() {
                                 *attributes = object::namespace();
@@ -3053,6 +3068,10 @@ unsafe fn set_attribute_with(
 /// Bind one of a class's own attributes, as `type.__setattr__` does, and
 /// invalidate every attribute cache. Typed native classes stay fixed because
 /// compiled code relies on their layout and methods.
+pub unsafe fn set_c_class_attribute(class: Value, attribute: &str, value: Value) -> i32 {
+    unsafe { set_class_attribute(class, attribute, value) }
+}
+
 unsafe fn set_class_attribute(class: Value, attribute: &str, value: Value) -> i32 {
     unsafe {
         let Data::Class(layout) = &mut (*class).data else {
@@ -4224,6 +4243,13 @@ unsafe extern "C" fn storage_dictionary(_: Value, args: Value) -> Value {
         if !layout.dict_allowed {
             return missing(Some(layout), true, "__dict__");
         }
+        if crate::capi::c_instance_has_dict_slot(receiver) {
+            let d = crate::capi::c_instance_dict(receiver, true);
+            if d.is_null() {
+                return std::ptr::null_mut();
+            }
+            return object::retain(d);
+        }
         if matches!(&(*receiver).data, Data::Instance { .. }) {
             return object::none_value();
         }
@@ -4249,6 +4275,13 @@ unsafe extern "C" fn instance_set_binding(_: Value, args: Value) -> Value {
         };
         if !layout.dict_allowed {
             return missing(Some(layout), true, "__dict__");
+        }
+        if crate::capi::c_instance_has_dict_slot(receiver) {
+            return if crate::capi::c_instance_dict_set(receiver, &attribute, value) {
+                object::none_value()
+            } else {
+                std::ptr::null_mut()
+            };
         }
         let attributes = if let Data::Instance { fields, attributes, .. } = &mut (*receiver).data {
             if let Some(&index) = layout.field_lookup.get(&attribute) {
@@ -4284,6 +4317,9 @@ unsafe fn remove_instance_binding(
     allow_slots: bool,
 ) -> bool {
     unsafe {
+        if let Some(removed) = crate::capi::c_instance_dict_del(receiver, attribute) {
+            return removed;
+        }
         let attributes = if let Data::Instance { fields, attributes, .. } = &mut (*receiver).data {
             if let Some(&index) = layout.field_lookup.get(attribute) {
                 if allow_slots || !layout.is_slot_field(index) {
@@ -4636,7 +4672,9 @@ pub unsafe extern "C" fn mule_is_instance(value: Value, class: Value) -> Value {
             {
                 let dunder_class = mule_get_attr(value, c"__class__".as_ptr());
                 if dunder_class.is_null() {
-                    object::clear_error();
+                    if !object::clear_native_error_of("AttributeError") {
+                        return std::ptr::null_mut();
+                    }
                 } else {
                     let result = !object::is_fixnum(dunder_class)
                         && matches!(&(*dunder_class).data, Data::Class(_))
@@ -4917,4 +4955,37 @@ pub unsafe fn populate(globals: Value) -> bool {
         }
         true
     }
+}
+
+pub(crate) unsafe fn layout_of_class_pub(class: Value) -> *const ClassLayout {
+    unsafe {
+        layout_of_class(class).map_or(std::ptr::null(), |l| std::ptr::from_ref(l))
+    }
+}
+
+pub(crate) unsafe fn generic_get_attribute_raw(receiver: Value, attribute: *const c_char) -> Value {
+    unsafe {
+        let mut bound = std::ptr::null_mut();
+        let method = resolve_with(receiver, attribute, std::ptr::null_mut(), &mut bound, false, false);
+        if bound.is_null() || method.is_null() {
+            return method;
+        }
+        object::new_value(Data::BoundMethod { receiver: bound, method })
+    }
+}
+
+pub(crate) unsafe fn generic_set_attribute_raw(
+    receiver: Value,
+    attribute: *const c_char,
+    value: Value,
+) -> i32 {
+    unsafe { set_attribute_with(receiver, attribute, value, std::ptr::null_mut(), false) }
+}
+
+pub(crate) unsafe fn delete_attribute_with_pub(
+    receiver: Value,
+    attribute: &str,
+    hooks: bool,
+) -> Value {
+    unsafe { delete_attribute_with(receiver, attribute, hooks) }
 }

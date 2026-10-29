@@ -841,6 +841,10 @@ class _ModuleCollector(NodeVisitor):
             target = made_function(value.uses[0]) if len(value.uses) == 1 else None
             if target is not None:
                 self.classes.setdefault(node.info.identity, {})[node.info.name] = target
+            else:
+                self.classes.get(node.info.identity, {}).pop(node.info.name, None)
+        elif name == "%class_delete":
+            self.classes.get(node.info.identity, {}).pop(node.info.name, None)
         elif name == "%import":
             info = linked(node.info, node, "import")
             self.imports.setdefault(info.module_name, info)

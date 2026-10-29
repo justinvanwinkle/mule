@@ -1202,6 +1202,7 @@ unsafe fn destroy(value: Value) {
         }
         (*value).tracked = false;
         (*value).references.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::capi::on_object_destroy(value);
         match &(*value).data {
             Data::Text(text, ty, attrs) if ty.is_null() && attrs.is_null() => {
                 if (*value).gc_slot != 0 {
