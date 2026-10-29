@@ -139,8 +139,11 @@ def insert_safepoint(gen, vop):
     )
     gen.line(f"br i1 {pending}, label %{park}, label %{ready}")
     gen.lines.append(park + ":")
+    prev_cold = gen.in_cold_block
+    gen.in_cold_block = True
     status = gen.operation("call i32 @mule_safepoint()")
     gen.check_status(status)
+    gen.in_cold_block = prev_cold
     gen.line(f"br label %{ready}")
     gen.lines.append(ready + ":")
 
@@ -173,6 +176,14 @@ class _BoxedConstant(ast.Visitor):
             return
         self.gen.pointer_result(self.result, self.gen.constant(node))
 
+    def _infallible(self, node):
+        if self.result.tn.borrowed_from is not None or not self.result.tn.sc.owned:
+            self.gen.native_result(
+                self.result, self.gen.operation(self.gen.borrowed_constant(node))
+            )
+            return
+        self.gen.native_result(self.result, self.gen.operation(self.gen.constant(node)))
+
     def visit_TextLiteral(self, node):
         if _is_inline_text_compare_only(self.gen, self.result.tn, node.value):
             self.gen.native_result(self.result, "null")
@@ -182,7 +193,13 @@ class _BoxedConstant(ast.Visitor):
                 self.result, self.gen.operation(self.gen.borrowed_constant(node))
             )
             return
-        self.visit_Node(node)
+        self._infallible(node)
+
+    def visit_BytesLiteral(self, node):
+        self._infallible(node)
+
+    def visit_FloatLiteral(self, node):
+        self._infallible(node)
 
     def visit_Tuple(self, node):
         if self.vop is not None and self.gen.is_unpacked_return_vop(self.vop):
@@ -308,7 +325,7 @@ def load_global(gen, vop):
     if vop.codegen_info in gen.context.final_bindings:
         cell = gen.module.cell(vop.codegen_info.namespace, vop.codegen_info.name)
         value = gen.operation(f"load ptr, ptr {cell}, !nonnull !{{}}")
-        if result.tn.sc.owned:
+        if result.tn.sc.owned and result.tn.borrowed_from is None:
             value = gen.retain(value)
         gen.publish(result, value)
         return
@@ -321,9 +338,11 @@ def load_global(gen, vop):
         value = gen.operation(f"load ptr, ptr {cell}, !nonnull !{{}}")
         gen.publish(result, value)
         return
-    gen.pointer_result(
-        result, gen.module.load_global(vop.codegen_info, gen.lambda_.policy.safety)
-    )
+    operation = gen.module.load_global(vop.codegen_info, gen.lambda_.policy.safety)
+    if operation.startswith("call ptr @mule.global.unchecked("):
+        gen.native_result(result, gen.operation(operation))
+        return
+    gen.pointer_result(result, operation)
 
 
 @define_vop("move", args=(None,), results=(None,))
@@ -1017,7 +1036,11 @@ def full_call(gen, vop):
     gen.publish(result, value)
     if site.callee_required:
         gen.release(function)
-    gen.check_pointer(value)
+    if not (
+        gen.in_cold_block
+        and (gen.module.program.bootstrap or not gen.lambda_.policy.records_traceback)
+    ):
+        gen.check_pointer(value)
     gen.refine(result.tn, value)
 
 
@@ -4297,9 +4320,8 @@ def assertion_failure(gen, vop):
 def raise_(gen, vop):
     value = gen.take(vop.args[0])
     result = gen.sequence_call("raise_value", [value])
-    gen.check_pointer(result)
-    gen.line(f"call ptr @mule_raise_pending(ptr {result})")
-    gen.release(result)
+    if not gen.module.program.bootstrap and gen.lambda_.policy.records_traceback:
+        gen.check_pointer(result)
     gen.propagate(explicit_raise=True)
 
 
@@ -5110,7 +5132,7 @@ def _attribute_cache_helpers() -> str:
     are not keyed by one layout."""
     return f"""@mule_attribute_epoch = external global i64
 
-define internal i64 @mule.attr.layout(ptr %value) alwaysinline {{
+define internal i64 @mule.attr.layout(ptr %value) {{
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5138,7 +5160,7 @@ none:
   ret i64 0
 }}
 
-define internal i64 @mule.attr.hit(ptr %value, ptr %cache) alwaysinline {{
+define internal i64 @mule.attr.hit(ptr %value, ptr %cache) {{
 entry:
   %layout = call i64 @mule.attr.layout(ptr %value)
   %cached = load i64, ptr %cache
@@ -5160,7 +5182,7 @@ miss:
   ret i64 0
 }}
 
-define internal i64 @mule.class.layout(ptr %value) alwaysinline {{
+define internal i64 @mule.class.layout(ptr %value) {{
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5181,7 +5203,7 @@ none:
   ret i64 0
 }}
 
-define internal ptr @mule.attr.field(ptr %value, i64 %encoded) alwaysinline {{
+define internal ptr @mule.attr.field(ptr %value, i64 %encoded) {{
 entry:
   %fields.addr = getelementptr i8, ptr %value, i64 {INSTANCE_FIELDS_OFFSET}
   %fields = load ptr, ptr %fields.addr
@@ -5190,7 +5212,7 @@ entry:
   ret ptr %slot
 }}
 
-define internal ptr @mule.fast.isinstance.1(ptr %value, ptr %class) alwaysinline {{
+define internal ptr @mule.fast.isinstance.1(ptr %value, ptr %class) {{
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5223,7 +5245,7 @@ def _storage_helpers() -> str:
     The runtime's authoritative buffer header exposes its data and length.
     Mutable header loads stay local to each operation, before any destructor.
     """
-    return f"""define internal i32 @mule.storage.kind(ptr %sequence) alwaysinline {{
+    return f"""define internal i32 @mule.storage.kind(ptr %sequence) {{
 entry:
   %bits = ptrtoint ptr %sequence to i64
   %tag = and i64 %bits, 1
@@ -5239,7 +5261,7 @@ unsupported:
   ret i32 0
 }}
 
-define internal ptr @mule.fast.storage.read.borrow(ptr %sequence, ptr %position) alwaysinline {{
+define internal ptr @mule.fast.storage.read.borrow(ptr %sequence, ptr %position) {{
 entry:
   %bits = ptrtoint ptr %position to i64
   %tag = and i64 %bits, 1
@@ -5268,7 +5290,7 @@ slow:
   ret ptr %fallback
 }}
 
-define internal ptr @mule.fast.storage.read(ptr %sequence, ptr %position) alwaysinline {{
+define internal ptr @mule.fast.storage.read(ptr %sequence, ptr %position) {{
 entry:
   %bits = ptrtoint ptr %position to i64
   %tag = and i64 %bits, 1
@@ -5298,7 +5320,7 @@ slow:
   ret ptr %fallback
 }}
 
-define internal ptr @mule.fast.storage.write(ptr %sequence, ptr %position, ptr %replacement) alwaysinline {{
+define internal ptr @mule.fast.storage.write(ptr %sequence, ptr %position, ptr %replacement) {{
 entry:
   %bits = ptrtoint ptr %position to i64
   %tag = and i64 %bits, 1
@@ -5329,7 +5351,7 @@ slow:
   ret ptr %fallback
 }}
 
-define internal ptr @mule.fast.storage.length(ptr %sequence) alwaysinline {{
+define internal ptr @mule.fast.storage.length(ptr %sequence) {{
 entry:
   %kind = call i32 @mule.storage.kind(ptr %sequence)
   %list = icmp eq i32 %kind, {LIST_TAG}
@@ -5348,7 +5370,7 @@ slow:
   ret ptr %fallback
 }}
 
-define internal ptr @mule.fast.tuple.borrow(ptr %tuple, i64 %index) alwaysinline {{
+define internal ptr @mule.fast.tuple.borrow(ptr %tuple, i64 %index) {{
 entry:
   %data.addr = getelementptr i8, ptr %tuple, i64 {VALUE_BUFFER_DATA_OFFSET}
   %data = load ptr, ptr %data.addr
@@ -5357,14 +5379,14 @@ entry:
   ret ptr %value
 }}
 
-define internal ptr @mule.fast.tuple.slot(ptr %tuple, i64 %index) alwaysinline {{
+define internal ptr @mule.fast.tuple.slot(ptr %tuple, i64 %index) {{
 entry:
   %value = call ptr @mule.fast.tuple.borrow(ptr %tuple, i64 %index)
   %owned = call ptr @mule.fast.retain(ptr %value)
   ret ptr %owned
 }}
 
-define internal i1 @mule.fast.tuple.shape(ptr %value, i64 %arity) alwaysinline {{
+define internal i1 @mule.fast.tuple.shape(ptr %value, i64 %arity) {{
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5392,7 +5414,7 @@ no:
 
 
 def _ownership() -> str:
-    return """define internal ptr @mule.fast.retain(ptr %value) alwaysinline {
+    return """define internal ptr @mule.fast.retain(ptr %value) {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5411,7 +5433,7 @@ done:
   ret ptr %value
 }
 
-define internal void @mule.fast.release(ptr %value) alwaysinline {
+define internal void @mule.fast.release(ptr %value) {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5437,7 +5459,7 @@ done:
   ret void
 }
 
-define internal ptr @mule.heap.retain(ptr %value) alwaysinline {
+define internal ptr @mule.heap.retain(ptr %value) {
 entry:
   %null = icmp eq ptr %value, null
   br i1 %null, label %done, label %check
@@ -5452,7 +5474,7 @@ done:
   ret ptr %value
 }
 
-define internal void @mule.heap.release(ptr %value) alwaysinline {
+define internal void @mule.heap.release(ptr %value) {
 entry:
   %null = icmp eq ptr %value, null
   br i1 %null, label %done, label %check
@@ -5474,7 +5496,7 @@ done:
   ret void
 }
 
-define internal ptr @mule.fast.index_method(ptr %value, ptr %name) alwaysinline {
+define internal ptr @mule.fast.index_method(ptr %value, ptr %name) {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5487,7 +5509,7 @@ slow:
   ret ptr %result
 }
 
-define internal ptr @mule.fast.integer_storage(ptr %value) alwaysinline {
+define internal ptr @mule.fast.integer_storage(ptr %value) {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5502,7 +5524,7 @@ slow:
 
 
 def _truth() -> str:
-    return """define internal i32 @mule.fast.truth(ptr %value) alwaysinline {
+    return """define internal i32 @mule.fast.truth(ptr %value) {
 entry:
   %bits = ptrtoint ptr %value to i64
   %tag = and i64 %bits, 1
@@ -5530,14 +5552,14 @@ slow:
 }
 
 ; A cell never holds NULL: an unbound name's cell holds the undefined object.
-define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) alwaysinline {
+define internal ptr @mule.global.unchecked(ptr %cell, ptr %name) {
 entry:
   %value = load ptr, ptr %cell, !nonnull !{}
   %owned = call ptr @mule.fast.retain(ptr %value)
   ret ptr %owned
 }
 
-define internal ptr @mule.global.checked(ptr %cell, ptr %name) alwaysinline {
+define internal ptr @mule.global.checked(ptr %cell, ptr %name) {
 entry:
   %value = load ptr, ptr %cell, !nonnull !{}
   %unbound = icmp eq ptr %value, @mule.undefined
@@ -5592,7 +5614,7 @@ slow:
   ret ptr %result
 }
 
-define internal ptr @mule.fast.local(ptr %value, ptr %name) alwaysinline {
+define internal ptr @mule.fast.local(ptr %value, ptr %name) {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %slow, label %loaded
@@ -5604,7 +5626,7 @@ slow:
   ret ptr %error
 }
 
-define internal ptr @mule.fast.local.move(ptr %value, ptr %name) alwaysinline {
+define internal ptr @mule.fast.local.move(ptr %value, ptr %name) {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %slow, label %loaded
@@ -5615,7 +5637,7 @@ slow:
   ret ptr %error
 }
 
-define internal ptr @mule.fast.local.optional(ptr %value) alwaysinline {
+define internal ptr @mule.fast.local.optional(ptr %value) {
 entry:
   %missing = icmp eq ptr %value, null
   br i1 %missing, label %unbound, label %loaded
@@ -5719,7 +5741,7 @@ slow.call:
         else f"""  %fallback = call ptr @mule_binary_reuse(i32 {op}, ptr %left, ptr %right, i32 %inplace, ptr null)
   ret ptr %fallback"""
     )
-    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) alwaysinline {{
+    return f"""define internal ptr @mule.{prefix}.binary.{op}(ptr %left, ptr %right, i32 %inplace, ptr %reuse, ptr %reuse.slot) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -5767,7 +5789,7 @@ negate:
 fixnum:
 """
     )
-    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) alwaysinline {{
+    return f"""define internal ptr @mule.{prefix}.unary.{op}(ptr %operand) {{
 entry:
   %bits = ptrtoint ptr %operand to i64
 {guard}  %decoded = ashr i64 %bits, 1
@@ -5784,13 +5806,13 @@ def _compare_helper(op: int) -> str:
   %value = select i1 %compared, ptr @mule.true, ptr @mule.false
   ret ptr %value"""
     if op in (6, 7):
-        return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) alwaysinline {{
+        return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
 {operation}
 }}"""
-    return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) alwaysinline {{
+    return f"""define internal ptr @mule.fast.compare.{op}(ptr %left, ptr %right) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -5808,7 +5830,7 @@ slow:
 
 def _compare_bool_helper(op: int) -> str:
     predicate = ("eq", "ne", "slt", "sle", "sgt", "sge")[op]
-    return f"""define internal ptr @mule.fast.compare.bool.{op}(ptr %left, ptr %right) alwaysinline {{
+    return f"""define internal ptr @mule.fast.compare.bool.{op}(ptr %left, ptr %right) {{
 entry:
   %left.bits = ptrtoint ptr %left to i64
   %right.bits = ptrtoint ptr %right to i64
@@ -5831,7 +5853,7 @@ def _text_compare_helper(op: int) -> str:
     same_res = "@mule.true" if op == 0 else "@mule.false"
     diff_res = "@mule.false" if op == 0 else "@mule.true"
     slow_pred = "ne" if op == 0 else "eq"
-    return f"""define internal ptr @mule.fast.text.{name}(ptr %lhs, ptr %rhs) alwaysinline {{
+    return f"""define internal ptr @mule.fast.text.{name}(ptr %lhs, ptr %rhs) {{
 entry:
   %same.ptr = icmp eq ptr %lhs, %rhs
   br i1 %same.ptr, label %equal, label %check.header
@@ -5919,7 +5941,7 @@ bounded:
 }"""
 
 
-LITERAL_HELPERS = """define internal ptr @mule.cached.float(ptr %slot, double %value) alwaysinline {
+LITERAL_HELPERS = """define internal ptr @mule.cached.float(ptr %slot, double %value) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -5934,7 +5956,7 @@ ready:
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.text(ptr %slot, ptr %data, i64 %length) alwaysinline {
+define internal ptr @mule.cached.text(ptr %slot, ptr %data, i64 %length) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -5949,7 +5971,7 @@ ready:
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.bytes(ptr %slot, ptr %data, i64 %length) alwaysinline {
+define internal ptr @mule.cached.bytes(ptr %slot, ptr %data, i64 %length) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -5964,7 +5986,7 @@ ready:
   ret ptr %owned
 }
 
-define internal ptr @mule.cached.int(ptr %slot, ptr %integer) alwaysinline {
+define internal ptr @mule.cached.int(ptr %slot, ptr %integer) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -5984,7 +6006,7 @@ failed:
   ret ptr null
 }
 
-define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) alwaysinline {
+define internal ptr @mule.cached.tuple(ptr %slot, i64 %count, ptr %items) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -6002,7 +6024,7 @@ failed:
   ret ptr null
 }
 
-define internal ptr @mule.borrowed.float(ptr %slot, double %value) alwaysinline {
+define internal ptr @mule.borrowed.float(ptr %slot, double %value) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -6016,7 +6038,7 @@ ready:
   ret ptr %result
 }
 
-define internal ptr @mule.borrowed.text(ptr %slot, ptr %data, i64 %length) alwaysinline {
+define internal ptr @mule.borrowed.text(ptr %slot, ptr %data, i64 %length) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -6030,7 +6052,7 @@ ready:
   ret ptr %result
 }
 
-define internal ptr @mule.borrowed.bytes(ptr %slot, ptr %data, i64 %length) alwaysinline {
+define internal ptr @mule.borrowed.bytes(ptr %slot, ptr %data, i64 %length) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -6044,7 +6066,7 @@ ready:
   ret ptr %result
 }
 
-define internal ptr @mule.borrowed.int(ptr %slot, ptr %integer) alwaysinline {
+define internal ptr @mule.borrowed.int(ptr %slot, ptr %integer) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -6058,7 +6080,7 @@ ready:
   ret ptr %result
 }
 
-define internal ptr @mule.borrowed.tuple(ptr %slot, i64 %count, ptr %items) alwaysinline {
+define internal ptr @mule.borrowed.tuple(ptr %slot, i64 %count, ptr %items) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
@@ -6075,7 +6097,7 @@ failed:
   ret ptr null
 }
 
-define internal ptr @mule.borrowed.tuple.fn(ptr %slot, ptr %builder) alwaysinline {
+define internal ptr @mule.borrowed.tuple.fn(ptr %slot, ptr %builder) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null

@@ -72,7 +72,7 @@ def measure(grid: list[list[int]], n: int):
 print(measure([[1, 2], [3, 4], [5, 6], [7, 8]], 7))
 print(measure([[1, 2], [3, 4], [5, 6], [7, 8]], 3))
 """
-    body = function_body(emit_llvm(source), '"mule_fn_measure.spec.0"')
+    body = function_body(emit_llvm(source), '"mule_fn_measure.numeric.observed"')
     getters = re.findall(r"call ptr @(mule_list_getitem(?:_borrow)?)\(", body)
     assert getters and getters[0] == "mule_list_getitem_borrow"
     assert "icmp sgt i64" in body

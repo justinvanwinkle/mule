@@ -291,7 +291,7 @@ declare i32 @mule_enter_handler(ptr)
 declare void @mule_leave_handler()
 declare i32 @mule_delete_global(ptr, ptr)
 declare i32 @mule_unbind_global(ptr, ptr)
-declare i32 @mule_reraise()
+declare i32 @mule_reraise() cold
 declare i32 @mule_check_rest_args(ptr, i32)
 declare ptr @mule_rest_args(ptr, i32)
 declare ptr @mule_fast_len(ptr)
@@ -344,10 +344,10 @@ declare ptr @mule_class_lookup_default(ptr, ptr, ptr)
 declare ptr @mule_bind_instance_attribute(ptr, ptr, ptr)
 declare ptr @mule_raised_class(ptr)
 declare ptr @mule_exception_targets(ptr)
-declare ptr @mule_raise_pending(ptr)
+declare ptr @mule_raise_pending(ptr) cold
 declare ptr @mule_active_exception()
 declare ptr @mule_exception_instance(ptr)
-declare ptr @mule_invalid_raise()
+declare ptr @mule_invalid_raise() cold
 declare ptr @mule_install_builtin(ptr, ptr)
 declare ptr @mule_text_storage(ptr)
 declare ptr @mule_stdout_write(ptr)
@@ -761,7 +761,9 @@ def compile_component(
             level=logging.DEBUG,
         ):
             assign_variable_primitive_types(component)
-            if select_calls is not None:
+            if select_calls is not None and not str(context.id or "").startswith(
+                "fallback.final."
+            ):
                 select_calls(component)
             select_representations(component)
             if emit_coercions:
@@ -855,16 +857,27 @@ class TupleConstant:
 
 
 class _CallTargetCollector(NodeVisitor):
-    def __init__(self, owned: set[Lambda]):
+    def __init__(self, owned: set[Lambda], method_targets: dict[str, set[Lambda]]):
         self.owned = owned
+        self.method_targets = method_targets
         self.callees: set[Lambda] = set()
         self.may_call_unknown = False
 
     def visit_Combination(self, node: Combination):
         if node.kind is CallKind.KNOWN:
             name = linked(node.fun_info, node, "known function").name
-            if name in (
-                "%call_resolved",
+            if name == "%resolve_method":
+                if node.info is not None:
+                    self.callees.update(
+                        target
+                        for target in self.method_targets.get(node.info.name, ())
+                        if target in self.owned
+                    )
+            elif name == "%call_resolved":
+                if node.predicted is not None and node.predicted in self.owned:
+                    self.callees.add(node.predicted)
+                self.may_call_unknown = True
+            elif name in (
                 "%current_frame",
                 "%current_globals",
                 "%eval_source",
@@ -962,6 +975,33 @@ class ModuleGenerator:
             )
             if candidates:
                 self.borrowed_callees[function] = candidates
+            fn_facts = self.facts.get(function)
+            if (
+                not function.is_protocol
+                and fn_facts is not None
+                and fn_facts.variants
+                and len(candidates) < len(function.vars)
+            ):
+                variant_borrows = []
+                for variant in fn_facts.variants:
+                    variant_escapes = analyze_escapes(
+                        [function],
+                        local_environments=self.local_environments,
+                        base_facts=escapes,
+                        expand=False,
+                        node_types=variant.types,
+                    )
+                    variant_candidates = frozenset(
+                        index
+                        for index, var in enumerate(function.vars)
+                        if not var.indirect
+                        and not var.sets
+                        and not variant_escapes.parameter_escapes(function, index)
+                    )
+                    if variant_candidates - candidates:
+                        variant_borrows.append((variant.parameters, variant_candidates))
+                if variant_borrows:
+                    self.borrowed_callees[function, "variants"] = tuple(variant_borrows)
         logger.debug(
             "Backend input: %d lambdas, %d native entries, %d class layouts",
             len(lambdas),
@@ -1011,7 +1051,7 @@ class ModuleGenerator:
         call_edges: dict[Lambda, set[Lambda]] = {l: set() for l in lambdas}
         may_call_external: set[Lambda] = set()
         for l in lambdas:
-            call_collector = _CallTargetCollector(self.owned)
+            call_collector = _CallTargetCollector(self.owned, self.method_targets)
             for block in linked(l.component, l, "component").blocks():
                 for node in block.nodes():
                     node.accept(call_collector)
@@ -1042,6 +1082,8 @@ class ModuleGenerator:
             return True
         if function.policy.debug >= 2:
             return True
+        if function.policy.safety == 0:
+            return False
         return function in self.may_recurse
 
     def bodies_by_name(self, name: str) -> str:
@@ -1602,23 +1644,48 @@ class ModuleGenerator:
                 f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
             )
         )
+        attrs = (
+            " cold noinline"
+            if name in ("raise_value", "iteration_exhausted")
+            else " noinline"
+        )
+        entry_guard = (
+            "  %arg.null = icmp eq ptr %arg.0, null\n"
+            "  br i1 %arg.null, label %failed.raise, label %frame.enter\n"
+            "frame.enter:\n"
+            if name == "raise_value"
+            else ""
+        )
+        tail = (
+            (
+                "  %raised.null = icmp eq ptr %result, null\n"
+                "  br i1 %raised.null, label %failed.raise, label %raise.pending\n"
+                "raise.pending:\n"
+                "  call ptr @mule_raise_pending(ptr %result) cold\n"
+                "  call void @mule.fast.release(ptr %result)\n"
+                "  ret ptr @mule.none\n"
+                "failed.raise:\n"
+                "  ret ptr null\n"
+            )
+            if name == "raise_value"
+            else "  ret ptr %result\n"
+        )
         self.auxiliary.append(
             _helper_comment(
                 f"protocol adapter: {name}; target: {self.sequence_functions[name].name}"
             )
             + "\n"
-            + f"define internal ptr {symbol}({params}) {{\n"
+            + f"define internal ptr {symbol}({params}){attrs} {{\n"
             "entry:\n"
-            "  %globals = call ptr @mule_protocol_globals()\n"
+            + entry_guard
+            + "  %globals = call ptr @mule_protocol_globals()\n"
             "  %status = call i32 @mule_enter_frame()\n"
             "  %bad = icmp slt i32 %status, 0\n"
             "  br i1 %bad, label %failed, label %entered\n"
             "failed:\n" + (releases + "\n" if releases else "") + "  ret ptr null\n"
             "entered:\n"
             f"  %result = call ptr {body}({operands})\n"
-            "  call void @mule_leave_frame()\n"
-            "  ret ptr %result\n"
-            "}"
+            "  call void @mule_leave_frame()\n" + tail + "}"
         )
         return symbol
 
@@ -1632,7 +1699,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment("getitem protocol dispatch")
             + "\n"
-            + f"define internal ptr {symbol}(ptr %sequence, ptr %index) alwaysinline {{\n"
+            + f"define internal ptr {symbol}(ptr %sequence, ptr %index) {{\n"
             "entry:\n"
             "  %fast = call ptr @mule_fast_getitem(ptr %sequence, ptr %index)\n"
             "  %matched = icmp ne ptr %fast, null\n"
@@ -1699,7 +1766,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment(f"setitem protocol dispatch; move: {move}")
             + "\n"
-            + f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) alwaysinline {{\n"
+            + f"define internal ptr {symbol}(ptr %sequence, ptr %index, ptr %item) {{\n"
             "entry:\n"
             f"  %matched = call i32 {fast_fn}(ptr %sequence, ptr %index, ptr %item)\n"
             "  %valid = icmp ne i32 %matched, 0\n"
@@ -1732,7 +1799,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment(f"iteration protocol dispatch; move: {move}")
             + "\n"
-            + f"define internal ptr {symbol}(ptr %sequence) alwaysinline {{\n"
+            + f"define internal ptr {symbol}(ptr %sequence) {{\n"
             "entry:\n"
             f"  %fast = call ptr {fast_fn}(ptr %sequence)\n"
             "  %ok = icmp ne ptr %fast, null\n"
@@ -1757,7 +1824,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment("iterator next protocol dispatch")
             + "\n"
-            + f"define internal i32 {symbol}(ptr %iterator, ptr %out) alwaysinline {{\n"
+            + f"define internal i32 {symbol}(ptr %iterator, ptr %out) {{\n"
             "entry:\n"
             "  %status = call i32 @mule_fast_next_item(ptr %iterator, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
@@ -1786,7 +1853,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment(f"iterator next with unpacking; arity: {arity}")
             + "\n"
-            + f"define internal i32 {symbol}(ptr %iterator, ptr %unpack.out, ptr %out) alwaysinline {{\n"
+            + f"define internal i32 {symbol}(ptr %iterator, ptr %unpack.out, ptr %out) {{\n"
             "entry:\n"
             f"  %status = call i32 @mule_fast_next_unpack(ptr %iterator, i64 {arity}, ptr %unpack.out, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
@@ -1825,7 +1892,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment(f"unpack into result slots; arity: {arity}")
             + "\n"
-            + f"define internal ptr {symbol}(ptr %value, ptr %count, ptr %out) alwaysinline {{\n"
+            + f"define internal ptr {symbol}(ptr %value, ptr %count, ptr %out) {{\n"
             "entry:\n"
             "  %already = icmp eq ptr %value, null\n"
             "  br i1 %already, label %fast.done, label %check\n"
@@ -1861,7 +1928,7 @@ class ModuleGenerator:
         self.auxiliary.append(
             _helper_comment(f"unpack protocol dispatch; arity: {arity}")
             + "\n"
-            + f"define internal ptr {symbol}(ptr %value, ptr %count) alwaysinline {{\n"
+            + f"define internal ptr {symbol}(ptr %value, ptr %count) {{\n"
             "entry:\n"
             f"  %valid = call i1 @mule.fast.tuple.shape(ptr %value, i64 {arity})\n"
             "  br i1 %valid, label %tuple, label %list.check\n"
@@ -2383,7 +2450,6 @@ class ModuleGenerator:
         borrowed_arguments: frozenset[int] = frozenset(),
         local_environment: bool = False,
         result_contract=None,
-        inline: bool = False,
     ) -> str:
         step_key = tuple(
             (None if ctx is None else ctx.id, needed) for ctx, needed in steps
@@ -2400,7 +2466,6 @@ class ModuleGenerator:
             borrowed_arguments,
             local_environment,
             result_contract,
-            inline,
         )
         existing = self.protocol_helpers.get(key)
         if existing is not None:
@@ -2415,21 +2480,15 @@ class ModuleGenerator:
             *(f"ptr %arg.{i}" for i in range(arity)),
         ]
         builder = _HelperBuilder(self)
-        lambda_ = function.as_lambda()
-        inline_attribute = (
-            " alwaysinline"
-            if inline and lambda_ is not None and not lambda_.policy.prevents_inlining
-            else ""
-        )
         body_globals = "%globals" if proven and same_namespace else "%callee.globals"
         if proven and same_namespace:
             builder.lines = [
-                f"define internal ptr {symbol}({', '.join(params)}){inline_attribute} {{",
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
             ]
         elif proven:
             builder.lines = [
-                f"define internal ptr {symbol}({', '.join(params)}){inline_attribute} {{",
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
                 "  %fn.globals.slot = alloca ptr",
                 "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
@@ -2453,7 +2512,7 @@ class ModuleGenerator:
                     ["ptr %callee", *(f"ptr %arg.{i}" for i in range(arity))]
                 )
             builder.lines = [
-                f"define internal ptr {symbol}({', '.join(params)}){inline_attribute} {{",
+                f"define internal ptr {symbol}({', '.join(params)}) {{",
                 "entry:",
                 "  %fn.globals.slot = alloca ptr",
                 "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
@@ -3029,13 +3088,20 @@ class ModuleGenerator:
         arity = len(convention.parameters)
         symbol = _symbol(f"mule.numeric.{entry.function.name}.{arity}.{index}")
         self.protocol_helpers[key] = symbol
+        needs_error_flag = convention.returned is not DESCRIPTOR
         params = [
             "ptr %callee",
-            "ptr %numeric.error",
+            *(["ptr %numeric.error"] if needs_error_flag else []),
             *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
         ]
         ret_type = convention.returned.llvm_type
-        zero = "0.0" if convention.returned is DOUBLE else "0"
+        zero = (
+            "0.0"
+            if convention.returned is DOUBLE
+            else "0"
+            if convention.returned is SIGNED
+            else "null"
+        )
         fallback_helper = self.positional_call_helper(arity)
         builder = _HelperBuilder(self)
         check_depth = self.needs_frame_depth_check(entry.function)
@@ -3082,7 +3148,7 @@ class ModuleGenerator:
             closure_args.append("ptr %closure")
         direct_args = [
             "ptr %callee.globals",
-            "ptr %numeric.error",
+            *(["ptr %numeric.error"] if needs_error_flag else []),
             *closure_args,
             *(f"{sc.llvm_type} %arg.{i}" for i, sc in enumerate(convention.parameters)),
         ]
@@ -3098,12 +3164,14 @@ class ModuleGenerator:
             ]
         )
         for index in entry.context.borrowed_parameters:
-            builder.line(f"  call ptr @mule.fast.retain(ptr %arg.{index})")
+            builder.line(
+                f"  call ptr @mule.fast.retain(ptr %arg.{index}) cold noinline"
+            )
         boxed_args = []
         for i, sc in enumerate(convention.parameters):
             if sc is DOUBLE:
                 builder.line(
-                    f"  %box.{i} = call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double %arg.{i})"
+                    f"  %box.{i} = call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double %arg.{i}) cold noinline"
                 )
                 boxed_args.append(f"ptr %box.{i}")
             elif sc is SIGNED:
@@ -3116,7 +3184,7 @@ class ModuleGenerator:
         fallback_call_args = ", ".join(["ptr %callee", *boxed_args])
         builder.lines.extend(
             [
-                f"  %fallback.res = call ptr {fallback_helper}({fallback_call_args})",
+                f"  %fallback.res = call ptr {fallback_helper}({fallback_call_args}) cold noinline",
                 "  %fallback.null = icmp eq ptr %fallback.res, null",
                 "  br i1 %fallback.null, label %failed, label %fallback.check",
                 "fallback.check:",
@@ -3124,13 +3192,15 @@ class ModuleGenerator:
         )
         if entry.result_contract is not None:
             checker = self.return_contract_helper(entry.result_contract)
-            checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
+            checked = builder.operation(
+                f"call i32 {checker}(ptr %fallback.res) cold noinline"
+            )
             rejected = builder.operation(f"icmp slt i32 {checked}, 0")
             builder.lines.extend(
                 [
                     f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok",
                     "fallback.incompatible:",
-                    "  call void @mule.fast.release(ptr %fallback.res)",
+                    "  call void @mule.fast.release(ptr %fallback.res) cold noinline",
                     "  br label %failed",
                     "fallback.ok:",
                 ]
@@ -3143,7 +3213,7 @@ class ModuleGenerator:
                     "  ret double %unboxed",
                 ]
             )
-        else:
+        elif convention.returned is SIGNED:
             builder.lines.extend(
                 [
                     "  %bits = ptrtoint ptr %fallback.res to i64",
@@ -3151,10 +3221,13 @@ class ModuleGenerator:
                     "  ret i64 %unboxed",
                 ]
             )
+        else:
+            builder.lines.append("  ret ptr %fallback.res")
+        builder.lines.append("failed:")
+        if needs_error_flag:
+            builder.lines.append("  store i1 true, ptr %numeric.error")
         builder.lines.extend(
             [
-                "failed:",
-                "  store i1 true, ptr %numeric.error",
                 f"  ret {ret_type} {zero}",
                 "}",
             ]
@@ -4427,12 +4500,20 @@ class _TypeAssumption(ValueTypeVisitor):
         valid = operation(f"icmp ne i64 {tag}, 0")
         if fact.minimum > FIXNUM_MIN or fact.maximum < FIXNUM_MAX:
             decoded = operation(f"ashr i64 {bits}, 1")
-            if fact.minimum > FIXNUM_MIN:
-                lower = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
-                valid = operation(f"and i1 {valid}, {lower}")
-            if fact.maximum < FIXNUM_MAX:
-                upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
-                valid = operation(f"and i1 {valid}, {upper}")
+            if fact.minimum == 0 and fact.maximum < FIXNUM_MAX:
+                bounds = operation(f"icmp ult i64 {decoded}, {fact.maximum + 1}")
+            else:
+                bounds = None
+                if fact.minimum > FIXNUM_MIN:
+                    bounds = operation(f"icmp sge i64 {decoded}, {fact.minimum}")
+                if fact.maximum < FIXNUM_MAX:
+                    upper = operation(f"icmp sle i64 {decoded}, {fact.maximum}")
+                    bounds = (
+                        upper
+                        if bounds is None
+                        else operation(f"and i1 {bounds}, {upper}")
+                    )
+            valid = operation(f"and i1 {valid}, {bounds}")
         return valid
 
 
@@ -4633,6 +4714,7 @@ class FunctionGenerator:
         # Each landing's predecessor blocks and the source line failing there.
         self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
         self.vop = None
+        self.in_cold_block = False
         self.checking_element_contract = False
         self.unpacked_remaining_slots: tuple[int, ...] = ()
         self.entry_end = 0
@@ -4723,6 +4805,13 @@ class FunctionGenerator:
     # Text helpers
 
     def line(self, text: str) -> None:
+        if (
+            self.in_cold_block
+            and text.startswith("call ")
+            and "@llvm." not in text
+            and not text.endswith(" cold noinline")
+        ):
+            text += " cold noinline"
         self.lines.append("  " + text)
 
     def fresh(self, prefix: str = "t") -> str:
@@ -4730,6 +4819,13 @@ class FunctionGenerator:
         return f"%{prefix}.{self.serial}"
 
     def operation(self, text: str) -> str:
+        if (
+            self.in_cold_block
+            and text.startswith("call ")
+            and "@llvm." not in text
+            and not text.endswith(" cold noinline")
+        ):
+            text += " cold noinline"
         value = self.fresh()
         self.line(f"{value} = {text}")
         return value
@@ -4856,6 +4952,8 @@ class FunctionGenerator:
                     self.release(value)
                 self.line(f"br label %{chain_labels[base, prefix]}")
 
+        prev_cold = self.in_cold_block
+        self.in_cold_block = True
         for (
             base,
             owned,
@@ -4886,6 +4984,7 @@ class FunctionGenerator:
         for (base, prefix), label in chain_labels.items():
             self.lines.append(label + ":")
             emit_release_step(base, prefix)
+        self.in_cold_block = prev_cold
 
     def guard(self, failed: str, failed_value=None) -> str:
         """Branch to the failure path when ``failed``; returns the label of
@@ -5178,7 +5277,7 @@ class FunctionGenerator:
         return value
 
     def return_value(self, operand) -> None:
-        if self.convention is None:
+        if self.convention is None or self.convention.returned is DESCRIPTOR:
             value = self.take(operand)
             if self.unpacked and self.return_uses != frozenset(
                 self.lambda_.return_.result.uses
@@ -5244,9 +5343,11 @@ class FunctionGenerator:
             else:
                 converted.append(self.load(ref))
         callee = self.load(callable_ref) if callable_ref is not None else "null"
+        needs_error_flag = convention.returned is not DESCRIPTOR
         if not entry.proven:
-            self.uses_numeric_error = True
-            self.line("store i1 false, ptr %numeric.error")
+            if needs_error_flag:
+                self.uses_numeric_error = True
+                self.line("store i1 false, ptr %numeric.error")
             if callable_ref is not None:
                 self.take(callable_ref)
             raw_owned = []
@@ -5260,7 +5361,7 @@ class FunctionGenerator:
                     raw_owned.append(taken)
             operands = [
                 f"ptr {callee}",
-                "ptr %numeric.error",
+                *(["ptr %numeric.error"] if needs_error_flag else []),
                 *(
                     f"{sc.llvm_type} {value}"
                     for sc, value in zip(convention.parameters, converted, strict=True)
@@ -5274,13 +5375,20 @@ class FunctionGenerator:
                 self.release(owned)
             if callable_ref is not None:
                 self.release(callee)
-            failed = self.operation("load i1, ptr %numeric.error")
-            self.guard(failed)
             result = vop.results[0]
-            if convention.returned is SIGNED and result.tn.sc in OBJECT:
-                self.native_result(result, self.encode(value))
+            if needs_error_flag:
+                failed = self.operation("load i1, ptr %numeric.error")
+                self.guard(failed)
+                if convention.returned is SIGNED and result.tn.sc in OBJECT:
+                    self.native_result(result, self.encode(value))
+                else:
+                    self.store(result, value)
             else:
+                if entry.result_contract is not None:
+                    self.refine_type(entry.context.return_type, value)
                 self.store(result, value)
+                self.check_pointer(value)
+                self.refine(result.tn, value)
             return
         local_environment = self.module.local_environments.is_local(entry.function)
         same_namespace = runtime_namespace(
@@ -5293,6 +5401,7 @@ class FunctionGenerator:
             callee_globals = "%globals"
             closure = None
         else:
+            self.uses_numeric_error = True
             self.operation(
                 f"call ptr @mule_method_entry(ptr {callee}, ptr %callee.globals.slot)"
             )
@@ -5306,8 +5415,9 @@ class FunctionGenerator:
         if check_depth:
             status = self.operation("call i32 @mule_enter_frame()")
             self.check_status(status)
-        self.uses_numeric_error = True
-        self.line("store i1 false, ptr %numeric.error")
+        if needs_error_flag:
+            self.uses_numeric_error = True
+            self.line("store i1 false, ptr %numeric.error")
         if callable_ref is not None:
             self.take(callable_ref)
         raw_owned = []
@@ -5319,7 +5429,10 @@ class FunctionGenerator:
                 and ref.tn.borrowed_from is None
             ):
                 raw_owned.append(taken)
-        operands = [f"ptr {callee_globals}", "ptr %numeric.error"]
+        operands = [
+            f"ptr {callee_globals}",
+            *(["ptr %numeric.error"] if needs_error_flag else []),
+        ]
         if closure is not None:
             operands.append(f"ptr {closure}")
         operands.extend(
@@ -5335,13 +5448,19 @@ class FunctionGenerator:
             self.release(owned)
         if not local_environment and callable_ref is not None:
             self.release(callee)
-        failed = self.operation("load i1, ptr %numeric.error")
-        self.guard(failed)
         result = vop.results[0]
-        if convention.returned is SIGNED and result.tn.sc in OBJECT:
-            self.native_result(result, self.encode(value))
+        if needs_error_flag:
+            failed = self.operation("load i1, ptr %numeric.error")
+            self.guard(failed)
+            if convention.returned is SIGNED and result.tn.sc in OBJECT:
+                self.native_result(result, self.encode(value))
+            else:
+                self.store(result, value)
         else:
+            self.refine_type(entry.context.return_type, value)
             self.store(result, value)
+            self.check_pointer(value)
+            self.refine(result.tn, value)
 
     def local_slot(self, name: str) -> str:
         return self.local_slots[name]
@@ -5367,8 +5486,8 @@ class FunctionGenerator:
         return self.operation(f"ashr i64 {bits}, 1")
 
     def encode(self, value: str) -> str:
-        shifted = self.operation(f"shl i64 {value}, 1")
-        tagged = self.operation(f"or i64 {shifted}, 1")
+        shifted = self.operation(f"shl nsw i64 {value}, 1")
+        tagged = self.operation(f"or disjoint i64 {shifted}, 1")
         return self.operation(f"inttoptr i64 {tagged} to ptr")
 
     def constant(self, literal) -> str:
@@ -5893,9 +6012,6 @@ class FunctionGenerator:
             ),
             local_environment=site.local_environment,
             result_contract=result_contract,
-            inline=site.final_binding
-            and proven
-            and not self.lambda_.policy.prevents_inlining,
         )
         operands = ", ".join(
             [
@@ -5985,7 +6101,12 @@ class FunctionGenerator:
         )
         parameters = ", ".join(
             ["ptr %globals"]
-            + (["ptr %error.flag"] if self.convention is not None else [])
+            + (
+                ["ptr %error.flag"]
+                if self.convention is not None
+                and self.convention.returned is not DESCRIPTOR
+                else []
+            )
             + (["ptr %closure"] if self.module.closure_of(lambda_) else [])
             + [
                 f"{sc.llvm_type} %parameter.{index}"
@@ -6007,10 +6128,42 @@ class FunctionGenerator:
         self.lines.append(
             self.function_comment(f"{entry}; context: {self.context.id or 'general'}")
         )
+        fn_attrs = (
+            " cold noinline"
+            if str(self.context.id or "").startswith("fallback.final.")
+            else ""
+        )
         self.lines.append(
-            f"define {linkage}{returned.llvm_type} {self.body}({parameters}) {{"
+            f"define {linkage}{returned.llvm_type} {self.body}({parameters}){fn_attrs} {{"
         )
         self.lines.append("entry:")
+        self.line(f"%return = alloca {returned.llvm_type}")
+        self.line(f"store {returned.llvm_type} {returned.zero}, ptr %return")
+        for group in (*self.local_slot_groups, *self.value_slot_groups):
+            tn = group[0]
+            self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
+            self.line(f"store {tn.sc.llvm_type} {tn.sc.zero}, ptr {tn.slot}")
+        for tn in self.range_tns:
+            self.line(f"{tn.slot} = alloca [3 x i64]")
+            self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
+        if self.range_tns:
+            self.line("%range.buffer = alloca [3 x i64]")
+        if self.coroutine_local_tns:
+            n_locals = len(self.coroutine_local_tns)
+            self.line(f"%coroutine.locals = alloca [{n_locals} x ptr]")
+            self.line(
+                f"store [{n_locals} x ptr] zeroinitializer, ptr %coroutine.locals"
+            )
+        records_frame = lambda_.policy.records_frame or (
+            lambda_.policy.debug >= 1
+            and (
+                (lambda_.code is not None and bool(lambda_.code.flags & 0x2A0))
+                or lambda_ in self.module.may_call_external
+            )
+        )
+        if records_frame:
+            self.line("%frame = alloca {ptr, ptr, ptr}, align 8")
+        self.entry_end = len(self.lines)
         if self.context.final_bindings:
             ready = "true"
             for binding in self.context.final_bindings:
@@ -6029,7 +6182,10 @@ class FunctionGenerator:
             self.line(f"br i1 {ready}, label %final.ready, label %final.fallback")
             self.lines.append("final.fallback:")
             operands = ["ptr %globals"]
-            if self.convention is not None:
+            if (
+                self.convention is not None
+                and self.convention.returned is not DESCRIPTOR
+            ):
                 operands.append("ptr %error.flag")
             if self.module.closure_of(lambda_):
                 operands.append("ptr %closure")
@@ -6053,38 +6209,14 @@ class FunctionGenerator:
                 if fact.is_fixnum or fact.is_immortal:
                     self.immortal_values.add(value)
                 self.refine_type(fact, value)
-        self.line(f"%return = alloca {returned.llvm_type}")
-        self.line(f"store {returned.llvm_type} {returned.zero}, ptr %return")
-        for group in (*self.local_slot_groups, *self.value_slot_groups):
-            tn = group[0]
-            self.line(f"{tn.slot} = alloca {tn.sc.llvm_type}")
-            self.line(f"store {tn.sc.llvm_type} {tn.sc.zero}, ptr {tn.slot}")
-        for tn in self.range_tns:
-            self.line(f"{tn.slot} = alloca [3 x i64]")
-            self.line(f"store [3 x i64] zeroinitializer, ptr {tn.slot}")
-        if self.range_tns:
-            self.line("%range.buffer = alloca [3 x i64]")
         if self.coroutine_local_tns:
             n_locals = len(self.coroutine_local_tns)
-            self.line(f"%coroutine.locals = alloca [{n_locals} x ptr]")
-            self.line(
-                f"store [{n_locals} x ptr] zeroinitializer, ptr %coroutine.locals"
-            )
             self.line(
                 f"call void @mule_coroutine_set_locals(ptr %coroutine.locals, i64 {n_locals})"
             )
-        self.entry_end = len(self.lines)
-        records_frame = lambda_.policy.records_frame or (
-            lambda_.policy.debug >= 1
-            and (
-                (lambda_.code is not None and bool(lambda_.code.flags & 0x2A0))
-                or lambda_ in self.module.may_call_external
-            )
-        )
         if records_frame:
             # Publish only a fully initialized stack record, before any operation
             # that can enter cleanup. Globals remain borrowed from the callable.
-            self.line("%frame = alloca {ptr, ptr, ptr}, align 8")
             self.line("%frame.slot = call ptr @mule_frame_head_slot()")
             self.line(
                 "%frame.parent = load atomic ptr, ptr %frame.slot acquire, align 8"
@@ -6137,7 +6269,7 @@ class FunctionGenerator:
             self.line(f"br label %{label}")
         self.emit_landings()
         self.lines.append("error:")
-        if self.convention is not None:
+        if self.convention is not None and self.convention.returned is not DESCRIPTOR:
             self.line("store i1 true, ptr %error.flag")
         self.line("br label %cleanup")
         self.lines.append("cleanup:")
@@ -6166,6 +6298,11 @@ class FunctionGenerator:
 
     def emit_blocks(self) -> None:
         for block in self.component.blocks:
+            self.in_cold_block = bool(
+                block.vops
+                and block.vops[-1].info.name
+                in ("raise", "reraise", "assertion-failure")
+            )
             self.lines.append(block.label + ":")
             target = block.exception_target
             self.exception_target = (
@@ -6199,6 +6336,7 @@ class FunctionGenerator:
                     self.release(value)
             if self.live:
                 raise ValueError(f"{block!r} ends owning {list(self.live)!r}")
+        self.in_cold_block = False
         if self.max_unpack_out:
             self.lines.insert(
                 self.entry_end, f"  %unpack.out = alloca [{self.max_unpack_out} x ptr]"
@@ -6386,7 +6524,7 @@ class FunctionGenerator:
         entry = module.functions[lambda_]
         view_entry = _suffixed(entry, ".view")
         header = (
-            f"define internal ptr {view_entry}(ptr %globals, ptr %args) alwaysinline {{"
+            f"define internal ptr {view_entry}(ptr %globals, ptr %args) {{"
             if ordinary_view
             else f"define ptr {entry}(ptr %globals, ptr %args) {{"
         )

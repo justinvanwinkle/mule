@@ -53,7 +53,9 @@ scan_word('"tag"', 0, 4)
 scan_word('"other"', 1, 5)
 """
     )
-    body = _function_llvm_body(llvm, 'define internal ptr @"mule_fn_scan_word.spec.0"')
+    body = _function_llvm_body(
+        llvm, 'define internal i64 @"mule_fn_scan_word.numeric.observed"'
+    )
     assert body.count("@mule_text_slice_eq(") == 1
     assert "@mule.fast.getslice(" not in body
     assert "@mule.heap.retain(" not in body
@@ -73,7 +75,9 @@ keep_word('"tag"', 0, 4)
 keep_word('"other"', 1, 5)
 """
     )
-    body = _function_llvm_body(llvm, 'define internal ptr @"mule_fn_keep_word.spec.0"')
+    body = _function_llvm_body(
+        llvm, 'define internal ptr @"mule_fn_keep_word.numeric.observed"'
+    )
     assert "@mule_text_slice_eq(" not in body
     assert "@mule.fast.getslice(" in body
 
@@ -134,7 +138,7 @@ print(project_and_invert(2, 99, True))
 """
     llvm = emit_llvm(source)
     parse_body = _function_llvm_body(
-        llvm, 'define internal ptr @"mule_fn_parse_field.spec.0"'
+        llvm, 'define internal ptr @"mule_fn_parse_field.numeric.observed"'
     )
     assert "@mule_parse_int_slice(" in parse_body
     assert "@mule.fast.getslice(" not in parse_body

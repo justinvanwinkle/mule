@@ -447,7 +447,7 @@ def test_recursive_native_class_calls_preserve_recursion_error(
         call = "C().recurse(0)\n"
     source = (
         "from mule_types import int64, optimize\n"
-        "@optimize(speed=3, safety=0)\nclass C:\n value: int64\n" + body + call
+        "@optimize(speed=3, safety=1)\nclass C:\n value: int64\n" + body + call
     )
     result = run_native(tmp_path, source)
     assert result.returncode != 0

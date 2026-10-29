@@ -20,7 +20,7 @@ def test_int_slice_parse_fuses_in_specialized_text_body():
 print(parse_span("abc-12345xyz", 3, 9))
 """
     ir = emit_llvm(source, filename="int_slice_parse.py")
-    spec_body = _function_body(ir, "mule_fn_parse_span.spec.0")
+    spec_body = _function_body(ir, "mule_fn_parse_span.numeric.observed")
     assert "call ptr @mule_parse_int_slice(" in spec_body
     assert "@mule.fast.getslice(" not in spec_body
     assert "@mule_getslice(" not in spec_body
@@ -49,7 +49,7 @@ def parse_rebound(text, start, stop):
 print(parse_rebound("12345", 1, 4))
 """
     ir = emit_llvm(source, filename="int_rebound.py")
-    spec_body = _function_body(ir, "mule_fn_parse_rebound.spec.0")
+    spec_body = _function_body(ir, "mule_fn_parse_rebound.numeric.observed")
     assert "@mule_parse_int_slice(" not in spec_body
     assert "@mule_parse_int_text(" not in spec_body
 

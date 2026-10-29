@@ -715,4 +715,3 @@ except IndexError:
     completed = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout == "199\n209\nneg_oob_ok\npos_oob_ok\n"
-
