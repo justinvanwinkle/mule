@@ -4,6 +4,9 @@ Every compiled function with parameters binds a call through ``bind``, driven
 by that function's constant signature tuple.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 # Physical allocation, method lookup and borrowed-view invocation are primitives.
 # The binder runs in the shared protocol namespace, which also supplies
 # ``dict``, ``call_with``, ``is_instance`` and ``overriding_new``.
@@ -65,6 +68,22 @@ def bind(view, signature):
     count = _binding_count(view)
     if rest < 0 and count > positional:
         raise TypeError("too many positional arguments")
+    supplied = _binding_keyword_count(view)
+    if supplied == 0 and rest < 0 and keywords < 0:
+        values = []
+        slot = 0
+        while slot < size:
+            if slot < count:
+                _storage_append(values, _binding_pos(view, slot))
+            else:
+                offset = _storage_read(defaults, slot)
+                if offset < 0:
+                    raise TypeError(
+                        "missing required argument " + _storage_read(names, slot)
+                    )
+                _storage_append(values, _binding_default(view, offset))
+            slot += 1
+        return _storage_tuple(values)
     values = []
     extra = None
     slot = 0
@@ -79,7 +98,6 @@ def bind(view, signature):
         else:
             _storage_append(values, missing)
         slot += 1
-    supplied = _binding_keyword_count(view)
     index = 0
     while index < supplied:
         name = _binding_keyword_name(view, index)

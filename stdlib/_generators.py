@@ -10,6 +10,9 @@ it can run outside the generator's own frame because yielding suspends the
 coroutine rather than a single function.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _attributes import getattr
 from _descriptors import property
 from _mule_native import coroutine_abandon

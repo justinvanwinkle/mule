@@ -1,5 +1,8 @@
 """Importlib policy for modules already compiled into the native image."""
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _mule_native import compiled_module_info
 from _mule_native import load_compiled_module
 from _mule_native import create_compiled_module

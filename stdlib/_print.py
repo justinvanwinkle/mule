@@ -1,13 +1,17 @@
 """Compiled print conversion, stream selection and ending rules."""
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 # Compiler-provided physical primitives and shared conversion protocol.
 # ruff: noqa: F821
+
+import sys
 
 
 def print(*objects, sep=" ", end="\n", file=None, flush=False):
     flush = True if flush else False
     if file is None:
-        import sys
         file = sys.stdout
         if file is None:
             return

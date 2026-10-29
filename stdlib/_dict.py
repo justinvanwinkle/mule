@@ -15,6 +15,9 @@ String and bytes hashes come from a native primitive; CPython randomizes them
 per process, so their values are not part of the language contract.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _descriptors import classmethod
 from _object import integer_hash
 from _mule_native import bind_instance_attribute
@@ -246,14 +249,17 @@ def _table_find(self, key, code):
     """The index-table slot for ``key`` and its entry, or -1 for none."""
     if code < _FIXNUM_MIN or code > _FIXNUM_MAX:
         code = (code ^ (code >> 62)) & _PERTURB_MASK
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
                     return slot, entry
         elif entry is _EMPTY:
@@ -266,14 +272,17 @@ def _table_lookup(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
                     return entry
         elif entry is _EMPTY:
@@ -347,39 +356,45 @@ def _table_insert(self, key, value):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    values = _instance_field(self, "_values")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
-                    _storage_write(_instance_field(self, "_values"), entry, value)
+                    _storage_write(values, entry, value)
                     return
         elif entry is _EMPTY:
             break
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
-    if (_storage_length(_instance_field(self, "_keys")) + 1) * 3 > _storage_length(
-        _instance_field(self, "_indices")
-    ) * 2:
+    if (_storage_length(keys) + 1) * 3 > _storage_length(indices) * 2:
         _table_resize(self, _instance_field(self, "_used") + 1)
-        mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+        indices = _instance_field(self, "_indices")
+        hashes = _instance_field(self, "_hashes")
+        keys = _instance_field(self, "_keys")
+        values = _instance_field(self, "_values")
+        mask = (_storage_length(indices) - 1) & _MASK_LIMIT
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
-        while _storage_read(_instance_field(self, "_indices"), slot) is not _EMPTY:
+        while _storage_read(indices, slot) is not _EMPTY:
             perturb >>= 5
             slot = (slot * 5 + perturb + 1) & mask
     _storage_write(
-        _instance_field(self, "_indices"),
+        indices,
         slot,
-        _storage_length(_instance_field(self, "_keys")),
+        _storage_length(keys),
     )
-    _storage_append(_instance_field(self, "_hashes"), code)
-    _storage_append(_instance_field(self, "_keys"), key)
-    _storage_append(_instance_field(self, "_values"), value)
+    _storage_append(hashes, code)
+    _storage_append(keys, key)
+    _storage_append(values, value)
     next_used = (_instance_field(self, "_used") + 1) & _MASK_LIMIT
     _set_instance_field(self, "_used", next_used)
     del next_used
@@ -390,19 +405,23 @@ def _table_remove(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    values = _instance_field(self, "_values")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
-                    value = _storage_read(_instance_field(self, "_values"), entry)
-                    _storage_write(_instance_field(self, "_indices"), slot, _DUMMY)
-                    _storage_write(_instance_field(self, "_keys"), entry, _DELETED)
-                    _storage_write(_instance_field(self, "_values"), entry, None)
+                    value = _storage_read(values, entry)
+                    _storage_write(indices, slot, _DUMMY)
+                    _storage_write(keys, entry, _DELETED)
+                    _storage_write(values, entry, None)
                     remaining_used = (_instance_field(self, "_used") - 1) & _MASK_LIMIT
                     _set_instance_field(self, "_used", remaining_used)
                     del remaining_used
@@ -984,37 +1003,41 @@ def _set_insert(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
                     return
         elif entry is _EMPTY:
             break
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
-    if (_storage_length(_instance_field(self, "_keys")) + 1) * 3 > _storage_length(
-        _instance_field(self, "_indices")
-    ) * 2:
+    if (_storage_length(keys) + 1) * 3 > _storage_length(indices) * 2:
         _table_resize(self, _instance_field(self, "_used") + 1)
-        mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+        indices = _instance_field(self, "_indices")
+        hashes = _instance_field(self, "_hashes")
+        keys = _instance_field(self, "_keys")
+        mask = (_storage_length(indices) - 1) & _MASK_LIMIT
         perturb = code & _PERTURB_MASK
         slot = perturb & mask
-        while _storage_read(_instance_field(self, "_indices"), slot) is not _EMPTY:
+        while _storage_read(indices, slot) is not _EMPTY:
             perturb >>= 5
             slot = (slot * 5 + perturb + 1) & mask
     _storage_write(
-        _instance_field(self, "_indices"),
+        indices,
         slot,
-        _storage_length(_instance_field(self, "_keys")),
+        _storage_length(keys),
     )
-    _storage_append(_instance_field(self, "_hashes"), code)
-    _storage_append(_instance_field(self, "_keys"), key)
+    _storage_append(hashes, code)
+    _storage_append(keys, key)
     next_used = (_instance_field(self, "_used") + 1) & _MASK_LIMIT
     _set_instance_field(self, "_used", next_used)
     del next_used
@@ -1024,17 +1047,20 @@ def _set_remove_entry(self, key):
     code = _storage_hash(key)
     if code is None:
         code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
-                    _storage_write(_instance_field(self, "_indices"), slot, _DUMMY)
-                    _storage_write(_instance_field(self, "_keys"), entry, _DELETED)
+                    _storage_write(indices, slot, _DUMMY)
+                    _storage_write(keys, entry, _DELETED)
                     remaining_used = (_instance_field(self, "_used") - 1) & _MASK_LIMIT
                     _set_instance_field(self, "_used", remaining_used)
                     del remaining_used
@@ -1048,10 +1074,11 @@ def _set_remove_entry(self, key):
 def _set_fill(self, iterable):
     _table_clear(self)
     if _is_set(iterable):
-        count = _storage_length(_instance_field(iterable, "_keys"))
+        other_keys = _instance_field(iterable, "_keys")
+        count = _storage_length(other_keys)
         index = 0
         while index < count:
-            key = _storage_read(_instance_field(iterable, "_keys"), index)
+            key = _storage_read(other_keys, index)
             if key is not _DELETED:
                 _set_insert(self, key)
             index += 1
@@ -1076,14 +1103,17 @@ def _set_lookup(self, key):
             code = _tuple_table_hash(key)
         else:
             return _set_lookup_fallback(self, key)
-    mask = (_storage_length(_instance_field(self, "_indices")) - 1) & _MASK_LIMIT
+    indices = _instance_field(self, "_indices")
+    hashes = _instance_field(self, "_hashes")
+    keys = _instance_field(self, "_keys")
+    mask = (_storage_length(indices) - 1) & _MASK_LIMIT
     perturb = code & _PERTURB_MASK
     slot = perturb & mask
     while True:
-        entry = _storage_read(_instance_field(self, "_indices"), slot)
+        entry = _storage_read(indices, slot)
         if entry >= 0:
-            if _storage_read(_instance_field(self, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(self, "_keys"), entry)
+            if _storage_read(hashes, entry) == code:
+                existing = _storage_read(keys, entry)
                 if existing is key or existing == key:
                     return entry
         elif entry is _EMPTY:

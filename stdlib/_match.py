@@ -5,6 +5,9 @@ the parts CPython's ``Python/ceval.c`` implements natively: whether a subject
 matches as a sequence or a mapping, and the attributes a class pattern reads.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 
 def _abc():
     import _collections_abc

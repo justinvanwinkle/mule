@@ -4,17 +4,23 @@ The underscored calls below are physical primitive bindings supplied by the
 compiler. Method selection and Python fallback rules execute as compiled Python.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
 from _mule_native import bind_instance_attribute
 from _mule_native import class_lookup_default
+from _mule_native import integer_decimal
 from _mule_native import type_of
 
 _MAPPING_MISSING = object()
 
 
 def _index_integer(value):
+    if type_of(value) is int or type_of(value) is bool:
+        return _integer_storage(value)
     method = _index_method(value)
     if method is not None:
         return _integer_storage(method())
@@ -22,6 +28,8 @@ def _index_integer(value):
 
 
 def _int_or_index(value):
+    if type_of(value) is int or type_of(value) is bool:
+        return _integer_storage(value)
     owner = type_of(value)
     for hook in ("__int__", "__index__"):
         method = class_lookup_default(owner, hook, _MAPPING_MISSING)
@@ -31,6 +39,12 @@ def _int_or_index(value):
 
 
 def string(value):
+    if _text_storage(value) and type_of(value) is str:
+        return value
+    if type_of(value) is int:
+        return integer_decimal(value)
+    if type_of(value) is bool:
+        return "True" if value else "False"
     method = _str_method(value)
     if method is None:
         method = _repr_method(value)
@@ -40,6 +54,10 @@ def string(value):
 
 
 def representation(value):
+    if type_of(value) is int:
+        return integer_decimal(value)
+    if type_of(value) is bool:
+        return "True" if value else "False"
     method = _repr_method(value)
     if method is None:
         return _render_representation(value)
@@ -47,6 +65,13 @@ def representation(value):
 
 
 def format_value(value, specification):
+    if specification == "":
+        if _text_storage(value) and type_of(value) is str:
+            return value
+        if type_of(value) is int:
+            return integer_decimal(value)
+        if type_of(value) is bool:
+            return "True" if value else "False"
     method = _format_method(value)
     if method is None:
         if specification == "":
@@ -58,19 +83,7 @@ def format_value(value, specification):
 
 
 def decimal_integer(value):
-    value = _integer_storage(value)
-    if value == 0:
-        return "0"
-    negative = value < 0
-    if negative:
-        value = -value
-    result = ""
-    while value > 0:
-        result = _text_character("0123456789", value % 10) + result
-        value = value // 10
-    if negative:
-        result = "-" + result
-    return result
+    return integer_decimal(_integer_storage(value))
 
 
 def percent_decimal(pattern, values):

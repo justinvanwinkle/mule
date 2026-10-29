@@ -10,6 +10,9 @@ any other compiled builtin defines a class, so those classes derive from
 ``object``.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _mule_native import allocate_instance
 from _mule_native import default_construct
 from _mule_native import bind_instance_attribute

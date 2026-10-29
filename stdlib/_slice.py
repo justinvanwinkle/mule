@@ -6,6 +6,9 @@ bounds with ``__index__`` and rejects a zero step, and
 selected positions. Sequence types use ``positions`` to read their elements.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 

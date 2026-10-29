@@ -5,6 +5,9 @@
 ``Objects/templateobject.c`` and ``Objects/interpolationobject.c``.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 
 class Interpolation:
     """One replacement field of a template string, already evaluated."""

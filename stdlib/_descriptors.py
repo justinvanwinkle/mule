@@ -10,6 +10,9 @@ protocol, following CPython's ``Objects/funcobject.c`` (``staticmethod``,
 storage operations; the rules here are ordinary compiled Python.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _mule_native import bind_attribute
 from _mule_native import bound_method
 from _mule_native import class_mro

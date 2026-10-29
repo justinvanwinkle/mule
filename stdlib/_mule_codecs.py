@@ -1,5 +1,8 @@
 """Compiled Unicode decoding over explicitly imported physical byte storage."""
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _mule_native import byte_length, read_byte, text_from_codepoints
 
 

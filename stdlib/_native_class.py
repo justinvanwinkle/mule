@@ -4,6 +4,9 @@ The underscored primitive bindings are supplied by the compiler, not imported
 from the Python host. Constructor signatures are expanded for each layout.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 # These bindings are physical compiler primitives, supplied during lowering.
 # ruff: noqa: F821
 

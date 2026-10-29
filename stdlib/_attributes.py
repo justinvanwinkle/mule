@@ -5,6 +5,9 @@ apply it to names computed at run time, following CPython's
 ``Python/bltinmodule.c``.
 """
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 from _mule_native import delete_attribute
 from _mule_native import get_attribute
 from _mule_native import get_attribute_or
