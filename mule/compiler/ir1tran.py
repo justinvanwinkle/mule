@@ -3921,9 +3921,16 @@ class _Statements(ast.Visitor):
         )
         # Only an actual leading docstring enters the class-body namespace.
         # type.__new__ supplies None later, after checking slot conflicts.
+        # CPython's codegen_class_body stores __firstlineno__ before the body:
+        # the first decorator's line for a decorated class, else the class's.
+        first = node.decorators[0] if node.decorators else node
         initial = (
             ("__module__", ast.Name("__name__", span=node.span)),
             ("__qualname__", ast.TextLiteral(scope.qualname, span=node.span)),
+            (
+                "__firstlineno__",
+                ast.IntegerLiteral(first.span.start.line, span=node.span),
+            ),
         )
         if docstring is not None:
             initial += (("__doc__", docstring),)
@@ -4032,6 +4039,29 @@ class _Statements(ast.Visitor):
                     (annotations,),
                     node,
                 )
+        # CPython stores __static_attributes__ after the body (and its
+        # deferred annotations): the sorted names assigned as ``self.NAME``.
+        ctran, static_attributes = function.value(
+            frontier,
+            ast.Tuple(
+                [
+                    ast.TextLiteral(attribute, span=node.span)
+                    for attribute in _StaticAttributes.of(node)
+                ],
+                span=node.span,
+            ),
+        )
+        frontier = Ctran()
+        function.class_namespace_operation(
+            ctran,
+            frontier,
+            None,
+            fndb.CLASS_STORE,
+            scope,
+            "__static_attributes__",
+            (static_attributes,),
+            node,
+        )
         operands = []
         for var in (bases, namespace, class_keywords):
             ctran, value = Ctran(), Lvar()
@@ -7016,6 +7046,53 @@ class _ReceiverFields(ast.Visitor):
     def visit_AnnotatedAssignment(self, node):
         if node.value is not None:
             self.visit_Node(node)
+
+
+class _StaticAttributes(ast.Visitor):
+    """Names a class body assigns as ``self.NAME``: ``__static_attributes__``.
+
+    Follows CPython's ``_PyCompile_MaybeAddStaticAttributeToClass``: any
+    stored attribute of a name spelled ``self`` counts toward the nearest
+    enclosing class, at any function depth, whatever the receiver parameter is
+    called. Augmented assignment and ``del`` do not store through the
+    attribute expression, and a nested class body records its own names.
+    """
+
+    def __init__(self, names):
+        self.targets = _ReceiverFieldTarget("self", names, None)
+
+    @classmethod
+    def of(cls, definition):
+        names = {}
+        collector = cls(names)
+        for statement in definition.body:
+            statement.accept(collector)
+        return sorted(names)
+
+    def visit_Node(self, node):
+        for target in node.assigned_targets():
+            target.accept(self.targets)
+        self.visit_children(node)
+
+    def visit_children(self, node):
+        for child in node.children():
+            child.accept(self)
+
+    def visit_AugmentedAssignment(self, node):
+        self.visit_children(node)
+
+    def visit_Delete(self, node):
+        self.visit_children(node)
+
+    def visit_AnnotatedAssignment(self, node):
+        if node.value is not None:
+            self.visit_Node(node)
+        else:
+            self.visit_children(node)
+
+    def visit_ClassDefinition(self, node):
+        for expression in (*node.arguments, *node.decorators):
+            expression.accept(self)
 
 
 class _ReceiverFieldTarget(ast.Visitor):

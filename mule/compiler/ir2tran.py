@@ -324,9 +324,10 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
         rhs_type = vop.args[1].tn.type or UNKNOWN
         return rhs_type.fits_dict() or rhs_type.fits_set()
     if name in ("full-call", "local-extent-call") and vop.args:
-        return ref is vop.args[0] or any(
-            ref is vop.args[index + 1]
-            for index in linked(vop.codegen_info, vop, "call site").borrowable_arguments
+        site = linked(vop.codegen_info, vop, "call site")
+        offset = 1 if site.callee_required else 0
+        return (site.callee_required and ref is vop.args[0]) or any(
+            ref is vop.args[index + offset] for index in site.borrowable_arguments
         )
     if name == "call-resolved":
         info = vop.codegen_info
@@ -408,6 +409,46 @@ class CallSite:
     proven: bool
     borrowable_arguments: frozenset[int] = frozenset()
     local_environment: bool = False
+    final_binding: bool = False
+    callee_required: bool = True
+
+
+def _final_call_needs_object(target, call, caller):
+    if target.takes_closure or target.namespace != caller.namespace:
+        return True
+    keywords = call.info.keywords if call.info is not None else ()
+    order = target.call_order(keywords, len(call.args))
+    return order is None or any(index < 0 for index in order)
+
+
+class _FinalBindingRef(NodeVisitor, LeafVisitor):
+    def __init__(self, context):
+        self.context = context
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_GlobalVar(self, leaf):
+        return leaf.final_function if leaf in self.context.final_bindings else None
+
+
+class _ObjectFreeFinalUse(NodeVisitor):
+    def __init__(self, lvar, target, caller):
+        self.lvar, self.target, self.caller = lvar, target, caller
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node):
+        return node.fun is self.lvar and not _final_call_needs_object(
+            self.target, node, self.caller
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,12 +675,10 @@ def select_tuple_delivery(component, arities, method_targets):
             ):
                 if producer.info is vops.FULL_CALL:
                     site = producer.codegen_info
+                    arg_count = len(producer.args) - (1 if site.callee_required else 0)
                     if (
                         arities.get(site.target) == arity
-                        and site.target.call_order(
-                            site.keywords, len(producer.args) - 1
-                        )
-                        is not None
+                        and site.target.call_order(site.keywords, arg_count) is not None
                     ):
                         call = producer
                 elif producer.info is vops.LOCAL_EXTENT_CALL:
@@ -743,10 +782,10 @@ def select_tuple_delivery(component, arities, method_targets):
                 )
             else:
                 site = call.codegen_info
+                arg_count = len(call.args) - (1 if site.callee_required else 0)
                 direct = (
                     site.target is not None
-                    and site.target.call_order(site.keywords, len(call.args) - 1)
-                    is not None
+                    and site.target.call_order(site.keywords, arg_count) is not None
                 )
             if direct:
                 plan.direct_assertions[call] = assertion
@@ -1292,6 +1331,7 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 if (
                     reader.info is not vops.FULL_CALL
                     or not reader.args
+                    or not reader.codegen_info.callee_required
                     or ref is not reader.args[0]
                     or not reader.codegen_info.proven
                     or reader.codegen_info.keywords
@@ -2935,6 +2975,14 @@ class _LoadLeaf(LeafVisitor):
         self.load(vops.CONSTANT, info=leaf.value)
 
     def visit_GlobalVar(self, leaf: GlobalVar):
+        node = linked(self.node, self, "reference node")
+        final_target = node.accept(_FinalBindingRef(self.converter.context))
+        if final_target is not None and node.lvar is not None:
+            consumer = node.lvar.dest
+            if consumer is not None and consumer.accept(
+                _ObjectFreeFinalUse(node.lvar, final_target, self.converter.lambda_)
+            ):
+                return
         self.load(vops.LOAD_GLOBAL, info=leaf)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
@@ -3454,7 +3502,11 @@ class _Converter(NodeVisitor):
         self.current = self.component.ir2_blocks[block]
         # SBCL ir2-convert: Bind emits its own entry poll, while the loop
         # analysis identifies natural and strange loop heads here.
-        if block.loop is not None and block.loop.is_header(block):
+        if (
+            self.lambda_.policy.inserts_safepoints
+            and block.loop is not None
+            and block.loop.is_header(block)
+        ):
             self.emit(vops.INSERT_SAFEPOINT, block.start.next)
         self._skipped_nodes.clear()
         self._fused_range_prepares.clear()
@@ -3614,7 +3666,8 @@ class _Converter(NodeVisitor):
                     args=(environment.cells[var], value),
                 )
 
-        self.emit(vops.INSERT_SAFEPOINT, node)
+        if self.lambda_.policy.inserts_safepoints:
+            self.emit(vops.INSERT_SAFEPOINT, node)
 
     def cell(self, node, var):
         """Load the cell object of a captured-and-assigned variable."""
@@ -3912,6 +3965,13 @@ class _Converter(NodeVisitor):
             target,
             proven,
             borrowable,
+            final_binding=fun.use().accept(_FinalBindingRef(self.context)) is target
+            and target is not None,
+            callee_required=not (
+                target is not None
+                and fun.use().accept(_FinalBindingRef(self.context)) is target
+                and not _final_call_needs_object(target, node, self.lambda_)
+            ),
         )
         result, discard = self.result_tn(node)
         if discard and not proven:
@@ -3924,7 +3984,10 @@ class _Converter(NodeVisitor):
         self.emit(
             template,
             node,
-            args=(self.lvar_tn(fun), *(self.lvar_tn(arg) for arg in node.args)),
+            args=(
+                *((self.lvar_tn(fun),) if site.callee_required else ()),
+                *(self.lvar_tn(arg) for arg in node.args),
+            ),
             results=(result,),
             info=site,
         )

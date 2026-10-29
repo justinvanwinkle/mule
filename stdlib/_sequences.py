@@ -5832,6 +5832,8 @@ from _exceptiongroup import (  # noqa: E402
 )
 from _object import _install_code_fields  # noqa: E402
 from _object import _install_builtin_descriptors  # noqa: E402
+# The runtime calls complete_class for classes it builds without type.__new__.
+from _object import complete_class  # noqa: E402, F401
 
 
 def except_star_start(exc):

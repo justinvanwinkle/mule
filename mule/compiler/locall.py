@@ -70,6 +70,7 @@ from .ctype import (
     UNKNOWN,
     ClassType,
     DictType,
+    FunctionType,
     InstanceType,
     IntegerType,
     ListType,
@@ -646,6 +647,17 @@ class LambdaFacts:
     parameters: tuple[ValueType, ...] = ()
     element_contracts: dict[object, object] = field(default_factory=dict)
     in_bounds_nodes: frozenset[object] = frozenset()
+    final_bindings: tuple[GlobalVar, ...] = ()
+
+    def ready_final_facts(self, types, targets):
+        """Facts valid after the body's final-binding readiness guard."""
+        ready_types, ready_targets = dict(types), dict(targets)
+        for binding in self.final_bindings:
+            for ref in binding.refs:
+                if ref in types:
+                    ready_types[ref] = FunctionType(target=binding.final_function)
+                    ready_targets[ref] = binding.final_function
+        return ready_types, ready_targets
 
     def method_return_type(self, receiver: ValueType) -> ValueType:
         """Predict a method result without narrowing its ordinary arguments.
@@ -3661,6 +3673,22 @@ def analyze(
                 return UNKNOWN
         return callee.target.derive_return_type(arguments, keywords)
 
+    def _proven_globals_for(lam: Lambda) -> frozenset[str]:
+        if lam.kind is FunctionalKind.TOPLEVEL:
+            return frozenset()
+        base = proven_by_namespace.get(lam.namespace, frozenset())
+        sname = lam.source_name
+        if (
+            lam.policy.recognizes_self_calls
+            and lam.method_class is None
+            and sname is not None
+            and sname not in base
+            and global_counts.get(lam.namespace, {}).get(sname, 0) <= 1
+            and global_targets.get(lam.namespace, {}).get(sname) is lam
+        ):
+            return base | {sname}
+        return base
+
     def _propagate_for_deriver(
         target_lam: Lambda, param_types: tuple[ValueType, ...], mode: str
     ) -> Body | None:
@@ -3690,11 +3718,7 @@ def analyze(
             return None
         active_derivations.add(active_key)
         try:
-            proven_globals = (
-                proven_by_namespace.get(target_lam.namespace, frozenset())
-                if target_lam.kind is not FunctionalKind.TOPLEVEL
-                else frozenset()
-            )
+            proven_globals = _proven_globals_for(target_lam)
             with flow_propagation():
                 body = propagate(
                     target_lam,
@@ -3805,9 +3829,7 @@ def analyze(
                     _resolve_deriver_call,
                     AnnotationLedger(),
                     graph=_current_graph(target_lam),
-                    proven_globals=proven_by_namespace.get(
-                        target_lam.namespace, frozenset()
-                    ),
+                    proven_globals=_proven_globals_for(target_lam),
                     rebound_globals=rebound_by_namespace.get(
                         target_lam.namespace, frozenset()
                     ),
@@ -3996,11 +4018,7 @@ def analyze(
                     old_summary = summaries[key]
                 else:
                     consulted.clear()
-                    proven_globals = (
-                        proven_by_namespace.get(lambda_.namespace, frozenset())
-                        if lambda_.kind is not FunctionalKind.TOPLEVEL
-                        else frozenset()
-                    )
+                    proven_globals = _proven_globals_for(lambda_)
                     with flow_propagation():
                         body = propagate(
                             lambda_,
@@ -4802,6 +4820,13 @@ def analyze(
                 )
             )
         facts.variants = tuple(entries)
+        if lambda_.kind is not FunctionalKind.TOPLEVEL:
+            facts.final_bindings = tuple(
+                leaf
+                for leaf in global_leaves[lambda_.namespace].values()
+                if leaf.final_function is not None
+                and any(ref in facts.types for ref in leaf.refs)
+            )
         results[lambda_] = facts
         _mark_guarded_calls(graph, general)
         _publish_derived_types(lambda_, graph, facts.types)

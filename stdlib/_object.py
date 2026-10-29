@@ -18,11 +18,14 @@ from _mule_native import bound_method_receiver
 from _mule_native import bound_method_function
 from _mule_native import class_base
 from _mule_native import class_bases
+from _mule_native import set_class_bases
 from _mule_native import class_subclasses
 from _mule_native import class_lookup
 from _mule_native import class_lookup_default
 from _mule_native import class_mro
 from _mule_native import class_name
+from _mule_native import class_qualname
+from _mule_native import class_bind
 from _mule_native import class_own_names
 from _mule_native import default_repr
 from _mule_native import generic_get_attribute
@@ -60,6 +63,7 @@ from _mule_native import math_fabs
 from _mule_native import register_type
 from _mule_native import traceback_field
 from _mule_native import set_class_name
+from _mule_native import set_class_qualname
 from _mule_native import type_of
 from _mule_native import typed_value
 from _mule_native import function_attributes
@@ -614,12 +618,6 @@ class type(object):
                 value = staticmethod(value)
             names.append(key)
             values.append(value)
-        if "__qualname__" not in namespace:
-            names.append("__qualname__")
-            values.append(name)
-        if "__doc__" not in namespace:
-            names.append("__doc__")
-            values.append(None)
         if changed and "__orig_bases__" not in namespace:
             names.append("__orig_bases__")
             values.append(original_bases)
@@ -654,7 +652,8 @@ class type(object):
         if _slot_descriptors_ready:
             for slot in slots:
                 accessor = _SlotAccessor(slot)
-                setattr(cls, slot, member_descriptor(cls, slot, property(accessor.get, accessor.set, accessor.delete)))
+                class_bind(cls, slot, member_descriptor(cls, slot, property(accessor.get, accessor.set, accessor.delete)))
+        complete_class(cls, raw_slot_tuple)
         index = 0
         while index < len(names):
             hook = getattr(type_of(values[index]), "__set_name__", None)
@@ -760,16 +759,38 @@ def _bases(cls):
     return class_bases(cls)
 
 
+def _set_bases(cls, bases):
+    # type_set_bases: argument checks here, layout checks in set_class_bases.
+    name = class_name(cls)
+    if cls.__module__ == "builtins":
+        raise TypeError(f"cannot set '__bases__' attribute of immutable type '{name}'")
+    if type_of(bases) is not tuple:
+        raise TypeError(
+            f"can only assign tuple to {name}.__bases__, not {type_of(bases).__name__}"
+        )
+    if not bases:
+        raise TypeError(f"can only assign non-empty tuple to {name}.__bases__, not ()")
+    for base in bases:
+        if not is_class(base):
+            raise TypeError(
+                f"{name}.__bases__ must be tuple of classes, not '{type_of(base).__name__}'"
+            )
+    set_class_bases(cls, bases)
+
+
 def _namespace(cls):
     return mappingproxy(_ClassDict(cls))
 
 
-object.__class__ = property(type_of)
-type.__name__ = property(class_name, set_class_name)
-type.__base__ = property(class_base)
-type.__bases__ = property(_bases)
-type.__mro__ = property(class_mro)
-type.__dict__ = property(_namespace)
+# These fill the builtin types' own namespaces directly, as PyType_Ready does;
+# an assignment would run the data descriptors type already has.
+class_bind(object, "__class__", property(type_of))
+class_bind(type, "__name__", property(class_name, set_class_name))
+class_bind(type, "__qualname__", property(class_qualname, set_class_qualname))
+class_bind(type, "__base__", property(class_base))
+class_bind(type, "__bases__", property(_bases, _set_bases))
+class_bind(type, "__mro__", property(class_mro))
+class_bind(type, "__dict__", property(_namespace))
 
 
 class _InstanceDict(object):
@@ -956,9 +977,81 @@ def _delete_object_dictionary(owner):
     _object_dictionary(owner).clear()
 
 
-object.__dict__ = property(
-    _object_dictionary, _set_object_dictionary, _delete_object_dictionary
+class_bind(
+    object,
+    "__dict__",
+    property(_object_dictionary, _set_object_dictionary, _delete_object_dictionary),
 )
+
+
+def _first_weak_reference(owner):
+    # _weakref imports this module, so it is imported when first used.
+    from _weakref import getweakrefs
+
+    references = getweakrefs(owner)
+    return references[0] if references else None
+
+
+def _declares_instance_storage(owner, name):
+    """Whether ``owner`` itself gives its instances ``name`` storage.
+
+    A class adds an instance ``__dict__`` or ``__weakref__`` when it defines
+    that name and its ``__slots__``, if any, request it: type_new's
+    ``add_dict`` and ``add_weak``, recorded here by the namespace entry that
+    ``complete_class`` binds or the class body defines. ``object`` binds a
+    ``__dict__`` accessor without giving its own instances one.
+    """
+    if owner is object:
+        return False
+    names = class_own_names(owner)
+    if name not in names:
+        return False
+    if "__slots__" not in names:
+        return True
+    slots = class_lookup(owner, "__slots__")
+    return slots == name or not is_instance(slots, str) and name in slots
+
+
+def complete_class(cls, declared_slots):
+    """Fill a new class's own namespace as CPython's PyType_Ready does.
+
+    After the class body's entries and slot members come the ``__dict__``
+    and ``__weakref__`` accessors the class introduces (``type_add_getset``)
+    and then ``__doc__`` when the body defined none (``type_dict_set_doc``).
+    Entries the body already defined are kept. ``declared_slots`` is the
+    class's ``__slots__`` as a tuple, or None when it declared none.
+    """
+    if not _slot_descriptors_ready:
+        return
+    ancestors = class_mro(cls)[1:]
+    if declared_slots is None:
+        wants_dict = wants_weak = True
+    else:
+        wants_dict = "__dict__" in declared_slots
+        wants_weak = "__weakref__" in declared_slots
+    names = class_own_names(cls)
+    if (
+        wants_dict
+        and "__dict__" not in names
+        and not any(_declares_instance_storage(owner, "__dict__") for owner in ancestors)
+    ):
+        accessor = property(
+            _object_dictionary, _set_object_dictionary, _delete_object_dictionary
+        )
+        class_bind(cls, "__dict__", getset_descriptor(cls, "__dict__", accessor))
+    # Variable-size builtins cannot carry a weak reference list (CPython
+    # requires tp_itemsize == 0); the others already have one.
+    weak_capable = not any(
+        owner in (int, tuple, bytes)
+        or owner in (type, function, builtin_function_or_method, method, code, set, frozenset)
+        or _declares_instance_storage(owner, "__weakref__")
+        for owner in ancestors
+    )
+    if wants_weak and "__weakref__" not in names and weak_capable:
+        accessor = property(_first_weak_reference)
+        class_bind(cls, "__weakref__", getset_descriptor(cls, "__weakref__", accessor))
+    if "__doc__" not in names:
+        class_bind(cls, "__doc__", None)
 
 
 def vars(*args):
@@ -2951,14 +3044,14 @@ def _install_builtin_descriptors():
                 setattr(owner, "__new__", staticmethod(value))
     for owner, names in (
         (object, ("__class__", "__dict__")),
-        (type, ("__name__", "__base__", "__bases__", "__mro__", "__dict__", "__annotations__")),
+        (type, ("__name__", "__qualname__", "__base__", "__bases__", "__mro__", "__dict__", "__annotations__")),
         (function, ("__code__", "__defaults__", "__kwdefaults__", "__annotations__", "__annotate__", "__dict__")),
     ):
         for name in names:
-            setattr(owner, name, getset_descriptor(owner, name, class_lookup(owner, name)))
+            class_bind(owner, name, getset_descriptor(owner, name, class_lookup(owner, name)))
     for owner, names in ((function, ("__globals__", "__closure__")), (method, ("__self__", "__func__"))):
         for name in names:
-            setattr(owner, name, member_descriptor(owner, name, class_lookup(owner, name)))
+            class_bind(owner, name, member_descriptor(owner, name, class_lookup(owner, name)))
     for name in (
         "__init__",
         "__repr__",

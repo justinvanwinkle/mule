@@ -7,6 +7,7 @@ run on a standard Python interpreter.
 """
 
 __all__ = (
+    "final",
     "float16",
     "float32",
     "float64",
@@ -101,3 +102,12 @@ def optimize(*, speed=None, safety=None, debug=None):
         return function
 
     return preserve
+
+
+def final(obj):
+    """Declare a function, method, or class as final."""
+    try:
+        obj.__final__ = True
+    except AttributeError, TypeError:
+        pass
+    return obj

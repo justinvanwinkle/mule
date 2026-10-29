@@ -305,6 +305,13 @@ def load_local(gen, vop):
 @define_vop("load-global", results=(None,))
 def load_global(gen, vop):
     result = vop.results[0]
+    if vop.codegen_info in gen.context.final_bindings:
+        cell = gen.module.cell(vop.codegen_info.namespace, vop.codegen_info.name)
+        value = gen.operation(f"load ptr, ptr {cell}, !nonnull !{{}}")
+        if result.tn.sc.owned:
+            value = gen.retain(value)
+        gen.publish(result, value)
+        return
     if result.tn.sc is CLASS:
         # A native body's class dependency was loaded and guarded at entry.
         gen.store(result, gen.dependency(vop.codegen_info))
@@ -996,8 +1003,8 @@ def local_call(gen, vop):
 def full_call(gen, vop):
     result = vop.results[0]
     site = vop.codegen_info
-    function = gen.take(vop.args[0])
-    arguments = vop.args[1:]
+    function = gen.take(vop.args[0]) if site.callee_required else "null"
+    arguments = vop.args[1:] if site.callee_required else vop.args
     values = [gen.take(argument) for argument in arguments]
     value = gen.call(
         site,
@@ -1008,7 +1015,8 @@ def full_call(gen, vop):
         result_contract=gen.call_result_contract(vop),
     )
     gen.publish(result, value)
-    gen.release(function)
+    if site.callee_required:
+        gen.release(function)
     gen.check_pointer(value)
     gen.refine(result.tn, value)
 

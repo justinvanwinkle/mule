@@ -235,6 +235,7 @@ class NumericEntry:
     symbol: str
     proven: bool = True
     result_contract: object = None
+    callee_required: bool = True
 
 
 def _numeric_argument_fits(actual, expected) -> bool:
@@ -352,9 +353,10 @@ def select_numeric_calls(module, component) -> bool:
         progress = False
         for vop in pending:
             site = vop.codegen_info
+            call_args = vop.args[1:] if site.callee_required else vop.args
             borrowed_args = frozenset(
                 index
-                for index, ref in enumerate(vop.args[1:])
+                for index, ref in enumerate(call_args)
                 if ref.tn.borrowed_from is not None
                 and (
                     ref.tn.sc.owned
@@ -372,7 +374,7 @@ def select_numeric_calls(module, component) -> bool:
                     target in module.native_plans
                     and (site.proven or module.native_plans[target].dependencies)
                 )
-                or target.call_order((), len(vop.args) - 1)
+                or target.call_order((), len(call_args))
                 != tuple(range(len(target.vars)))
             ):
                 continue
@@ -433,7 +435,7 @@ def select_numeric_calls(module, component) -> bool:
                     continue
             elif not fact.is_fixnum:
                 continue
-            arguments = tuple(arg.tn.type or UNKNOWN for arg in vop.args[1:])
+            arguments = tuple(arg.tn.type or UNKNOWN for arg in call_args)
             general, variants = module.contexts(target)
             # Keep guarded layout specialization rather than replacing it with
             # a generic scalar body that performs field lookup in its loop.
@@ -503,11 +505,15 @@ def select_numeric_calls(module, component) -> bool:
             vop.info = replace(
                 vops.LOCAL_CALL,
                 args=(
-                    (REFERENCE,) if site.local_environment else OBJECT,
+                    *(
+                        (((REFERENCE,) if site.local_environment else OBJECT),)
+                        if site.callee_required
+                        else ()
+                    ),
                     *restrictions,
                 ),
                 arg_escapes=(
-                    False,
+                    *((False,) if site.callee_required else ()),
                     *(
                         sc is DESCRIPTOR and i not in entry.context.borrowed_parameters
                         for i, sc in enumerate(convention.parameters)
@@ -519,11 +525,12 @@ def select_numeric_calls(module, component) -> bool:
             )
             vop.codegen_info = (
                 entry
-                if site.proven
+                if site.proven and site.callee_required
                 else replace(
                     entry,
-                    proven=False,
+                    proven=site.proven,
                     result_contract=result_contract,
+                    callee_required=site.callee_required,
                 )
             )
             progress = changed = True

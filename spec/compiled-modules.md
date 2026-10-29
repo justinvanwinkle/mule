@@ -421,6 +421,32 @@ Class-body namespaces contain `__doc__` only for an actual leading docstring;
 `type.__new__` supplies the default later. This permits a declared `__doc__`
 slot without falsely reporting a conflict with an implicit None binding.
 
+Class namespaces otherwise match CPython 3.14's entries and order. The class
+statement stores `__module__`, `__qualname__` and `__firstlineno__` (the first
+decorator's line for a decorated class) before the body and
+`__static_attributes__` after it, following `codegen_class_body` in
+`Python/codegen.c`. `__static_attributes__` is the sorted tuple of names the
+body's functions assign as `self.NAME` (`_PyCompile_MaybeAddStaticAttributeToClass`);
+the receiver must literally be named `self`, and augmented assignment and
+`del` do not count. Type creation removes `__qualname__` from the namespace and
+keeps it on the class layout, as `ht_qualname`; `type.__qualname__` reads and
+assigns it. The compiled `complete_class` then adds what `PyType_Ready` adds:
+`__dict__` and `__weakref__` getset descriptors on the first class in a chain
+to give its instances that storage (`type_new_slots`, `type_add_getset`), never
+replacing a name the body defines, and then `__doc__ = None` when absent
+(`type_dict_set_doc`). Both `type.__new__` and the runtime's direct class path
+run it. Assigning an attribute on a class consults data descriptors on its
+metaclass first (`type_setattro`), so the builtin types' own descriptors are
+installed with `class_bind` rather than by assignment. `type.__bases__`
+assignment follows `type_set_bases`: compiled Python checks the argument, and
+the runtime rejects cycles and layout changes, recomputes the MRO of the class
+and every subclass before committing any of them, and moves the class between
+its old and new bases' subclass lists. Mule checks layout compatibility by
+field names and slot kinds, since its instances store fields by layout rather
+than at CPython's fixed offsets. A non-text `__qualname__` in a `type()`
+namespace raises TypeError. `type(name, bases, namespace)` without a
+`__module__` entry does not yet take it from the caller's globals.
+
 `sys._clear_type_descriptors` removes a heap class's own `__dict__` and
 `__weakref__` attributes before dataclasses copy its namespace into a replacement
 slotted class. Other attributes and inherited descriptors remain intact;

@@ -155,6 +155,8 @@ class EntryContext:
     base_escape_facts: object = None
     local_environments: object = None
     codegen_info: dict = field(default_factory=dict)
+    final_bindings: tuple = ()
+    final_fallback: str | None = None
 
     def type_of(self, node) -> ValueType:
         return self.types.get(node, UNKNOWN)
