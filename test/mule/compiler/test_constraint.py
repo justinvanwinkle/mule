@@ -558,7 +558,8 @@ def test_argument_types_propagate_through_multiple_local_calls():
     assert (returned.minimum, returned.maximum) == (4, 4)
     # The call inside wrapper is only predicted, so wrapper publishes no range.
     assert observed(compilation, wrapper).return_type == UNKNOWN
-    assert last_fact(compilation, function(compilation, 0), calls) == UNKNOWN
+    # This caller derives an integer result from its current definition and input.
+    assert last_fact(compilation, function(compilation, 0), calls) == INTEGER
 
 
 def test_source_defined_global_call_gets_only_flow_proven_return_facts():
