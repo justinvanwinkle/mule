@@ -518,11 +518,11 @@ def recursive_calls():
     return compilation, function(compilation, 1)
 
 
-def test_recursive_argument_propagation_widens_before_publication():
+def test_recursive_argument_propagation_preserves_proven_bound():
     compilation, recursive = recursive_calls()
     context = observed(compilation, recursive)
     assert context.parameters[0].minimum == 3
-    assert context.parameters[0].maximum == 2**62 - 1
+    assert context.parameters[0].maximum == 100
     assert fact(compilation, recursive, loads(recursive)[0]) == UNKNOWN
 
 
