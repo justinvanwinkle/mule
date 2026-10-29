@@ -157,6 +157,115 @@ class ComprehensionScope:
     class_depth: int
     enclosing_statement: ast.Statement | None = None
     enclosing_body: tuple[ast.Statement, ...] = ()
+    generator_fusion: _GeneratorFusion | None = None
+    outer_iteration: tuple[ast.For, _PreparedIteration] | None = None
+
+
+class _PreparedIteration:
+    """Preparation consumed by a physical loop or an inlined generator loop."""
+
+    __slots__ = ()
+
+    def convert(self, statements, start, next_, node):
+        raise NotImplementedError("prepared iteration has no loop lowering")
+
+
+@dataclass(slots=True)
+class _ForIteration(_PreparedIteration):
+    """Owned iterator and optional range-call evidence consumed by for lowering."""
+
+    iterator: LambdaVar
+    candidate: ast.Call | None
+    callee: LambdaVar | None
+    arguments: tuple[Lvar, ...]
+
+    def convert(self, statements, start, next_, node):
+        statements.for_iteration(start, next_, node, self)
+
+
+@dataclass(slots=True)
+class _FusedIteration(_PreparedIteration):
+    """A generator body remains deferred after its outer iterator is obtained."""
+
+    expression: ast.Comprehension
+    outer: _PreparedIteration
+
+    def convert(self, statements, start, next_, node):
+        statements.for_generator(start, next_, node, self.expression, self.outer)
+
+
+@dataclass(slots=True)
+class _InlineBody(ast.Pass):
+    """A conversion-time suite that remains visible to source-tree visitors."""
+
+    body: list[ast.Statement]
+
+    def children(self):
+        yield from self.body
+
+
+class _GeneratorFusion:
+    """Retain a generator's exception boundary after its consumer is inlined."""
+
+    def __init__(self, body, span):
+        self.protected = _InlineBody([], span=span)
+        self.consumer = _InlineBody(body, span=span)
+        self.outer_cleanup: Cleanup | None = None
+
+    def convert_statement(self, function, start, next_, statement) -> bool:
+        if statement is self.protected:
+            self.convert_body(function, start, next_)
+            return True
+        if statement is not self.consumer:
+            return False
+        # Yielded-value consumers execute in the caller, not the generator.
+        # Start fresh blocks on both sides: error destinations belong to blocks.
+        done = function.block()
+        with function.with_cleanup(self.outer_cleanup):
+            body = function.block()
+            function.jump(start, body)
+            frontier = function.convert_body(body.start, self.consumer.body)
+            if frontier is not None:
+                function.jump(frontier, done)
+        function.flow(done.start, next_)
+        return True
+
+    def convert_body(self, function, start, next_):
+        self.outer_cleanup = function.lexenv.cleanup
+        dispatch, done = function.block(), function.block()
+        region = Cleanup(
+            CleanupKind.HANDLER_REGION,
+            target=dispatch,
+            parent=self.outer_cleanup,
+        )
+        with function.with_cleanup(region):
+            body = function.block()
+            function.jump(start, body)
+            frontier = function.convert_body(body.start, self.protected.body)
+            if frontier is not None:
+                function.jump(frontier, done)
+        caught_ctran, caught = Ctran(), Lvar()
+        function.known(
+            dispatch.start,
+            caught_ctran,
+            caught,
+            fndb.CATCH_EXCEPTION,
+            (),
+            self.protected,
+        )
+        resumed, error = Ctran(), Lvar()
+        function.protocol(
+            caught_ctran,
+            resumed,
+            error,
+            "generator_exception",
+            (caught,),
+            self.protected,
+        )
+        function.known(
+            resumed, None, None, fndb.RESUME_EXCEPTION, (error,), self.protected
+        )
+        function.flow(done.start, next_)
 
 
 @dataclass(slots=True, eq=False)
@@ -961,6 +1070,59 @@ class FunctionConverter:
     def fusible_generator_expression(self, node: ast.Node) -> ast.Comprehension | None:
         return node.accept(_FusibleGeneratorExpression(bool(self.class_scopes)))
 
+    def prepare_generator_iteration(self, start, genexpr, source):
+        """Obtain the outer iterator while retaining nested generator fusion."""
+        iterable = genexpr.clauses[0].iterable
+        nested = self.fusible_generator_expression(iterable)
+        targets: set[str] = set()
+        for clause in genexpr.clauses:
+            clause.target.accept(_BoundNames(targets))
+        if (
+            nested is None
+            or self.class_scopes
+            or iterable.accept(_MentionsComprehensionScope(targets))
+        ):
+            # Match direct_outer: the nested body's names must not resolve
+            # through the consuming comprehension's hidden target bindings.
+            return self.prepare_iteration(start, iterable, source)
+        current, outer = self.prepare_generator_iteration(start, nested, source)
+        return current, _FusedIteration(nested, outer)
+
+    def prepare_iteration(self, start, iterable, source):
+        """Evaluate an iterable and obtain its iterator once, before its loop."""
+        candidate = iterable.accept(_RangeCandidate())
+        callee = None
+        arguments = []
+        current = start
+        if candidate is not None:
+            callee = self.temporary()
+            ctran, callable_ = self.value(current, candidate.function)
+            current = Ctran()
+            self.set_var(ctran, current, callee, callable_, candidate.function)
+            for argument in candidate.arguments:
+                current, value = self.value(current, argument.value)
+                arguments.append(value)
+            ctran, loaded = Ctran(), Lvar()
+            self.ref(current, ctran, loaded, callee, candidate)
+            current, value = Ctran(), Lvar()
+            self.full_call(
+                ctran,
+                current,
+                value,
+                loaded,
+                tuple(arguments),
+                candidate,
+                CallInfo((), self.converter.location(candidate)),
+            )
+        else:
+            current, value = self.value(current, iterable)
+        iterator = self.temporary()
+        ctran, iterated = Ctran(), Lvar()
+        self.protocol(current, ctran, iterated, "iterate", (value,), source)
+        current = Ctran()
+        self.set_var(ctran, current, iterator, iterated, source)
+        return current, _ForIteration(iterator, candidate, callee, tuple(arguments))
+
     def drive_iterable(
         self,
         start: Ctran,
@@ -969,12 +1131,13 @@ class FunctionConverter:
         consumer,
         source: ast.Node,
         *,
-        held: LambdaVar | None = None,
+        iteration: _PreparedIteration | None = None,
         pre_statements=(),
         post_statements=(),
         short_circuit_stop=None,
         enclosing_statement: ast.Statement | None = None,
         enclosing_body: tuple[ast.Statement, ...] = (),
+        yield_statements=(),
     ) -> None:
         """Open-code iteration over ``genexpr`` by inlining ``consumer`` at its
         yield site inside a ``ComprehensionScope``, following SBCL's
@@ -986,7 +1149,8 @@ class FunctionConverter:
             clause.target.accept(_BoundNames(targets))
         outer_iterable = genexpr.clauses[0].iterable
         current = start
-        if held is None:
+        held = None
+        if iteration is None:
             direct_outer = (
                 not self.class_scopes
                 and (
@@ -1001,18 +1165,39 @@ class FunctionConverter:
                 current = Ctran()
                 self.set_var(ctran, current, held, iterable, source)
         variables = {name: self.temporary() for name in sorted(targets)}
-        body = consumer(genexpr.element, span)
+        fusion = None
+        if genexpr.kind == ast.ComprehensionKind.GENERATOR:
+            yielded = ast.Name(self.temporary().name, span=span)
+            fusion = _GeneratorFusion(consumer(yielded, span), span)
+            body = [
+                *yield_statements,
+                ast.Assignment([yielded], genexpr.element, span=span),
+                fusion.consumer,
+            ]
+        else:
+            body = consumer(genexpr.element, span)
+        body: list[ast.Statement]
         for index in range(len(genexpr.clauses) - 1, -1, -1):
             clause = genexpr.clauses[index]
             for condition in reversed(clause.conditions):
                 body = [ast.If(condition, body, span=span)]
+            target = clause.target
+            if fusion is not None and index == 0:
+                # Obtaining the outer iterator and advancing it are outside the
+                # generator body; binding its item and running the clauses are not.
+                target = ast.Name(self.temporary().name, span=span)
+                fusion.protected.body = [
+                    ast.Assignment([clause.target], target, span=span),
+                    *body,
+                ]
+                body = [fusion.protected]
             clause_source = (
                 clause.iterable
                 if index > 0 or held is None
                 else ast.Name(held.name, span=span)
             )
             for_stmt: ast.Statement = ast.For(
-                clause.target,
+                target,
                 clause_source,
                 body,
                 is_async=clause.is_async,
@@ -1036,6 +1221,10 @@ class FunctionConverter:
                 len(self.class_scopes),
                 enclosing_statement=enclosing_statement,
                 enclosing_body=enclosing_body,
+                generator_fusion=fusion,
+                outer_iteration=(for_stmt, iteration)
+                if iteration is not None
+                else None,
             )
         )
         try:
@@ -1044,8 +1233,68 @@ class FunctionConverter:
             self.comprehension_scopes.pop()
         if held is not None:
             self.discard(frontier, next_, held.name, source)
-        else:
+        elif frontier is not None:
             self.flow(frontier, next_)
+
+    def collect_comprehension(
+        self, start, next_, result, node, kind, *, key=None, iteration=None
+    ):
+        """Collect an inlined comprehension without discarding generator origin."""
+        span = node.span
+        accumulator = self.temporary()
+        result_name = ast.Name(accumulator.name, span=span)
+        yield_statements = []
+        if kind == ast.ComprehensionKind.DICT:
+            if key is None:
+                raise ValueError("dict comprehension requires a key expression")
+            initial: ast.Expression = ast.Dict([], span=span)
+            key_name = ast.Name(self.temporary().name, span=span)
+            key_assignment = ast.Assignment([key_name], key, span=span)
+            prefix = [key_assignment]
+            if node.kind == ast.ComprehensionKind.GENERATOR:
+                # A fused pair evaluates both components before yielding;
+                # hashing and inserting the key belong to the dict consumer.
+                yield_statements = prefix
+                prefix = []
+
+            def consumer(elem, s):
+                return [
+                    *prefix,
+                    ast.Assignment(
+                        [ast.Subscript(result_name, key_name, span=s)], elem, span=s
+                    ),
+                ]
+
+        else:
+            if kind == ast.ComprehensionKind.LIST:
+                initial, method = ast.List([], span=span), "append"
+            else:
+                initial, method = ast.Set([], span=span), "add"
+
+            def consumer(elem, s):
+                return [
+                    ast.ExpressionStatement(
+                        ast.Call(
+                            ast.Attribute(result_name, method, span=s),
+                            [ast.CallArgument(elem, span=s)],
+                            span=s,
+                        ),
+                        span=s,
+                    )
+                ]
+
+        ctran = Ctran()
+        self.drive_iterable(
+            start,
+            ctran,
+            node,
+            consumer,
+            node,
+            iteration=iteration,
+            pre_statements=[ast.Assignment([result_name], initial, span=span)],
+            yield_statements=yield_statements,
+        )
+        self.ref(ctran, next_, result, accumulator, node, final=True)
 
     # Node construction primitives
 
@@ -1272,6 +1521,12 @@ class FunctionConverter:
         return ctran, lvar
 
     def convert_statement(self, start, next_, statement) -> None:
+        if self.comprehension_scopes:
+            fusion = self.comprehension_scopes[-1].generator_fusion
+            if fusion is not None and fusion.convert_statement(
+                self, start, next_, statement
+            ):
+                return
         if (
             self.comprehension_scopes
             and self.comprehension_scopes[-1].enclosing_statement is statement
@@ -1620,10 +1875,16 @@ class FunctionConverter:
             arg_expr = node.arguments[0].value
             genexpr = self.fusible_generator_expression(arg_expr)
             if genexpr is not None:
-                arg_expr = replace(
-                    genexpr, kind=ast.ComprehensionKind.LIST, span=genexpr.span
+                following, arguments = Ctran(), Lvar()
+                self.collect_comprehension(
+                    ctran,
+                    following,
+                    arguments,
+                    genexpr,
+                    ast.ComprehensionKind.LIST,
                 )
-            following, arguments = self.value(ctran, arg_expr)
+            else:
+                following, arguments = self.value(ctran, arg_expr)
             self.protocol(
                 following,
                 next_,
@@ -2306,52 +2567,14 @@ class _Expressions(ast.Visitor):
         if node.kind == ast.ComprehensionKind.GENERATOR:
             self.generator_expression(node)
             return
-        span = node.span
-        accumulator = function.temporary()
-        result_name = ast.Name(accumulator.name, span=span)
-        if node.kind == ast.ComprehensionKind.DICT:
-            initial: ast.Expression = ast.Dict([], span=span)
-            key_temp = function.temporary()
-            key_name = ast.Name(key_temp.name, span=span)
-
-            def consumer(elem: ast.Expression, s: ast.Span) -> list[ast.Statement]:
-                return [
-                    ast.Assignment([key_name], node.key, span=s),
-                    ast.Assignment(
-                        [ast.Subscript(result_name, key_name, span=s)],
-                        elem,
-                        span=s,
-                    ),
-                ]
-
-        else:
-            if node.kind == ast.ComprehensionKind.LIST:
-                initial, method = ast.List([], span=span), "append"
-            else:
-                initial, method = ast.Set([], span=span), "add"
-
-            def consumer(elem: ast.Expression, s: ast.Span) -> list[ast.Statement]:
-                return [
-                    ast.ExpressionStatement(
-                        ast.Call(
-                            ast.Attribute(result_name, method, span=s),
-                            [ast.CallArgument(elem, span=s)],
-                            span=s,
-                        ),
-                        span=s,
-                    )
-                ]
-
-        ctran = Ctran()
-        function.drive_iterable(
+        function.collect_comprehension(
             start,
-            ctran,
+            next_,
+            result,
             node,
-            consumer,
-            node,
-            pre_statements=[ast.Assignment([result_name], initial, span=span)],
+            node.kind,
+            key=node.key,
         )
-        function.ref(ctran, next_, result, accumulator, node, final=True)
 
     def visit_List(self, node):
         self.display(
@@ -3547,6 +3770,11 @@ class _Statements(ast.Visitor):
                 function.error("'async for' outside async function", node)
             self.expanded(start, next_, _async_for(function, node))
             return
+        if function.comprehension_scopes:
+            prepared = function.comprehension_scopes[-1].outer_iteration
+            if prepared is not None and prepared[0] is node:
+                prepared[1].convert(self, start, next_, node)
+                return
         genexpr = (
             function.fusible_generator_expression(node.iterable)
             if not node.else_body
@@ -3556,58 +3784,45 @@ class _Statements(ast.Visitor):
             len(genexpr.clauses) == 1
             or not any(stmt.accept(_CONTAINS_BREAK) for stmt in node.body)
         ):
-            span = node.span
-            item_temp = function.temporary()
-            item_name = ast.Name(item_temp.name, span=span)
-            marker = ast.Pass(span=span)
-            enclosing_body = (
-                ast.Assignment([node.target], item_name, span=span),
-                *node.body,
-            )
-            function.drive_iterable(
-                start,
-                next_,
-                genexpr,
-                lambda elem, s: [
-                    ast.Assignment([item_name], elem, span=s),
-                    marker,
-                ],
-                node,
-                enclosing_statement=marker,
-                enclosing_body=enclosing_body,
-            )
+            self.for_generator(start, next_, node, genexpr)
             return
-        candidate = node.iterable.accept(_RangeCandidate())
-        callee = None
-        current = start
-        if candidate is not None:
-            callee = function.temporary()
-            ctran, callable_ = function.value(current, candidate.function)
-            current = Ctran()
-            function.set_var(ctran, current, callee, callable_, candidate.function)
-            arguments = []
-            for argument in candidate.arguments:
-                current, value = function.value(current, argument.value)
-                arguments.append(value)
-            ctran, loaded = Ctran(), Lvar()
-            function.ref(current, ctran, loaded, callee, candidate)
-            current, value = Ctran(), Lvar()
-            function.full_call(
-                ctran,
-                current,
-                value,
-                loaded,
-                tuple(arguments),
-                candidate,
-                CallInfo((), function.converter.location(candidate)),
-            )
-        else:
-            current, value = function.value(current, node.iterable)
-        iterator = function.temporary()
-        ctran, iterated = Ctran(), Lvar()
-        function.protocol(current, ctran, iterated, "iterate", (value,), node)
-        current = Ctran()
-        function.set_var(ctran, current, iterator, iterated, node)
+        current, iteration = function.prepare_iteration(start, node.iterable, node)
+        self.for_iteration(current, next_, node, iteration)
+
+    def for_generator(self, start, next_, node, genexpr, iteration=None):
+        """Inline yielded values into the enclosing loop's existing consumer."""
+        function = self.function
+        span = node.span
+        item_temp = function.temporary()
+        item_name = ast.Name(item_temp.name, span=span)
+        marker = ast.Pass(span=span)
+        enclosing_body = (
+            ast.Assignment([node.target], item_name, span=span),
+            *node.body,
+        )
+        function.drive_iterable(
+            start,
+            next_,
+            genexpr,
+            lambda elem, s: [
+                ast.Assignment([item_name], elem, span=s),
+                marker,
+            ],
+            node,
+            iteration=iteration,
+            enclosing_statement=marker,
+            enclosing_body=enclosing_body,
+        )
+
+    def for_iteration(self, current, next_, node, iteration: _ForIteration):
+        """Consume prepared iterator ownership through the shared for loop."""
+        function = self.function
+        iterator = iteration.iterator
+        candidate, callee, arguments = (
+            iteration.candidate,
+            iteration.callee,
+            iteration.arguments,
+        )
         generic, range_done = function.block(), function.block()
         if callee is not None:
             state = RangeState(
@@ -6395,25 +6610,31 @@ class _CallTarget(ast.Visitor):
             return False
         span = self.call.span
         if name == "list" and len(arguments) == 1:
-            function.convert(
+            function.collect_comprehension(
                 self.start,
                 self.next,
                 self.result,
-                replace(genexpr, kind=ast.ComprehensionKind.LIST, span=span),
+                genexpr,
+                ast.ComprehensionKind.LIST,
             )
             return True
         if name == "set" and len(arguments) == 1:
-            function.convert(
+            function.collect_comprehension(
                 self.start,
                 self.next,
                 self.result,
-                replace(genexpr, kind=ast.ComprehensionKind.SET, span=span),
+                genexpr,
+                ast.ComprehensionKind.SET,
             )
             return True
         if name == "tuple" and len(arguments) == 1:
-            ctran, items = function.value(
+            ctran, items = Ctran(), Lvar()
+            function.collect_comprehension(
                 self.start,
-                replace(genexpr, kind=ast.ComprehensionKind.LIST, span=span),
+                ctran,
+                items,
+                genexpr,
+                ast.ComprehensionKind.LIST,
             )
             function.protocol(
                 ctran, self.next, self.result, "tuple_from_list", (items,), self.call
@@ -6421,9 +6642,13 @@ class _CallTarget(ast.Visitor):
             return True
         if name == "frozenset" and len(arguments) == 1:
             ctran, callee = function.value(self.start, node)
-            following, items = function.value(
+            following, items = Ctran(), Lvar()
+            function.collect_comprehension(
                 ctran,
-                replace(genexpr, kind=ast.ComprehensionKind.SET, span=genexpr.span),
+                following,
+                items,
+                genexpr,
+                ast.ComprehensionKind.SET,
             )
             function.full_call(
                 following,
@@ -6437,16 +6662,30 @@ class _CallTarget(ast.Visitor):
             return True
         if name == "sorted":
             ctran, callee = function.value(self.start, node)
-            operands = (
-                replace(genexpr, kind=ast.ComprehensionKind.LIST, span=genexpr.span),
-                *(arg.value for arg in arguments[1:]),
+            iteration = None
+            operands = []
+            if len(arguments) > 1:
+                ctran, iteration = function.prepare_generator_iteration(
+                    ctran, genexpr, genexpr
+                )
+                for argument in arguments[1:]:
+                    ctran, value = function.value(ctran, argument.value)
+                    operands.append(value)
+            following, items = Ctran(), Lvar()
+            function.collect_comprehension(
+                ctran,
+                following,
+                items,
+                genexpr,
+                ast.ComprehensionKind.LIST,
+                iteration=iteration,
             )
             function.full_call(
-                ctran,
+                following,
                 self.next,
                 self.result,
                 callee,
-                operands,
+                (items, *operands),
                 self.call,
                 CallInfo(self.keywords(), function.converter.location(self.call)),
             )
@@ -6455,17 +6694,13 @@ class _CallTarget(ast.Visitor):
             pair = genexpr.element.accept(_PlainPairElements())
             if pair is not None:
                 key_expr, value_expr = pair
-                function.convert(
+                function.collect_comprehension(
                     self.start,
                     self.next,
                     self.result,
-                    replace(
-                        genexpr,
-                        kind=ast.ComprehensionKind.DICT,
-                        key=key_expr,
-                        element=value_expr,
-                        span=span,
-                    ),
+                    replace(genexpr, element=value_expr),
+                    ast.ComprehensionKind.DICT,
+                    key=key_expr,
                 )
                 return True
             accumulator = function.temporary()
@@ -6567,13 +6802,12 @@ class _CallTarget(ast.Visitor):
             accumulator = function.temporary()
             result_name = ast.Name(accumulator.name, span=span)
             current = self.start
-            held = None
+            iteration = None
             pre_statements: list[ast.Statement] = []
             if len(arguments) == 2:
-                ctran, iterable = function.value(current, genexpr.clauses[0].iterable)
-                held = function.temporary()
-                current = Ctran()
-                function.set_var(ctran, current, held, iterable, self.call)
+                current, iteration = function.prepare_generator_iteration(
+                    current, genexpr, genexpr
+                )
                 ctran, init_val = function.value(current, arguments[1].value)
                 current = Ctran()
                 function.set_var(ctran, current, accumulator, init_val, self.call)
@@ -6596,7 +6830,7 @@ class _CallTarget(ast.Visitor):
                     )
                 ],
                 self.call,
-                held=held,
+                iteration=iteration,
                 pre_statements=pre_statements,
             )
             function.ref(
@@ -6621,13 +6855,12 @@ class _CallTarget(ast.Visitor):
             has_best_name = ast.Name(has_best.name, span=span)
             candidate_name = ast.Name(candidate.name, span=span)
             current = self.start
-            held = None
+            iteration = None
             key_temp: LambdaVar | None = None
             if len(arguments) > 1:
-                ctran, iterable = function.value(current, genexpr.clauses[0].iterable)
-                held = function.temporary()
-                current = Ctran()
-                function.set_var(ctran, current, held, iterable, self.call)
+                current, iteration = function.prepare_generator_iteration(
+                    current, genexpr, genexpr
+                )
                 for arg in arguments[1:]:
                     ctran, kw_val = function.value(current, arg.value)
                     current = Ctran()
@@ -6791,7 +7024,7 @@ class _CallTarget(ast.Visitor):
                 genexpr,
                 extreme_consumer,
                 self.call,
-                held=held,
+                iteration=iteration,
                 pre_statements=pre_statements,
                 post_statements=post_statements,
             )

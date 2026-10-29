@@ -877,6 +877,7 @@ PROTOCOLS = {
         "unpack_starred",
         "exception_matches",
         "iteration_exhausted",
+        "generator_exception",
         "context_exit_method",
         "context_enter",
         "context_exit",

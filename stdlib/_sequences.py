@@ -600,6 +600,17 @@ def iteration_exhausted(value):
     return exception_matches(value, StopIteration)
 
 
+def generator_exception(value):
+    """Apply PEP 479 without re-raising unrelated exceptions or their tracebacks."""
+    if not iteration_exhausted(value):
+        return value
+    converted = RuntimeError("generator raised StopIteration")
+    converted.__cause__ = value
+    converted.__context__ = value
+    converted.__suppress_context__ = True
+    return converted
+
+
 def raise_value(value):
     """Prepare an exception; the source raise VOP installs pending state."""
     parent = _raised_class(value)
@@ -1032,8 +1043,7 @@ def set_and(left, right):
                             res_perturb = code & _TABLE_PERTURB_MASK
                             res_slot = res_perturb & res_mask
                             while (
-                                _storage_read(res_indices, res_slot)
-                                is not _TABLE_EMPTY
+                                _storage_read(res_indices, res_slot) is not _TABLE_EMPTY
                             ):
                                 res_perturb >>= 5
                                 res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
@@ -5832,6 +5842,7 @@ from _exceptiongroup import (  # noqa: E402
 )
 from _object import _install_code_fields  # noqa: E402
 from _object import _install_builtin_descriptors  # noqa: E402
+
 # The runtime calls complete_class for classes it builds without type.__new__.
 from _object import complete_class  # noqa: E402, F401
 
