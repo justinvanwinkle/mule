@@ -56,6 +56,15 @@ Following SBCL's entry-point splitting in `src/compiler/locall.lisp`, Mule never
 - **`"observed"` entry**: Interprocedurally derived entry whose parameter domain is the join of the `dispatch_domain()` of all known call sites in the compilation unit.
 - **Closed-lambda seeding**: If a nested function never escapes (`_collect_closed_lambdas`) and is only called via direct positional calls, its `"general"` entry parameters are seeded directly from the join of its actual call sites.
 
+Observed calls with incompatible integer and float representations retain separate
+entries through the existing bounded `observed.N` contexts, as calls with distinct
+callable identities do. Integer intervals still join within the integer entry.
+Within the observed-group limit, a float observation does not widen an integer
+call's parameter and result facts to a numeric union. The general entry remains
+valid for arbitrary values, including booleans, and every specialized entry
+retains its dispatch guards. The existing limit on observed groups still bounds
+code growth.
+
 At each guarded call site, code generation compares the caller's derived argument `ValueType`s against the target's published entry contexts (`observed`, `fixnum`, `general`) and calls the most specific matching entry directly.
 
 ### Callable code identities and captured values

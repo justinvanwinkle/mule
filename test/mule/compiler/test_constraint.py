@@ -434,6 +434,28 @@ def test_mixed_calls_do_not_assign_integer_facts_to_bool_float_public_entry():
     assert fact(compilation, increment, loads(increment)[0]) == UNKNOWN
 
 
+@pytest.mark.parametrize("arguments", [("3", "2.0", "8"), ("2.0", "3", "8")])
+def test_mixed_numeric_calls_preserve_separate_integer_and_float_entries(arguments):
+    compilation = integer_calls(arguments)
+    entry, increment = function(compilation, 0), function(compilation, 1)
+    integer_context = next(
+        context
+        for context in variants(compilation, increment)
+        if context.parameters == (IntegerType(3, 8),)
+    )
+    float_context = next(
+        context
+        for context in variants(compilation, increment)
+        if context.parameters == (FLOAT,)
+    )
+    assert integer_context.return_type == IntegerType(4, 9)
+    assert float_context.return_type == FLOAT
+    assert fact(compilation, entry, calls(entry)[0]) == (
+        FLOAT if arguments[0] == "2.0" else IntegerType(4, 9)
+    )
+    assert fact(compilation, increment, loads(increment)[0]) == UNKNOWN
+
+
 def test_dynamic_call_has_guarded_fixnum_context_without_observed_integer_seed():
     compilation = lower("def increment(x):\n return x + 1\nincrement(argument)\n")
     entry, increment = function(compilation, 0), function(compilation, 1)
@@ -496,11 +518,11 @@ def recursive_calls():
     return compilation, function(compilation, 1)
 
 
-def test_recursive_argument_propagation_widens_before_publication():
+def test_recursive_argument_propagation_preserves_proven_bound():
     compilation, recursive = recursive_calls()
     context = observed(compilation, recursive)
     assert context.parameters[0].minimum == 3
-    assert context.parameters[0].maximum == 2**62 - 1
+    assert context.parameters[0].maximum == 100
     assert fact(compilation, recursive, loads(recursive)[0]) == UNKNOWN
 
 

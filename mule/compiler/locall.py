@@ -4265,7 +4265,7 @@ def analyze(
         # entries, including recursive calls, independently of that context.
         seeds: dict[Lambda, tuple] = {}
         recursive_seeds: dict[Lambda, tuple] = {}
-        callable_seed_groups: dict[Lambda, dict[tuple, tuple[ValueType, ...]]] = (
+        dispatch_seed_groups: dict[Lambda, dict[tuple, tuple[ValueType, ...]]] = (
             defaultdict(dict)
         )
         for target, call_refs in closed_lambdas.items():
@@ -4459,20 +4459,30 @@ def analyze(
                 )
                 dest_seeds = recursive_seeds if is_unseeded_recursive else seeds
                 if not is_unseeded_recursive:
-                    callable_sig = tuple(
-                        (idx, c_target)
+                    # Keep scalar representations separate: an int/float union
+                    # loses the native operations available to each call.
+                    dispatch_sig = tuple(
+                        (
+                            idx,
+                            c_target,
+                            dom.widen_constant()
+                            if dom.is_fixnum or dom.fits_float(FLOAT)
+                            else None,
+                        )
                         for idx, dom in enumerate(domains)
                         if (c_target := dom.callable_target()) is not None
+                        or dom.is_fixnum
+                        or dom.fits_float(FLOAT)
                     )
-                    if callable_sig:
-                        grp = callable_seed_groups[target]
-                        if callable_sig not in grp:
-                            grp[callable_sig] = domains
+                    if dispatch_sig:
+                        grp = dispatch_seed_groups[target]
+                        if dispatch_sig not in grp:
+                            grp[dispatch_sig] = domains
                         else:
-                            grp[callable_sig] = tuple(
+                            grp[dispatch_sig] = tuple(
                                 old.join(new).dispatch_domain() or UNKNOWN
                                 for old, new in zip(
-                                    grp[callable_sig], domains, strict=True
+                                    grp[dispatch_sig], domains, strict=True
                                 )
                             )
                 if target not in dest_seeds:
@@ -4487,7 +4497,7 @@ def analyze(
                 seeds[target] = rec_seed
         ctx_seeds: list[tuple[tuple[Lambda, str], tuple[ValueType, ...]]] = []
         for target, seed in seeds.items():
-            grp = callable_seed_groups.get(target)
+            grp = dispatch_seed_groups.get(target)
             if grp is not None and 1 < len(grp) <= 4:
                 for idx_c, c_seed in enumerate(grp.values()):
                     c_name = "observed" if idx_c == 0 else f"observed.{idx_c}"
