@@ -1,5 +1,7 @@
 """Tests for sequence IR1 transforms in ``mule.compiler.seqtran``."""
 
+import subprocess
+
 from mule import ast
 from mule.compiler import seqtran
 from mule.compiler.ctype import (
@@ -10,6 +12,7 @@ from mule.compiler.ctype import (
     TextType,
 )
 from mule.compiler.debug import check_ir1_consistency
+from mule.compiler.driver import build_executable, emit_llvm
 from mule.compiler.ir1opt import constant_literal, ir1_optimize_until_done
 from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source, compile_toplevel
@@ -668,3 +671,48 @@ def test_enumerate_for_loop_open_codes_index_and_sequence_iteration():
     assert list(known_calls(fn, "%unpack")) == []
     assert list(known_calls(fn, "%unpack_ref")) == []
     check_ir1_consistency(compilation.components)
+
+
+def test_ord_constant_fold_and_str_getitem_fusion(tmp_path):
+    src = """def char_at(s: str, i: int) -> int:
+    return ord(s[i]) + ord("A") + ord(b"!")
+
+print(char_at("hello", 1))
+print(char_at("hello", -1))
+"""
+    ir = emit_llvm(src)
+    spec_start = ir.index(
+        'define internal i64 @"mule_fn_char_at.numeric.borrow.observed.0"('
+    )
+    spec_end = ir.index("\n}", spec_start)
+    spec_body = ir[spec_start:spec_end]
+    assert "@mule_text_codepoint_at(" in spec_body
+    assert "@mule_text_getitem(" not in spec_body
+    assert "@mule.fast.getitem" not in spec_body
+
+    exe_src = (
+        src
+        + """
+try:
+    char_at("hello", -6)
+    raise AssertionError("expected IndexError")
+except IndexError:
+    print("neg_oob_ok")
+
+try:
+    char_at("hello", 5)
+    raise AssertionError("expected IndexError")
+except IndexError:
+    print("pos_oob_ok")
+"""
+    )
+    exe = build_executable(
+        exe_src,
+        str(tmp_path / "ord_str_getitem.py"),
+        roots=None,
+        workers=1,
+    )
+    completed = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "199\n209\nneg_oob_ok\npos_oob_ok\n"
+

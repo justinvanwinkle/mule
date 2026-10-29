@@ -4081,8 +4081,15 @@ pub unsafe extern "C" fn mule_text_codepoint_at(value: Value, index: i64) -> Val
             } else if let Some(code) = text.get(idx) {
                 return small(i64::from(code));
             }
+        } else {
+            let adjusted = index.wrapping_add(text.len() as i64);
+            if adjusted >= 0 {
+                if let Some(code) = text.get(adjusted as usize) {
+                    return small(i64::from(code));
+                }
+            }
         }
-        text_index_error()
+        string_index_error()
     }
 }
 #[unsafe(no_mangle)]
