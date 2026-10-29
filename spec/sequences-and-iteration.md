@@ -76,6 +76,50 @@ descriptor errors and exceptions raised by invoking the bound method propagate.
 
 Status: implemented the initial sequence, iteration, and exception slice.
 
+## Compact byte storage and typed iteration
+
+`bytearray.values` owns a compact byte buffer rather than a list of tagged
+integers. Its fixed physical header contains the byte pointer, initialized
+length, capacity, and active export count. Memoryview leases retain that same
+storage object; the header is the authoritative export count for mutable byte
+storage. Bytes require no per-element reference ownership. The allocation's
+owner retains its ordinary object lifetime.
+
+Conversion, byte-range validation, negative indexing, slicing, and resize
+prohibition remain compiled Mule Python algorithms. Append converts its value
+before resolving the current backing and checking exports. Construction and
+extension recheck exports after converting their source.
+Bytearray iterators retain the array owner and observe its current storage after
+mutation or reinitialization. Once exhausted, an iterator remains exhausted.
+
+IR1 sequence transformations expose cursor operations and proven byte append
+operations before LTN and representation selection. Known immutable bytes retain
+their owner while a physical setup accessor supplies a stable byte pointer and
+length. Mutable bytearray cursors reload the current backing and length when
+advancing. Unproven input types retain general iteration protocols. A bytearray
+type does not alone prove the public `values` field's contents: physical access
+validates the backing storage before dereferencing its header.
+
+IR2 uses declared operand-borrowing contracts and stable local roots to avoid
+per-element owner reference traffic, including mixed scalar/descriptor entries.
+The lifetime proof includes exception edges and loop backedges; it does not
+borrow through an unprotected owner replacement.
+
+Compiler-owned protocol exports retain proven classmethod descriptor bindings.
+Their result summaries use the bound class, so a known class method can supply
+argument facts to ordinary local-call analysis. Unknown decorators, class-local
+shadowing, and inherited descriptors without receiver-specific derivation remain
+conservative. No byte-producer operation is inferred from its spelling.
+
+Native byte append separates capacity preparation from the byte store. Growth
+calls a physical allocator only when capacity is insufficient. Export failures
+retain the compiled Python error path. This follows SBCL's
+`src/compiler/array-tran.lisp`, `vector-push-extend`, which prepares the data vector
+and index before a typed store, and `src/compiler/x86-64/array.lisp`,
+`define-data-vector-frobs`, which emits unsigned-byte-8 loads and stores. Python
+adds mutable iterator visibility, conversion callbacks, and buffer-export rules;
+these rules do not require tagged element storage or per-byte runtime dispatch.
+
 ## Singleton-list fill (Section 6J)
 
 SBCL `src/compiler/seqtran.lisp`, `fill-transform`, selects `vector-fill/t`

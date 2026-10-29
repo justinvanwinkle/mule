@@ -13,6 +13,65 @@ thread_local! {
     static PENDING: Cell<Value> = const { Cell::new(null_mut()) };
     static ACTIVE: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 }
+unsafe fn physical_byte(value: Value) -> Option<u8> {
+    if object::is_fixnum(value) {
+        if let Ok(byte) = u8::try_from(unsafe { object::fixnum(value) }) {
+            return Some(byte);
+        }
+    }
+    object::error("ValueError", "byte must be in range(0, 256)");
+    None
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_byte_storage_new() -> Value {
+    unsafe { object::new_untracked_value(Data::ByteStorage(crate::byte_buffer::ByteBuffer::new())) }
+}
+
+/// Cold allocation only. The caller owns validation and export policy.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_byte_storage_reserve(storage: Value, additional: i64) -> i32 {
+    unsafe {
+        if storage.is_null() || object::is_fixnum(storage) {
+            object::error("TypeError", "compact byte storage is required");
+            return -1;
+        }
+        let Data::ByteStorage(buffer) = &mut (*storage).data else {
+            object::error("TypeError", "compact byte storage is required");
+            return -1;
+        };
+        if additional < 0 || !buffer.reserve(additional as usize) {
+            object::error("MemoryError", "byte storage allocation failed");
+            return -1;
+        }
+        1
+    }
+}
+
+#[repr(C)]
+pub struct ByteView {
+    pub data: *const u8,
+    pub length: usize,
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_bytes_storage(value: Value, out: *mut ByteView) -> i32 {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) || out.is_null() {
+            object::error("TypeError", "bytes storage is required");
+            return -1;
+        }
+        let Data::Bytes(bytes, ..) = &(*value).data else {
+            object::error("TypeError", "bytes storage is required");
+            return -1;
+        };
+        out.write(ByteView {
+            data: bytes.as_ptr(),
+            length: bytes.len(),
+        });
+        1
+    }
+}
 #[inline(always)]
 fn replace_pending(new_value: Value) -> Value {
     object::set_has_pending_exception(!new_value.is_null());
@@ -312,15 +371,13 @@ pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
             let length = match &(*value).data {
                 Data::List(values, ..) | Data::Args(values, ..) => values.len(),
                 Data::Bytes(values, ..) => values.len(),
+                Data::ByteStorage(values) => values.length,
                 Data::Text(..) => return object::mule_text_length(value),
-                Data::Instance { ty, fields, .. }
-                    if !fields.is_empty() && *ty == cached_bytearray_class() =>
+                Data::Instance { .. } =>
                 {
-                    let inner = fields[0];
-                    if !inner.is_null() && !object::is_fixnum(inner) {
-                        if let Data::List(values, ..) = &(*inner).data {
-                            return numeric::integer_from_usize(values.len());
-                        }
+                    if let Some(storage) = crate::buffers::byte_storage(value) {
+                        let Data::ByteStorage(bytes) = &(*storage).data else { unreachable!() };
+                        return numeric::integer_from_usize(bytes.length);
                     }
                     object::error("TypeError", "sequence storage is required");
                     return null_mut();
@@ -360,6 +417,22 @@ pub unsafe extern "C" fn mule_storage_read(value: Value, position: Value) -> Val
                         return object::small(i64::from(*value));
                     }
                 }
+                Data::ByteStorage(values) => {
+                    if let Some(value) = values.as_slice().get(index) {
+                        return object::small(i64::from(*value));
+                    }
+                }
+                Data::Instance { .. } => {
+                    if let Some(storage) = crate::buffers::byte_storage(value) {
+                        let Data::ByteStorage(bytes) = &(*storage).data else { unreachable!() };
+                        if let Some(byte) = bytes.as_slice().get(index) {
+                            return object::small(i64::from(*byte));
+                        }
+                    } else {
+                        object::error("TypeError", "sequence storage is required");
+                        return null_mut();
+                    }
+                }
                 Data::Text(..) => return object::mule_text_character(value, position),
                 _ => {
                     object::error("TypeError", "sequence storage is required");
@@ -382,6 +455,17 @@ pub unsafe extern "C" fn mule_storage_write(
             return null_mut();
         };
         if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::ByteStorage(values) = &mut (*value).data {
+                if index >= values.length {
+                    object::error("IndexError", "storage index out of range");
+                    return null_mut();
+                }
+                let Some(byte) = physical_byte(replacement) else {
+                    return null_mut();
+                };
+                values.as_mut_slice()[index] = byte;
+                return object::none_value();
+            }
             if let Data::List(values, ..) = &mut (*value).data {
                 if let Some(slot) = values.get_mut(index) {
                     let old = *slot;
@@ -469,34 +553,19 @@ pub unsafe extern "C" fn mule_bytes_getitem(sequence: Value, index: Value) -> Va
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_bytearray_getitem_fast(array: Value, index: Value) -> Value {
     unsafe {
-        if !object::is_fixnum(index) || array.is_null() || object::is_fixnum(array) {
+        if !object::is_fixnum(index) {
             return sequence_index_error();
         }
-        let Data::Instance { ty, fields, .. } = &(*array).data else {
+        let Some(storage) = crate::buffers::byte_storage(array) else {
             return sequence_index_error();
         };
-        if fields.is_empty() || *ty != cached_bytearray_class() {
-            return sequence_index_error();
-        }
-        let inner = *fields.get_unchecked(0);
-        if inner.is_null() || object::is_fixnum(inner) {
-            return sequence_index_error();
-        }
-        let Data::List(values, list_ty, ..) = &(*inner).data else {
-            return sequence_index_error();
+        let Data::ByteStorage(bytes) = &(*storage).data else {
+            unreachable!()
         };
-        if !list_ty.is_null() {
-            return sequence_index_error();
-        }
         let raw = object::fixnum(index);
-        let len = values.len() as i64;
-        let pos = if raw < 0 { raw + len } else { raw };
-        if (pos as u64) < (len as u64) {
-            let elem = *values.get_unchecked(pos as usize);
-            if !object::is_fixnum(elem) {
-                object::retain(elem);
-            }
-            return elem;
+        let pos = if raw < 0 { raw + bytes.length as i64 } else { raw };
+        if (pos as u64) < bytes.length as u64 {
+            return object::small(i64::from(*bytes.data.add(pos as usize)));
         }
         sequence_index_error()
     }
@@ -512,42 +581,24 @@ pub unsafe extern "C" fn mule_bytearray_setitem_fast(
     item: Value,
 ) -> i32 {
     unsafe {
-        if !object::is_fixnum(index)
-            || !object::is_fixnum(item)
-            || array.is_null()
-            || object::is_fixnum(array)
-        {
+        if !object::is_fixnum(index) || !object::is_fixnum(item) {
             return 0;
         }
-        let byte_val = object::fixnum(item);
-        if !(0..=255).contains(&byte_val) {
+        let byte = object::fixnum(item);
+        if !(0..=255).contains(&byte) {
             return 0;
         }
-        let Data::Instance { ty, fields, .. } = &(*array).data else {
+        let Some(storage) = crate::buffers::byte_storage(array) else {
             return 0;
         };
-        if fields.is_empty() || *ty != cached_bytearray_class() {
-            return 0;
-        }
-        let inner = *fields.get_unchecked(0);
-        if inner.is_null() || object::is_fixnum(inner) {
-            return 0;
-        }
-        if let Data::List(values, list_ty, ..) = &mut (*inner).data {
-            if list_ty.is_null() {
-                let raw = object::fixnum(index);
-                let len = values.len() as i64;
-                let pos = if raw < 0 { raw + len } else { raw };
-                if (pos as u64) < (len as u64) {
-                    let slot = values.get_unchecked_mut(pos as usize);
-                    let old = *slot;
-                    *slot = item;
-                    if !object::is_fixnum(old) {
-                        object::release(old);
-                    }
-                    return 1;
-                }
-            }
+        let Data::ByteStorage(bytes) = &mut (*storage).data else {
+            unreachable!()
+        };
+        let raw = object::fixnum(index);
+        let pos = if raw < 0 { raw + bytes.length as i64 } else { raw };
+        if (pos as u64) < bytes.length as u64 {
+            bytes.data.add(pos as usize).write(byte as u8);
+            return 1;
         }
         0
     }
@@ -557,46 +608,11 @@ pub unsafe extern "C" fn mule_bytearray_setitem_fast(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_bytearray_append_fast(array: Value, item: Value) -> Value {
     unsafe {
-        if !array.is_null() && !object::is_fixnum(array) && object::is_fixnum(item) {
-            let byte_val = object::fixnum(item);
-            if let Data::Instance { ty, fields, .. } = &(*array).data
-                && !fields.is_empty()
-                && *ty == cached_bytearray_class()
-            {
-                if !(0..=255).contains(&byte_val) {
-                    object::error("ValueError", "byte must be in range(0, 256)");
-                    return null_mut();
-                }
-                if crate::buffers::has_exports(array) {
-                    object::error("BufferError", "Existing exports of data: object cannot be re-sized");
-                    return null_mut();
-                }
-                let inner = *fields.get_unchecked(0);
-                if !inner.is_null()
-                    && !object::is_fixnum(inner)
-                    && let Data::List(values, list_ty, ..) = &mut (*inner).data
-                    && list_ty.is_null()
-                {
-                    if values.try_reserve(1).is_err() {
-                        object::error("MemoryError", "list allocation failed");
-                        return null_mut();
-                    }
-                    values.push(item);
-                    return object::none_value();
-                }
-            }
-        }
-        let mut bound = null_mut();
-        let method =
-            crate::classes::mule_resolve_method(array, c"append".as_ptr(), null_mut(), &mut bound);
-        if method.is_null() {
+        let function = object::lookup(mule_protocol_globals(), "bytearray_append");
+        if function.is_null() {
             return null_mut();
         }
-        let args = [item];
-        let result = crate::classes::mule_call_resolved(method, bound, 1, args.as_ptr());
-        object::release(bound);
-        object::release(method);
-        result
+        object::call(function, &[array, item])
     }
 }
 
@@ -959,6 +975,16 @@ pub unsafe extern "C" fn mule_fast_setitem_move(sequence: Value, index: Value, i
 pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Value {
     unsafe {
         if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::ByteStorage(values) = &mut (*value).data {
+                let Some(byte) = physical_byte(element) else {
+                    return null_mut();
+                };
+                if !values.push(byte) {
+                    object::error("MemoryError", "byte storage allocation failed");
+                    return null_mut();
+                }
+                return object::none_value();
+            }
             if let Data::List(values, ..) = &mut (*value).data {
                 if values.try_reserve(1).is_err() {
                     object::error("MemoryError", "list allocation failed");
@@ -977,6 +1003,14 @@ pub unsafe extern "C" fn mule_storage_append(value: Value, element: Value) -> Va
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_storage_append_move(value: Value, element: Value) -> Value {
     unsafe {
+        if !value.is_null()
+            && !object::is_fixnum(value)
+            && matches!(&(*value).data, Data::ByteStorage(_))
+        {
+            let result = mule_storage_append(value, element);
+            object::release(element);
+            return result;
+        }
         if !value.is_null() && !object::is_fixnum(value) {
             if let Data::List(values, ..) = &mut (*value).data {
                 if values.try_reserve(1).is_err() {
@@ -1636,6 +1670,14 @@ pub unsafe extern "C" fn mule_storage_delete(value: Value, start: Value, stop: V
             return null_mut();
         };
         if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::ByteStorage(values) = &mut (*value).data {
+                if start > stop || stop > values.length {
+                    object::error("IndexError", "storage index out of range");
+                    return null_mut();
+                }
+                values.delete(start, stop);
+                return object::none_value();
+            }
             if let Data::List(values, ..) = &mut (*value).data {
                 if start > stop || stop > values.len() {
                     object::error("IndexError", "storage index out of range");
@@ -2191,6 +2233,18 @@ pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -
                 if seq.is_null() || object::is_fixnum(seq) {
                     return -1;
                 }
+                if let Some(storage) = crate::buffers::byte_storage(seq) {
+                    let Data::ByteStorage(bytes) = &(*storage).data else { unreachable!() };
+                    let pos = *index;
+                    if pos == usize::MAX { return 0; }
+                    if pos >= bytes.length {
+                        *index = usize::MAX;
+                        return 0;
+                    }
+                    *index = pos + 1;
+                    *out = object::small(i64::from(*bytes.data.add(pos)));
+                    return 1;
+                }
                 match &(*seq).data {
                     Data::List(values, ..) | Data::Args(values, ..) => {
                         let pos = *index;
@@ -2229,6 +2283,16 @@ pub unsafe extern "C" fn mule_fast_next_item(iterator: Value, out: *mut Value) -
                     let pos = object::fixnum(index);
                     if pos < 0 {
                         return -1;
+                    }
+                    if let Some(storage) = crate::buffers::byte_storage(sequence) {
+                        let Data::ByteStorage(bytes) = &(*storage).data else { unreachable!() };
+                        if pos as usize >= bytes.length {
+                            fields[2] = object::bool_value(true);
+                            return 0;
+                        }
+                        fields[1] = object::small(pos + 1);
+                        *out = object::small(i64::from(*bytes.data.add(pos as usize)));
+                        return 1;
                     }
                     let values = match &(*sequence).data {
                         Data::List(values, ..) | Data::Args(values, ..) => values,
@@ -2284,11 +2348,11 @@ pub unsafe extern "C" fn mule_fast_iterate(value: Value) -> Value {
                     let inner = fields[0];
                     if inner.is_null()
                         || object::is_fixnum(inner)
-                        || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
+                        || !matches!(&(*inner).data, Data::ByteStorage(_))
                     {
                         return null_mut();
                     }
-                    inner
+                    value
                 } else {
                     return null_mut();
                 }
@@ -2323,14 +2387,12 @@ pub unsafe extern "C" fn mule_fast_iterate_move(value: Value) -> Value {
                     let inner = fields[0];
                     if inner.is_null()
                         || object::is_fixnum(inner)
-                        || !matches!(&(*inner).data, Data::List(_, lty, ..) if lty.is_null())
+                        || !matches!(&(*inner).data, Data::ByteStorage(_))
                     {
                         return null_mut();
                     }
-                    let seq = object::retain(inner);
-                    object::release(value);
                     return object::new_untracked_value(Data::SeqIter {
-                        sequence: seq,
+                        sequence: value,
                         index: 0,
                     });
                 }

@@ -1307,7 +1307,14 @@ class _CloneIR1Node(NodeVisitor):
             node.info is not None
             and node.fun_info is not None
             and node.fun_info.name
-            in ("%range_prepare", "%range_available", "%range_advance")
+            in (
+                "%range_prepare",
+                "%range_available",
+                "%range_advance",
+                "%byte_iterate",
+                "%byte_available",
+                "%byte_next",
+            )
         ):
             mapped_info = self.range_map.get(node.info)
             if mapped_info is None:

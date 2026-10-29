@@ -26,11 +26,11 @@ from .ctype import (
     InstanceType,
     ValueType,
 )
-from .fndb import IMPORT
+from .fndb import CLASS_LOAD, IMPORT
 from .inputs import directory_entries, directory_exists, read_source, source_exists
 from .ir1opt import constant_literal
 from .ir1tran_lambda import lambda_blocks
-from .ir1util import class_method_definitions, known_calls
+from .ir1util import class_method_definitions, known_calls, made_function
 from .locall import (
     _CLASS_BASE_NAMES,
     _ImportBindingStores,
@@ -39,6 +39,7 @@ from .locall import (
 )
 from .main import Compilation, compile_toplevel, ir1_phases
 from .node import (
+    CallKind,
     ClassConstructorTarget,
     Combination,
     ForeignCallTarget,
@@ -101,6 +102,94 @@ class _ImportedModuleName(NodeVisitor):
 _BUILTIN_NAME_LITERAL = _BuiltinNameLiteral()
 _GLOBAL_VAR_NAME = _GlobalVarName()
 _IMPORTED_MODULE_NAME = _ImportedModuleName()
+
+
+class _SingleAssignmentValue(NodeVisitor, LeafVisitor):
+    """Follow an IR value without guessing through a mutable binding."""
+
+    def __init__(self):
+        self.visited = set()
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf):
+        if leaf in self.visited or len(leaf.sets) != 1:
+            return None
+        self.visited.add(leaf)
+        value = leaf.sets[0].value
+        return value.use().accept(self) if value is not None else None
+
+
+class _ClassMethodConstructor(_SingleAssignmentValue):
+    def __init__(self, imports, shadowed):
+        super().__init__()
+        self.imports = imports
+        self.shadowed = shadowed
+
+    def visit_GlobalVar(self, leaf):
+        return self.imports.get(leaf.name) == ("_descriptors", "classmethod")
+
+    def visit_Combination(self, node):
+        if (
+            node.fun_info is CLASS_LOAD
+            and (node.info.identity, node.info.name) not in self.shadowed
+        ):
+            return self.imports.get(node.info.name) == (
+                "_descriptors",
+                "classmethod",
+            )
+        return False
+
+
+class _ClassMethodFunction(_SingleAssignmentValue):
+    def __init__(self, imports, shadowed):
+        super().__init__()
+        self.imports = imports
+        self.shadowed = shadowed
+
+    def visit_Combination(self, node):
+        if (
+            node.kind in (CallKind.FULL, CallKind.GUARDED)
+            and len(node.args) == 1
+            and not node.info.keywords
+            and node.fun.use().accept(
+                _ClassMethodConstructor(self.imports, self.shadowed)
+            )
+        ):
+            return made_function(node.args[0].use())
+        return None
+
+
+def _protocol_class_methods(compilation):
+    """Recover canonical descriptor constructors in compiler-owned protocols.
+
+    These class bodies execute during bootstrap, before builtin call targets
+    are published. Arbitrary decorators and class-local shadowing retain the
+    ordinary unknown result. Inherited descriptors need their own receiver
+    derivation and are deliberately not copied into subclass summaries.
+    """
+    if not compilation.entry.is_protocol:
+        return {}
+    imports = {}
+    visitor = _ImportBindingStores(imports)
+    for block in lambda_blocks(compilation.entry):
+        for node in block.nodes():
+            node.accept(visitor)
+    stores = list(known_calls(compilation.entry, "%class_store"))
+    shadowed = {(node.info.identity, node.info.name) for node in stores}
+    methods = {}
+    for node in stores:
+        target = node.args[1].use().accept(_ClassMethodFunction(imports, shadowed))
+        if target is not None:
+            methods.setdefault(node.info.identity, {})[node.info.name] = target
+    return methods
 
 
 @dataclass(frozen=True)
@@ -454,6 +543,7 @@ class ModuleCompiler:
                 else ()
             )
         method_defs = class_method_definitions(compilation.entry)
+        class_methods = _protocol_class_methods(compilation)
         class_fields = compilation.locall_state.get("class_fields", {})
         class_layouts = compilation.locall_state.get("class_layouts", {})
         all_class_ids = list(dict.fromkeys([*class_names, *method_defs, *class_fields]))
@@ -492,6 +582,8 @@ class ModuleCompiler:
                     self.storage_methods.items()
                 ):
                     if owner_name == base_name:
+                        if method_name.startswith("$class:"):
+                            continue
                         self.storage_methods.setdefault(
                             (class_name, method_name), ret_type
                         )
@@ -518,6 +610,14 @@ class ModuleCompiler:
                     else constructed_type
                 )
                 records_type_origin = False
+            for method_name, target in class_methods.get(class_id, {}).items():
+                result = target.derive_return_type(
+                    (UNKNOWN,) * (len(target.vars) - 1),
+                    receiver_type=cls_type,
+                )
+                if result is not UNKNOWN:
+                    self.storage_methods[class_name, "$class:" + method_name] = result
+                    self.storage_methods[class_id, "$class:" + method_name] = result
             cls_target = ClassConstructorTarget(
                 base_type=base_type,
                 cls_type=cls_type,

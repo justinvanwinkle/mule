@@ -7,7 +7,7 @@ simplify truthiness negation of newly constructed empty tuples and lists.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from threading import Lock
 
 from mule import ast
@@ -110,6 +110,103 @@ class _ExactIntegerLiteral(ast.Visitor):
 
 
 _EXACT_INTEGER_LITERAL = _ExactIntegerLiteral()
+
+
+@dataclass(eq=False)
+class ByteIteration:
+    """IR1 cursor shared by setup, availability, and element production.
+
+    LTN selects byte or generic operations independently for each entry context.
+    The hidden iterator local retains the sequence in a typed byte entry and
+    retains an ordinary Python iterator in an unknown entry.
+    """
+
+    source: Lvar
+
+    def clone(self, map_lvar):
+        return ByteIteration(map_lvar(self.source))
+
+
+class _IteratorStore(NodeVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Set(self, node):
+        return node.var.accept(_HiddenIteratorVar(node))
+
+
+class _HiddenIteratorVar(LeafVisitor):
+    def __init__(self, store):
+        self.store = store
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf):
+        if leaf.hidden and leaf.sets == [self.store] and not leaf.indirect:
+            return leaf
+        return None
+
+
+@deftransform("%iterate")
+def _transform_byte_iteration(node):
+    if node.lvar is None or len(node.args) != 1 or len(node.args[0].uses) != 1:
+        return False
+    home = node.home_lambda
+    if home is None or home.coroutine_body or home.name.startswith(_PROTOCOL_PREFIXES):
+        return False
+    store = node.lvar.dest
+    iterator = None if store is None else store.accept(_IteratorStore())
+    if iterator is None:
+        return False
+    available = []
+    for ref in iterator.refs:
+        if ref.prev is None or ref.lvar is None:
+            continue
+        dest = ref.lvar.dest
+        if dest is None or not dest.accept(_SequenceAvailableOnLvar(ref.lvar)):
+            return False
+        available.append(dest)
+    if len(available) != 1:
+        return False
+    steps = [
+        step
+        for block in home.component.blocks()
+        for step in block.nodes()
+        if step.accept(_ByteNextItem(iterator))
+    ]
+    if len(steps) != 1:
+        return False
+    from .byteops import AVAILABLE, ITERATE, NEXT
+
+    state = ByteIteration(node.args[0])
+    retarget_known_combination(node, ITERATE, list(node.args))
+    node.info = state
+    avail = available[0]
+    retarget_known_combination(avail, AVAILABLE, list(avail.args))
+    avail.info = state
+    step = steps[0]
+    ref = Ref(step.lexenv, step.source, iterator)
+    iterator.refs.append(ref)
+    owner = Lvar()
+    use_lvar(ref, owner)
+    insert_node_before(step, ref)
+    retarget_known_combination(step, NEXT, [owner])
+    step.info = state
+    return True
+
+
+class _ByteNextItem(NodeVisitor):
+    def __init__(self, iterator):
+        self.iterator = iterator
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node):
+        return (
+            node.fun_info is fndb.PROTOCOLS["next_item"] and node.info is self.iterator
+        )
 
 
 class _ConstantTupleElements(ast.Visitor):
@@ -905,6 +1002,54 @@ _SET_MUTATION_PROTOCOLS = {
     "discard": "set_discard",
     "remove": "set_remove",
 }
+
+
+class _ResolveByteAppendProducer(NodeVisitor):
+    def __init__(self, block):
+        self.block = block
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.RESOLVE_METHOD
+            and node.info is not None
+            and node.info.name == "append"
+            and len(node.args) == 1
+            and node.prev is not None
+            and node.block is self.block
+            and lvar_type(node.args[0]).fits_bytearray()
+        ):
+            return node
+        return None
+
+
+@deftransform("%call_resolved")
+def _transform_bytearray_append_byte(node):
+    if (
+        len(node.args) != 2
+        or (node.info is not None and node.info.keywords)
+        or node.lexenv.policy.safety >= 3
+    ):
+        return False
+    from .byteops import APPEND_BYTE
+
+    resolved, value = node.args
+    if len(resolved.uses) != 1:
+        return False
+    producer = resolved.uses[0].accept(_ResolveByteAppendProducer(node.block))
+    if producer is None:
+        return False
+    receiver = producer.args[0]
+    producer.args = []
+    _flush_operand(producer.fun)
+    unlink_node(producer)
+    resolved.uses.clear()
+    resolved.dest = None
+    retarget_known_combination(node, APPEND_BYTE, [receiver, value])
+    return True
 
 
 class _ResolveSetMethodProducer(NodeVisitor):

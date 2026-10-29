@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from mule import ast
 
+from .byteops import PRIMITIVES as BYTE_PRIMITIVES
 from .ctype import (
     BOOLEAN,
     BOOLEAN_FALSE,
@@ -304,6 +305,8 @@ for _name, _emit in _EMITTERS.items():
         _emit,
         consumes_arguments=_name in _COMPILED_CALLS or _name == "_initialize",
     )
+
+PRIMITIVES.update(BYTE_PRIMITIVES)
 
 # `_mule_native` exports whose generic entry only unpacks an argument tuple
 # around one of these primitives. A protocol module whose only binding of a

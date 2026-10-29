@@ -1032,8 +1032,7 @@ def set_and(left, right):
                             res_perturb = code & _TABLE_PERTURB_MASK
                             res_slot = res_perturb & res_mask
                             while (
-                                _storage_read(res_indices, res_slot)
-                                is not _TABLE_EMPTY
+                                _storage_read(res_indices, res_slot) is not _TABLE_EMPTY
                             ):
                                 res_perturb >>= 5
                                 res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
@@ -1231,12 +1230,12 @@ def bytearray_getitem(array, index):
         index = _integer_storage(index)
     else:
         index = _index_integer(index)
-    length = _storage_length(values)
+    length = _byte_storage_length(values)
     if index < 0:
         index += length
     if index < 0 or index >= length:
         raise IndexError("sequence index out of range")
-    return _storage_read(values, index)
+    return _byte_storage_read(values, index)
 
 
 def bytearray_setitem(array, index, item):
@@ -1245,7 +1244,7 @@ def bytearray_setitem(array, index, item):
         index = _integer_storage(index)
     else:
         index = _index_integer(index)
-    length = _storage_length(values)
+    length = _byte_storage_length(values)
     if index < 0:
         index += length
     if index < 0 or index >= length:
@@ -1256,7 +1255,7 @@ def bytearray_setitem(array, index, item):
         item = _index_integer(item)
     if item < 0 or item > 255:
         raise ValueError("byte must be in range(0, 256)")
-    _storage_write(values, index, item)
+    _byte_storage_write(values, index, item)
 
 
 def bytearray_append(array, value):
@@ -1266,9 +1265,9 @@ def bytearray_append(array, value):
         value = _index_integer(value)
     if value < 0 or value > 255:
         raise ValueError("byte must be in range(0, 256)")
-    if buffer_exports(array):
+    if _byte_storage_exports(array.values):
         raise BufferError("Existing exports of data: object cannot be re-sized")
-    _storage_append(array.values, value)
+    _byte_storage_append(array.values, value)
 
 
 def _getitem_general(value, index):
@@ -1743,7 +1742,9 @@ def _argument_tuple(iterable):
     if owner is tuple:
         return iterable
     if owner is bytearray:
-        return _storage_tuple(iterable.values)
+        return _storage_tuple(
+            _byte_sublist(iterable.values, 0, _storage_length(iterable.values))
+        )
     if owner is list:
         return _storage_tuple(iterable)
     items = []
@@ -3881,7 +3882,7 @@ def _iterate(value, membership):
         return iterator
     if cls is bytearray:
         iterator = _allocate_instance(StorageIterator)
-        iterator.sequence = value.values
+        iterator.sequence = value
         iterator.index = 0
         iterator.exhausted = False
         return iterator
@@ -4005,7 +4006,7 @@ def unpack(value, count):
             raise ValueError("not enough values to unpack")
         if length > count:
             raise ValueError("too many values to unpack")
-        return _storage_tuple(value)
+        return _storage_tuple(_byte_sublist(value, 0, length))
     iterator = iterate(value)
     result = []
     index = 0
@@ -4592,19 +4593,43 @@ def _byte_sublist(values, start, end):
     return result
 
 
+def _byte_delete(storage, index):
+    if not is_slice(index):
+        _storage_delete(storage, index, index + 1)
+        return
+    start, stop, step, count = positions(index, _storage_length(storage))
+    if step == 1:
+        _storage_delete(storage, start, start + count)
+        return
+    if step < 0:
+        start += (count - 1) * step
+        step = -step
+    while count > 0:
+        at = start + (count - 1) * step
+        _storage_delete(storage, at, at + 1)
+        count -= 1
+
+
 _DEFAULT_BYTES_SOURCE = b""
 
 
 class bytearray:
-    """A mutable sequence of bytes, stored as a list of ints in range(256)."""
+    """A mutable sequence backed by compact unsigned-byte storage."""
 
     def __init__(self, source=_DEFAULT_BYTES_SOURCE, encoding=None, errors="strict"):
         if buffer_exports(self):
             raise BufferError("Existing exports of data: object cannot be re-sized")
         if source is _DEFAULT_BYTES_SOURCE and encoding is None:
-            self.values = []
+            self.values = _byte_storage_new()
             return
-        self.values = _byte_values(source, encoding, errors)
+        items = _byte_values(source, encoding, errors)
+        storage = _byte_storage_new()
+        _byte_storage_reserve(storage, _storage_length(items))
+        for item in items:
+            _byte_storage_append(storage, item)
+        if buffer_exports(self):
+            raise BufferError("Existing exports of data: object cannot be re-sized")
+        self.values = storage
 
     def hex(self, sep=_HEX_MISSING, bytes_per_sep=1):
         return _hex_bytes(self.values, sep, bytes_per_sep)
@@ -4627,7 +4652,9 @@ class bytearray:
         return bytearray(_byte_padding(self.values, width, fillchar, 2, "center"))
 
     def _check_resize(self, size):
-        if size != len(self.values) and buffer_exports(self):
+        if size != _byte_storage_length(self.values) and _byte_storage_exports(
+            self.values
+        ):
             raise BufferError("Existing exports of data: object cannot be re-sized")
 
     def resize(self, size, /):
@@ -4637,43 +4664,52 @@ class bytearray:
         if size < 0:
             raise ValueError(f"Can only resize to positive sizes, got {size}")
         self._check_resize(size)
-        while len(self.values) > size:
-            self.values.pop()
-        while len(self.values) < size:
-            self.values.append(0)
+        length = _byte_storage_length(self.values)
+        if size < length:
+            _byte_storage_set_length(self.values, size)
+            return
+        _byte_storage_reserve(self.values, size - length)
+        while _byte_storage_length(self.values) < size:
+            _byte_storage_append(self.values, 0)
 
     def __len__(self):
         _require_bytearray(self, "__len__")
-        return _storage_length(self.values)
+        return _byte_storage_length(self.values)
 
     def __getitem__(self, index):
         _require_bytearray(self, "__getitem__")
         values = self.values
         if is_slice(index):
             return bytearray(_selected(values, index))
-        return _storage_read(values, storage_index(values, index))
+        return _byte_storage_read(values, storage_index(values, index))
 
     def __setitem__(self, index, value):
         _require_bytearray(self, "__setitem__")
         values = self.values
         if is_slice(index):
             replacement = _byte_values(value, None, "strict")
-            start, stop, step, count = positions(index, _storage_length(values))
+            start, stop, step, count = positions(index, _byte_storage_length(values))
             if step == 1:
-                self._check_resize(len(values) - count + len(replacement))
+                self._check_resize(
+                    _byte_storage_length(values) - count + len(replacement)
+                )
                 if stop < start:
                     stop = start
                 tail = []
                 at = stop
-                while at < _storage_length(values):
-                    _storage_append(tail, _storage_read(values, at))
+                while at < _byte_storage_length(values):
+                    _storage_append(tail, _byte_storage_read(values, at))
                     at += 1
-                while _storage_length(values) > start:
-                    del values[_storage_length(values) - 1]
+                while _byte_storage_length(values) > start:
+                    _storage_delete(
+                        values,
+                        _byte_storage_length(values) - 1,
+                        _byte_storage_length(values),
+                    )
                 for item in replacement:
-                    _storage_append(values, item)
+                    _byte_storage_append(values, item)
                 for item in tail:
-                    _storage_append(values, item)
+                    _byte_storage_append(values, item)
                 return
             if len(replacement) != count:
                 raise ValueError(
@@ -4681,21 +4717,25 @@ class bytearray:
                 )
             at = 0
             while at < count:
-                _storage_write(values, start + at * step, replacement[at])
+                _byte_storage_write(values, start + at * step, replacement[at])
                 at += 1
             return
-        _storage_write(values, storage_index(values, index), _byte_value(value))
+        _byte_storage_write(values, storage_index(values, index), _byte_value(value))
 
     def __delitem__(self, index):
-        count = positions(index, len(self.values))[3] if is_slice(index) else 1
+        count = (
+            positions(index, _byte_storage_length(self.values))[3]
+            if is_slice(index)
+            else 1
+        )
         if not is_slice(index):
             index = storage_index(self.values, index)
-        self._check_resize(len(self.values) - count)
-        del self.values[index]
+        self._check_resize(_byte_storage_length(self.values) - count)
+        _byte_delete(self.values, index)
 
     def __iter__(self):
         iterator = _allocate_instance(StorageIterator)
-        iterator.sequence = self.values
+        iterator.sequence = self
         iterator.index = 0
         iterator.exhausted = False
         return iterator
@@ -4709,15 +4749,24 @@ class bytearray:
     def __eq__(self, other):
         owner = _type_of(other)
         if owner is bytearray or is_instance(other, bytearray):
-            return sequence_equal(self.values, other.values)
+            left = self.values
+            right = other.values
+            if _byte_storage_length(left) != _byte_storage_length(right):
+                return False
+            index = 0
+            while index < _byte_storage_length(left):
+                if _byte_storage_read(left, index) != _byte_storage_read(right, index):
+                    return False
+                index += 1
+            return True
         if owner is bytes or is_instance(other, bytes):
             values = self.values
-            length = _storage_length(values)
+            length = _byte_storage_length(values)
             if length != _storage_length(other):
                 return False
             index = 0
             while index < length:
-                if _storage_read(values, index) != _storage_read(other, index):
+                if _byte_storage_read(values, index) != _storage_read(other, index):
                     return False
                 index += 1
             return True
@@ -4729,7 +4778,9 @@ class bytearray:
 
     def __add__(self, other):
         _require_bytearray(self, "__add__")
-        return bytearray(self.values + _byte_values(other, None, "strict"))
+        result = self.copy()
+        result.extend(other)
+        return result
 
     def __iadd__(self, other):
         _require_bytearray(self, "__iadd__")
@@ -4752,9 +4803,9 @@ class bytearray:
         _require_bytearray(self, "__imul__")
         repeated = _repeat(self.values, count)
         self._check_resize(len(repeated))
-        _storage_delete(self.values, 0, _storage_length(self.values))
+        _storage_delete(self.values, 0, _byte_storage_length(self.values))
         for item in repeated:
-            _storage_append(self.values, item)
+            _byte_storage_append(self.values, item)
         return self
 
     def __repr__(self):
@@ -4764,9 +4815,9 @@ class bytearray:
     def append(self, value):
         _require_bytearray(self, "append")
         value = _byte_value(value)
-        if buffer_exports(self):
+        if _byte_storage_exports(self.values):
             raise BufferError("Existing exports of data: object cannot be re-sized")
-        _storage_append(self.values, value)
+        _byte_storage_append(self.values, value)
 
     def extend(self, values):
         _require_bytearray(self, "extend")
@@ -4774,60 +4825,92 @@ class bytearray:
         owner = _type_of(values)
         if owner is bytes:
             count = _storage_length(values)
-            if count != 0 and buffer_exports(self):
+            if count != 0 and _byte_storage_exports(target):
                 raise BufferError("Existing exports of data: object cannot be re-sized")
             index = 0
             while index < count:
-                _storage_append(target, _storage_read(values, index))
+                _byte_storage_append(target, _storage_read(values, index))
                 index += 1
             return
         if owner is bytearray and values is not self:
             source = values.values
-            count = _storage_length(source)
-            if count != 0 and buffer_exports(self):
+            count = _byte_storage_length(source)
+            if count != 0 and _byte_storage_exports(target):
                 raise BufferError("Existing exports of data: object cannot be re-sized")
             index = 0
             while index < count:
-                _storage_append(target, _storage_read(source, index))
+                _byte_storage_append(target, _byte_storage_read(source, index))
                 index += 1
             return
         values = _byte_values(values, None, "strict")
+        target = self.values
         count = _storage_length(values)
-        self._check_resize(_storage_length(target) + count)
+        self._check_resize(_byte_storage_length(target) + count)
         index = 0
         while index < count:
-            _storage_append(target, _storage_read(values, index))
+            _byte_storage_append(target, _storage_read(values, index))
             index += 1
 
     def insert(self, index, value):
         _require_bytearray(self, "insert")
-        self._check_resize(len(self.values) + 1)
-        self.values.insert(_list_position(self.values, index), _byte_value(value))
+        index = integer_index(index)
+        value = _byte_value(value)
+        self._check_resize(_byte_storage_length(self.values) + 1)
+        position = _list_position(self.values, index)
+        length = _byte_storage_length(self.values)
+        _byte_storage_append(self.values, 0)
+        while length > position:
+            _byte_storage_write(
+                self.values, length, _byte_storage_read(self.values, length - 1)
+            )
+            length -= 1
+        _byte_storage_write(self.values, position, value)
 
     def pop(self, index=-1):
         _require_bytearray(self, "pop")
         index = storage_index(self.values, index)
-        self._check_resize(len(self.values) - 1)
-        return self.values.pop(index)
+        self._check_resize(_byte_storage_length(self.values) - 1)
+        value = _byte_storage_read(self.values, index)
+        _storage_delete(self.values, index, index + 1)
+        return value
 
     def remove(self, value):
         _require_bytearray(self, "remove")
-        index = self.values.index(_byte_value(value))
-        self._check_resize(len(self.values) - 1)
-        del self.values[index]
+        value = _byte_value(value)
+        index = 0
+        while (
+            index < _byte_storage_length(self.values)
+            and _byte_storage_read(self.values, index) != value
+        ):
+            index += 1
+        if index == _byte_storage_length(self.values):
+            raise ValueError("value not found in bytearray")
+        self._check_resize(_byte_storage_length(self.values) - 1)
+        _byte_delete(self.values, index)
 
     def clear(self):
         _require_bytearray(self, "clear")
         self._check_resize(0)
-        self.values.clear()
+        _storage_delete(self.values, 0, _byte_storage_length(self.values))
 
     def copy(self):
         _require_bytearray(self, "copy")
-        return bytearray(self.values)
+        return bytearray(
+            _byte_sublist(self.values, 0, _byte_storage_length(self.values))
+        )
 
     def reverse(self):
         _require_bytearray(self, "reverse")
-        self.values.reverse()
+        left = 0
+        right = _byte_storage_length(self.values) - 1
+        while left < right:
+            value = _byte_storage_read(self.values, left)
+            _byte_storage_write(
+                self.values, left, _byte_storage_read(self.values, right)
+            )
+            _byte_storage_write(self.values, right, value)
+            left += 1
+            right -= 1
 
     def decode(self, encoding="utf-8", errors=_CODEC_ERRORS_MISSING):
         _require_bytearray(self, "decode")
@@ -4889,7 +4972,9 @@ class bytearray:
         _require_bytearray(self, "zfill")
         res = _bytes_zfill(self.values, width)
         if res is None:
-            return bytearray(self.values)
+            return bytearray(
+                _byte_sublist(self.values, 0, _byte_storage_length(self.values))
+            )
         return bytearray(res)
 
     def expandtabs(self, tabsize=8):
@@ -4966,10 +5051,10 @@ class bytearray:
         size = _storage_length(needle)
         if size == 0:
             raise ValueError("empty separator")
-        length = _storage_length(self.values)
+        length = _byte_storage_length(self.values)
         position = _bytes_find_values(self.values, needle, 0, length)
         if position < 0:
-            return (bytearray(self.values), bytearray(), bytearray())
+            return (bytearray(self), bytearray(), bytearray())
         return (
             bytearray(_byte_sublist(self.values, 0, position)),
             bytearray(_byte_sublist(needle, 0, size)),
@@ -4981,10 +5066,10 @@ class bytearray:
         size = _storage_length(needle)
         if size == 0:
             raise ValueError("empty separator")
-        length = _storage_length(self.values)
+        length = _byte_storage_length(self.values)
         position = _bytes_rfind_values(self.values, needle, 0, length)
         if position < 0:
-            return (bytearray(), bytearray(), bytearray(self.values))
+            return (bytearray(), bytearray(), bytearray(self))
         return (
             bytearray(_byte_sublist(self.values, 0, position)),
             bytearray(_byte_sublist(needle, 0, size)),
@@ -4994,7 +5079,9 @@ class bytearray:
     def replace(self, old, new, count=-1, /):
         replaced = _bytes_replaced(self.values, old, new, count)
         if replaced is None:
-            return bytearray(self.values)
+            return bytearray(
+                _byte_sublist(self.values, 0, _byte_storage_length(self.values))
+            )
         return bytearray(replaced)
 
     def translate(self, table, delete=b""):
@@ -5127,21 +5214,21 @@ class memoryview:
     def _byte_at(self, index):
         at = self.start + index * self.step
         if is_instance(self.source, bytearray):
-            return _storage_read(self.source.values, at)
+            return _byte_storage_read(self.source.values, at)
         return _storage_read(self.source, at)
 
     def _set_byte_at(self, index, value):
         if self.readonly:
             raise TypeError("cannot modify read-only memory")
         at = self.start + index * self.step
-        _storage_write(self.source.values, at, _byte_value(value))
+        _byte_storage_write(self.source.values, at, _byte_value(value))
 
     def _itemsize(self):
         return _memoryview_format_size(self.format_code)
 
     def _raw_byte(self, offset):
         if is_instance(self.source, bytearray):
-            return _storage_read(self.source.values, offset)
+            return _byte_storage_read(self.source.values, offset)
         return _storage_read(self.source, offset)
 
     def _value_at(self, index):
@@ -5194,7 +5281,7 @@ class memoryview:
         position = 0
         while position < size:
             at = base + position
-            _storage_write(self.source.values, at, (bits >> (position * 8)) & 0xFF)
+            _byte_storage_write(self.source.values, at, (bits >> (position * 8)) & 0xFF)
             position += 1
 
     def cast(self, format, shape=None):
@@ -5832,6 +5919,7 @@ from _exceptiongroup import (  # noqa: E402
 )
 from _object import _install_code_fields  # noqa: E402
 from _object import _install_builtin_descriptors  # noqa: E402
+
 # The runtime calls complete_class for classes it builds without type.__new__.
 from _object import complete_class  # noqa: E402, F401
 

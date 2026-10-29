@@ -71,6 +71,9 @@ class ValueTypeVisitor:
     def visit_BytesType(self, fact):
         return self.visit_PrimitiveType(fact)
 
+    def visit_ByteStorageType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
     def visit_ByteArrayType(self, fact):
         return self.visit_PrimitiveType(fact)
 
@@ -143,6 +146,10 @@ class ValueType:
 
     @property
     def is_exact_tuple(self):
+        return False
+
+    @property
+    def is_byte_storage(self):
         return False
 
     @property
@@ -2103,6 +2110,33 @@ class TextType(PrimitiveType):
         if self.may_be_unbound or storage_methods is None:
             return UNKNOWN
         return storage_methods.get(("TextStorage", name), UNKNOWN)
+
+
+@dataclass(frozen=True, slots=True)
+class ByteStorageType(PrimitiveType):
+    """Private mutable byte payload, distinct from Python bytes and lists."""
+
+    may_be_unbound: bool = False
+
+    @property
+    def is_byte_storage(self):
+        return not self.may_be_unbound
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
+    def accept(self, visitor):
+        return visitor.visit_ByteStorageType(self)
+
+    def getitem_type(self, index):
+        return IntegerType(0, 255) if index.fits(PYTHON_INTEGER) else UNKNOWN
+
+    def iterate_type(self):
+        return IteratorType(IntegerType(0, 255))
+
+
+BYTE_STORAGE_TYPE = ByteStorageType()
 
 
 @dataclass(frozen=True, slots=True)
@@ -5179,6 +5213,20 @@ class ClassType(ValueType):
     def is_class_object(self) -> bool | None:
         return None if self.may_be_unbound else True
 
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if self.may_be_unbound or not self.instance_types or has_keywords:
+            return UNKNOWN
+        result = BOTTOM
+        for instance in self.instance_types:
+            result = result.join(
+                instance.method_return_type(
+                    "$class:" + name, arity, has_keywords, storage_methods
+                )
+            )
+        return result
+
     def fits_class(self, expected=None):
         return not self.may_be_unbound
 
@@ -5788,6 +5836,9 @@ class _SerializeValueType(ValueTypeVisitor):
     def visit_BytesType(self, fact):
         return {"kind": "bytes", "unbound": fact.may_be_unbound}
 
+    def visit_ByteStorageType(self, fact):
+        return {"kind": "byte_storage", "unbound": fact.may_be_unbound}
+
     def visit_ByteArrayType(self, fact):
         return {"kind": "bytearray", "unbound": fact.may_be_unbound}
 
@@ -5924,6 +5975,8 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return TextType(lit, may_be_unbound=unbound, interned=interned)
     if kind == "bytes":
         return BytesType(may_be_unbound=unbound) if unbound else BYTES_TYPE
+    if kind == "byte_storage":
+        return ByteStorageType(may_be_unbound=unbound) if unbound else BYTE_STORAGE_TYPE
     if kind == "bytearray":
         return ByteArrayType(may_be_unbound=unbound) if unbound else BYTEARRAY_TYPE
     if kind == "function":

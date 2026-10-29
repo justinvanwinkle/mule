@@ -498,6 +498,16 @@ unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
         let Some([value]) = operands(args) else {
             return null_mut();
         };
+        if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::ByteStorage(buffer) = &(*value).data {
+                let mut bytes = Vec::new();
+                if bytes.try_reserve_exact(buffer.length).is_err() {
+                    return fail("MemoryError", "byte storage allocation failed");
+                }
+                bytes.extend_from_slice(buffer.as_slice());
+                return object::new_value(Data::Bytes(bytes, null_mut(), null_mut()));
+            }
+        }
         let values = if !value.is_null() && !object::is_fixnum(value) {
             match &(*value).data {
                 Data::List(values, ..) | Data::Args(values, ..) => Some(values),
@@ -507,7 +517,7 @@ unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
             None
         };
         let Some(values) = values else {
-            return fail("TypeError", "bytes_from_values requires list or tuple storage");
+            return fail("TypeError", "bytes_from_values requires sequence storage");
         };
         let mut bytes = Vec::new();
         if bytes.try_reserve_exact(values.len()).is_err() {

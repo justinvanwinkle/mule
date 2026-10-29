@@ -292,6 +292,12 @@ _BORROWABLE_CONSTANT = _BorrowableConstant()
 def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
     if vop.info is vops.MOVE and vop.codegen_info is DEAD_LOCAL_STORE:
         return True
+    known = vop.info.translate
+    if known is not None and any(
+        index < len(vop.args) and ref is vop.args[index]
+        for index in known.borrowed_args
+    ):
+        return True
     name = vop.info.name
     if name in (
         "physical-field-read",
@@ -1297,8 +1303,6 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
     deliberately conservative about mutable owner locations and operations
     that can exploit reference-count uniqueness through an alias.
     """
-    if component.context.plan is not None:
-        return
     proof = _BorrowedLifetime(component)
     reads = component.reads
     writes = component.writes
@@ -1310,6 +1314,8 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
             if not is_load and not is_const and not is_global:
                 continue
             result = vop.results[0].tn
+            if component.context.plan is not None and result.primitive_type is not T:
+                continue
             result_reads = reads.get(result)
             result_writes = writes.get(result)
             if result_writes is None or len(result_writes) != 1 or result_reads is None:
@@ -3837,6 +3843,11 @@ class _Converter(NodeVisitor):
             self.convert_call_resolved(node)
         elif name in ("%range_prepare", "%range_available", "%range_advance"):
             self.convert_range(node)
+        elif name in ("%byte_iterate", "%byte_available", "%byte_next"):
+            self.convert_template(
+                node,
+                [*(self.lvar_tn(arg) for arg in node.args), self.range_tn(node.info)],
+            )
         elif name == "%unpack":
             arity = self.constant_index(node.args[1])
             shape = self.context.type_of(node.args[0].use())

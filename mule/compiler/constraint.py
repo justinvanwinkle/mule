@@ -2320,7 +2320,8 @@ class _SequenceIteratorVar(NodeVisitor, LeafVisitor):
 
     def visit_Combination(self, node: Combination):
         if (
-            node.fun_info is fndb.SEQUENCE_AVAILABLE
+            node.fun_info is not None
+            and node.fun_info.name in ("%sequence_available", "%byte_available")
             and len(node.args) == 1
             and len(node.args[0].uses) == 1
         ):

@@ -35,6 +35,7 @@ from .boxing import IntegerPayload, ScalarPayload
 if TYPE_CHECKING:
     from .callconv import TupleDelivery, TupleReturnConvention
     from .ctype import ValueType
+    from .knownfun import FunInfo
     from .ltn import EntryContext
     from .node import Combination, Lambda
     from .policy import OptimizationPolicy
@@ -280,7 +281,7 @@ class Template:
     cost: int = 0
     policy: Callable[[OptimizationPolicy], bool] | None = None
     guard: Callable[[Combination], bool] | None = None
-    translate: object = None
+    translate: FunInfo | None = None
     # Which entry contexts may select the template (SBCL's ``ltn-policy``):
     # ``None`` for bodies over object representations, ``"raw"`` for native
     # bodies whose plan assigns machine representations.

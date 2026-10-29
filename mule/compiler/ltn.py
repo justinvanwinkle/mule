@@ -426,9 +426,27 @@ def find_template_for_ltn_policy(call: Combination, context, annotate) -> object
     """Choose the cheapest template whose restrictions the call satisfies
     (``find-template-for-ltn-policy``)."""
     fun_info = linked(call.fun_info, call, "fun_info")
+    if fun_info.name in ("%byte_iterate", "%byte_available", "%byte_next"):
+        state = linked(call.info, call, "byte cursor state")
+        source_type = BOTTOM
+        for producer in state.source.uses:
+            source_type = source_type.join(context.type_of(producer))
+        return source_type.accept(
+            _CursorTemplateSelection(fun_info, context.plan is not None)
+        )
     if fun_info.name in ("%physical_field_ref", "%physical_field_set"):
         return _physical_slot_template(call, context)
-    candidates = templates_for(fun_info)
+    if fun_info.name == "%bytearray_append_byte":
+        from .byteops import APPEND_TEMPLATES, BYTE_VALUE
+
+        policy = "raw" if context.plan is not None else "fast-safe"
+        producers = call.args[1].uses
+        byte_value = bool(producers) and all(
+            context.type_of(producer).fits(BYTE_VALUE) for producer in producers
+        )
+        candidates = (APPEND_TEMPLATES[policy, byte_value],)
+    else:
+        candidates = templates_for(fun_info)
     operands = []
     for arg in call.args:
         if arg.info is None:
@@ -459,6 +477,52 @@ def find_template_for_ltn_policy(call: Combination, context, annotate) -> object
             continue
         return template
     raise NoTemplate(f"no template translates {fun_info.name} under {policy!r}")
+
+
+class _CursorTemplateSelection(ValueTypeVisitor):
+    """Select cursor lowering from the source value type's visitor method."""
+
+    def __init__(self, info, raw):
+        from .byteops import (
+            CURSOR_TEMPLATES,
+            GENERIC_CURSOR,
+            IMMUTABLE_BYTES_CURSOR,
+            IMMUTABLE_TUPLE_CURSOR,
+            MUTABLE_BYTEARRAY_CURSOR,
+            MUTABLE_LIST_CURSOR,
+        )
+
+        self.templates = CURSOR_TEMPLATES
+        self.immutable_bytes = IMMUTABLE_BYTES_CURSOR
+        self.mutable_bytearray = MUTABLE_BYTEARRAY_CURSOR
+        self.immutable_tuple = IMMUTABLE_TUPLE_CURSOR
+        self.mutable_list = MUTABLE_LIST_CURSOR
+        self.generic = GENERIC_CURSOR
+        self.info = info
+        self.raw = raw
+
+    def visit_BytesType(self, fact):
+        return self.templates[self.immutable_bytes, self.info, self.raw]
+
+    def visit_ByteArrayType(self, fact):
+        return self.templates[self.mutable_bytearray, self.info, self.raw]
+
+    def visit_TupleType(self, fact):
+        family = self.immutable_tuple if fact.is_exact_tuple else self.generic
+        return self.templates[family, self.info, self.raw]
+
+    def visit_ListType(self, fact):
+        family = self.mutable_list if fact.is_exact_list else self.generic
+        return self.templates[family, self.info, self.raw]
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound:
+            return self.visit_ValueType(fact)
+        choices = {member.accept(self) for member in fact.members}
+        return choices.pop() if len(choices) == 1 else self.visit_ValueType(fact)
+
+    def visit_ValueType(self, fact):
+        return self.templates[self.generic, self.info, self.raw]
 
 
 def template_args_ok(template, operands) -> bool:

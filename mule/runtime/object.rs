@@ -412,6 +412,8 @@ pub enum Data {
         /// The calling frame, or NULL until the exception reaches it.
         back: Value,
     },
+    /// Private compact mutable storage owned by a compiled bytearray instance.
+    ByteStorage(crate::byte_buffer::ByteBuffer),
 }
 
 /// Byte offsets compiled code reads, from the object address. `Data`'s
@@ -458,6 +460,7 @@ impl Data {
 
     pub fn visit_owned_values(&self, mut visit: impl FnMut(Value)) {
         match self {
+            Self::ByteStorage(_) => (),
             Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
                 visit(*ty); visit(*attributes);
                 for value in values.iter().rev() { visit(*value); }
@@ -501,6 +504,7 @@ impl Data {
 
     pub fn cycle_candidate(&self) -> bool {
         match self {
+            Self::ByteStorage(_) => false,
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
             Self::Args(values, ty, attributes) => {
@@ -3055,6 +3059,7 @@ pub unsafe fn formatted_value(
             return None;
         }
         Some(match &(*value).data {
+            Data::ByteStorage(_) => b"<compact byte storage>".to_vec(),
             Data::None => b"None".to_vec(),
             Data::Bool(value) => {
                 if *value {
@@ -3797,6 +3802,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
         }
         Some(
             match &(*value).data {
+                Data::ByteStorage(_) => "compact byte storage",
                 Data::None => "NoneType",
                 Data::Bool(_) => "bool",
                 Data::BigInt(..) => "int",
