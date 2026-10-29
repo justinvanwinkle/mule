@@ -1546,3 +1546,72 @@ describe the Python mutation and ownership adaptations to SBCL.
        bytecode prefilters.
   4. **Compliance verification**: Validate against CPython's upstream
      `stdlib/test/test_re.py` test suite and `test/mule/compiler/test_regex_repeats.py`.
+
+
+### 6S. `@final` directive support from `mule_types` and on classes and methods (`mule/compiler/final_functions.py`, `mule/compiler/ir1tran.py`) (proposed)
+
+- **Observed impact**: Bootstrap `stdlib/` modules (`stdlib/_pyio.py`,
+  `stdlib/_codecs.py`, `stdlib/_sequences.py`, `stdlib/_str.py`,
+  `stdlib/_object.py`, `stdlib/_dict.py`, `stdlib/_format.py`) and user classes
+  using `@final` from `mule_types` or `typing`.
+- **Current Mule defect**:
+  1. **`FinalFunctions` only recognizes `typing.final`, not `mule_types.final`**:
+     - `mule_types/__init__.py` exports `final` in `__all__` specifically so
+       modules (including bootstrap `stdlib/` modules that must not import
+       `typing` at startup) can declare `@final` bindings without importing
+       `typing`.
+     - However, `FinalFunctions.visit_Import` and `FinalFunctions.visit_ImportFrom`
+       in `mule/compiler/final_functions.py:41-66` only accept `module == "typing"`,
+       ignoring `from mule_types import final` and `import mule_types`
+       (`@mule_types.final`).
+     - In addition, `_EXPORT_BINDINGS` in `mule/compiler/ir1tran.py:5928-5931`
+       registers `"optimize"` as a zero-cost compile-time decorator binding, but
+       does not register `"final"`, causing `from mule_types import final` to
+       emit a runtime import and decorator call (`mule_types.final(fn)`) at
+       module initialization instead of stripping the compile-time declaration.
+  2. **`@final` on classes and methods is ignored (`visit_ClassDefinition` is `pass`)**:
+     - `FinalFunctions.visit_ClassDefinition` (`mule/compiler/final_functions.py:81-82`)
+       is currently `pass`.
+     - Decorating a class or method with `@final` (`@typing.final` or
+       `@mule_types.final`) does not mark the class layout as final/sealed or
+       allow `ir1tran.py` to devirtualize/inline self-calls (`self._helper(...)`)
+       on `@final` methods or classes without requiring a full-program closed-world
+       subclass check.
+- **Required implementation**:
+  1. Recognize both `typing` and `mule_types` in `FinalFunctions`
+     (`mule/compiler/final_functions.py`) and register `"final"` in
+     `_EXPORT_BINDINGS` (`mule/compiler/ir1tran.py`) as a compile-time
+     declaration binding (`runtime_decorators` returning `()`) when imported from
+     `mule_types`.
+  2. Extend `FinalFunctions` and `ir1tran.py` class lowering so `@final` on a
+     class marks the class as disallowing subclassing and enables direct
+     closed-call lowering for its methods, and `@final` on a method enables
+     direct call lowering when the receiver is proven to be an instance of the
+     declaring class (or a subclass that does not override the method).
+
+
+### 6T. Function-scoped and codec lazy imports in bootstrap `stdlib/` modules trigger runtime `--dynamic-module` subprocess compilation (`mule/compiler/modules.py`) (proposed)
+
+- **Observed impact**: Any compiled Mule binary calling `open()` or `str.encode` /
+  `bytes.decode` at runtime incurs a multi-second pause on first file open or
+  codec lookup.
+- **Current Mule defect**:
+  1. `stdlib/_codecs.py` (`_initialize`, line 95) performs a lazy function-scoped
+     `import encodings`, and `encodings.search_function` dynamically imports
+     `encodings.aliases` and common codec modules (`encodings.utf_8`,
+     `encodings.latin_1`, `encodings.ascii`) via `__import__`.
+  2. Because `_ModuleImportScanner` in `mule/compiler/modules.py` only pre-scans
+     static module-level imports of non-primitive modules or explicitly listed
+     dependencies in `ModuleTable.resolve`, `encodings` and its standard UTF-8 /
+     Latin-1 / ASCII codecs are omitted from the AOT binary.
+  3. At runtime, the first `open()` call invokes `_codecs.lookup("utf-8")`,
+     which misses the static module table and spawns a fresh Python compiler
+     subprocess (`python -m mule.compiler --dynamic-module encodings`) to
+     compile `encodings` and `encodings.aliases` on the fly.
+- **Required implementation**:
+  1. In `ModuleTable.resolve` (`mule/compiler/modules.py`), when resolving
+     `_codecs`, pre-resolve `encodings`, `encodings.aliases`, `encodings.utf_8`,
+     `encodings.latin_1`, and `encodings.ascii` (or route standard UTF-8,
+     Latin-1, and ASCII incremental encoders/decoders directly through `_codecs`
+     before importing `encodings`) so standard file I/O never spawns a runtime
+     `--dynamic-module` compiler subprocess.

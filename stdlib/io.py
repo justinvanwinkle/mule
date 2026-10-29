@@ -34,6 +34,9 @@ DEFAULT_BUFFER_SIZE
 """
 # New I/O library conforming to PEP 3116.
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 __author__ = ("Guido van Rossum <guido@python.org>, "
               "Mike Verdone <mike.verdone@gmail.com>, "
               "Mark Russell <mark.russell@zen.co.uk>, "

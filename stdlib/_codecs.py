@@ -4,6 +4,11 @@ The conversions delegate to the str and bytes codec implementations;
 the registry functions are provided for ``codecs`` and encoding modules.
 """
 
+from mule_types import final
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 __all__ = [
     "ascii_decode", "ascii_encode", "charmap_build", "charmap_decode",
     "charmap_encode", "decode", "encode", "escape_decode", "escape_encode",
@@ -18,20 +23,25 @@ __all__ = [
     "utf_8_encode", "unregister",
 ]
 
+
+@final
 def _strict_errors(exc):
     raise exc
 
 
+@final
 def _ignore_errors(exc):
     return "", exc.end
 
 
+@final
 def _replace_errors(exc):
     if isinstance(exc, UnicodeEncodeError):
         return "?", exc.end
     return "\ufffd", exc.end
 
 
+@final
 def _backslashreplace_errors(exc):
     from _str import _escaped_character
 
@@ -40,10 +50,12 @@ def _backslashreplace_errors(exc):
     return "".join("\\x%02x" % byte for byte in exc.object[exc.start:exc.end]), exc.end
 
 
+@final
 def _xmlcharrefreplace_errors(exc):
     return "".join("&#%d;" % ord(c) for c in exc.object[exc.start:exc.end]), exc.end
 
 
+@final
 def _namereplace_errors(exc):
     from unicodedata import name as _ucd_name
     from _str import _escaped_character
@@ -58,6 +70,7 @@ def _namereplace_errors(exc):
     return "".join(pieces), exc.end
 
 
+@final
 def _surrogateescape_errors(exc):
     if isinstance(exc, UnicodeDecodeError):
         values = exc.object[exc.start:exc.end]
@@ -66,6 +79,7 @@ def _surrogateescape_errors(exc):
     raise exc
 
 
+@final
 def _surrogatepass_errors(exc):
     raise exc
 
@@ -86,6 +100,7 @@ _error_handlers = {
 }
 
 
+@final
 def _initialize():
     global _initialized, _initializing
     if _initialized or _initializing:
@@ -111,6 +126,7 @@ def unregister(search_function, /):
         _codec_cache.clear()
 
 
+@final
 def _normalize_encoding(encoding):
     pieces = []
     separator = False
@@ -169,6 +185,7 @@ def decode(value, encoding="utf-8", errors="strict"):
     return result[0]
 
 
+@final
 def _text_codec(encoding, operation):
     info = lookup(encoding)
     if not getattr(info, '_is_text_encoding', True):
@@ -179,6 +196,7 @@ def _text_codec(encoding, operation):
     return tuple.__getitem__(info, 0 if operation == 'encode' else 1)
 
 
+@final
 def _encode_text(value, encoding, errors, supplied):
     encoder = _text_codec(encoding, 'encode')
     result = encoder(value, errors) if supplied else encoder(value)
@@ -202,6 +220,7 @@ def _encode_text(value, encoding, errors, supplied):
     )
 
 
+@final
 def _decode_text(value, encoding, errors, supplied):
     decoder = _text_codec(encoding, 'decode')
     view = memoryview(value)
@@ -217,6 +236,7 @@ def _decode_text(value, encoding, errors, supplied):
     return output
 
 
+@final
 def _encode_as(value, encoding, errors="strict"):
     from _str import _codec_name
     if _codec_name(encoding) is None:
@@ -226,6 +246,7 @@ def _encode_as(value, encoding, errors="strict"):
     return value.encode(encoding, errors), len(value)
 
 
+@final
 def _decode_as(value, encoding, errors="strict"):
     from _str import _codec_name
     if _codec_name(encoding) is None:
@@ -252,7 +273,7 @@ def utf_8_decode(value, errors="strict", final=False):
         code, length = _utf8_sequence(data, start, size, True)
         if code == -2:
             consumed = start
-    return data[:consumed].decode('utf-8', errors), consumed
+    return (data if consumed == size else data[:consumed]).decode('utf-8', errors), consumed
 
 
 def ascii_encode(value, errors="strict"):
@@ -271,6 +292,7 @@ def latin_1_decode(value, errors="strict", final=False):
     return _decode_as(value, "latin-1", errors)
 
 
+@final
 def _utf_16_encode_bytes(value, errors, little_endian, bom):
     if not isinstance(value, str):
         value = str(value)
@@ -308,6 +330,7 @@ def _utf_16_encode_bytes(value, errors, little_endian, bom):
     return bytes(result), size
 
 
+@final
 def _utf_16_decode_bytes(data, errors, little_endian, final):
     data = bytes(data)
     size = len(data)
@@ -402,6 +425,7 @@ def utf_16_ex_decode(value, errors="strict", byteorder=0, final=False):
     return text, offset + consumed, order
 
 
+@final
 def _utf_32_encode_bytes(value, errors, little_endian, bom):
     if not isinstance(value, str):
         value = str(value)
@@ -428,6 +452,7 @@ def _utf_32_encode_bytes(value, errors, little_endian, bom):
     return bytes(result), size
 
 
+@final
 def _utf_32_decode_bytes(data, errors, little_endian, final):
     data = bytes(data)
     size = len(data)

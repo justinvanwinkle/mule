@@ -10,12 +10,16 @@ import stat
 import sys
 # Import _thread instead of threading to reduce startup cost
 from _thread import allocate_lock as Lock
+from _collections_abc import _check_methods
+from mule_types import final
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 if sys.platform in {'win32', 'cygwin'}:
     from msvcrt import setmode as _setmode
 else:
     _setmode = None
-
-from _collections_abc import _check_methods
 
 __all__ = ["BlockingIOError", "open", "open_code", "IOBase", "RawIOBase",
            "FileIO", "BytesIO", "StringIO", "BufferedIOBase",
@@ -101,6 +105,7 @@ BlockingIOError = BlockingIOError
 _CHECK_ERRORS = (hasattr(sys, "gettotalrefcount") or sys.flags.dev_mode)
 
 
+@final
 def text_encoding(encoding, stacklevel=2):
     """
     A helper function to choose the text encoding.
@@ -336,6 +341,7 @@ def open(file, mode="r", buffering=-1, encoding=None, errors=None,
 
 # Define a default pure-Python implementation for open_code()
 # that does not allow hooks. Warn on first use. Defined for tests.
+@final
 def _open_code_with_warning(path):
     """Opens the provided file with mode ``'rb'``. This function
     should be used when the intent is to treat the contents as
@@ -990,6 +996,35 @@ class BytesIO(BufferedIOBase):
         """
         return self.read(size)
 
+    @final
+    def _readline(self, size=-1):
+        buf = self._buffer
+        buf_len = len(buf)
+        pos = self._pos
+        if pos >= buf_len or size == 0:
+            return b""
+        end = buf_len if size < 0 else min(buf_len, pos + size)
+        nl = buf.find(b"\n", pos, end)
+        newpos = nl + 1 if nl >= 0 else end
+        self._pos = newpos
+        return bytes(buf[pos:newpos])
+
+    def readline(self, size=-1):
+        if self.closed:
+            raise ValueError("read from closed file")
+        return self._readline(_optional_size(size))
+
+    def __next__(self):
+        if self.closed:
+            raise ValueError("read from closed file")
+        if type(self) is BytesIO:
+            line = self._readline(-1)
+        else:
+            line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
+
     def write(self, b):
         if isinstance(b, str):
             raise TypeError("can't write str to binary stream")
@@ -1095,6 +1130,7 @@ class BufferedReader(_BufferedIOMixin):
     def readable(self):
         return self.raw.readable()
 
+    @final
     def _reset_read_buf(self):
         self._read_buf = b""
         self._read_pos = 0
@@ -1112,6 +1148,7 @@ class BufferedReader(_BufferedIOMixin):
         with self._read_lock:
             return self._read_unlocked(size)
 
+    @final
     def _read_unlocked(self, n=None):
         nodata_val = b""
         empty_values = (b"", None)
@@ -1175,6 +1212,7 @@ class BufferedReader(_BufferedIOMixin):
         with self._read_lock:
             return self._peek_unlocked(size)
 
+    @final
     def _peek_unlocked(self, n=0):
         want = min(n, self.buffer_size)
         have = len(self._read_buf) - self._read_pos
@@ -1185,6 +1223,78 @@ class BufferedReader(_BufferedIOMixin):
                 self._read_buf = self._read_buf[self._read_pos:] + current
                 self._read_pos = 0
         return self._read_buf[self._read_pos:]
+
+    @final
+    def _readline_unlocked(self, size=-1):
+        if size == 0:
+            return b""
+        buf = self._read_buf
+        pos = self._read_pos
+        buf_len = len(buf)
+        if pos < buf_len:
+            end = buf_len if size < 0 else min(buf_len, pos + size)
+            nl = buf.find(b"\n", pos, end)
+            if nl >= 0:
+                newpos = nl + 1
+                self._read_pos = newpos
+                return buf[pos:newpos]
+            if size >= 0 and end - pos == size:
+                self._read_pos = end
+                return buf[pos:end]
+            chunks = [buf[pos:]]
+            remaining = size - (buf_len - pos) if size >= 0 else -1
+        else:
+            chunks = []
+            remaining = size
+        self._reset_read_buf()
+        empty_values = (b"", None)
+        while True:
+            chunk = self.raw.read(self.buffer_size)
+            if chunk in empty_values:
+                break
+            chunk_len = len(chunk)
+            end = chunk_len if remaining < 0 else min(chunk_len, remaining)
+            nl = chunk.find(b"\n", 0, end)
+            if nl >= 0:
+                newpos = nl + 1
+                self._read_buf = chunk
+                self._read_pos = newpos
+                if not chunks:
+                    return chunk[:newpos]
+                chunks.append(chunk[:newpos])
+                break
+            if remaining >= 0 and end == remaining:
+                self._read_buf = chunk
+                self._read_pos = end
+                if not chunks:
+                    return chunk[:end]
+                chunks.append(chunk[:end])
+                break
+            chunks.append(chunk)
+            if remaining >= 0:
+                remaining -= chunk_len
+        if not chunks:
+            return b""
+        if len(chunks) == 1:
+            return chunks[0]
+        return b"".join(chunks)
+
+    def readline(self, size=-1):
+        self._checkClosed("readline of closed file")
+        size = _optional_size(size)
+        with self._read_lock:
+            return self._readline_unlocked(size)
+
+    def __next__(self):
+        self._checkClosed("readline of closed file")
+        if type(self) is BufferedReader:
+            with self._read_lock:
+                line = self._readline_unlocked(-1)
+        else:
+            line = self.readline()
+        if not line:
+            raise StopIteration
+        return line
 
     def read1(self, size=-1):
         """Reads up to size bytes, with at most one read() system call."""
@@ -1548,6 +1658,7 @@ class BufferedRandom(BufferedWriter, BufferedReader):
         return BufferedWriter.write(self, b)
 
 
+@final
 def _new_buffersize(bytes_read):
     # Parallels _io/fileio.c new_buffersize
     if bytes_read > 65536:
@@ -2052,6 +2163,11 @@ class IncrementalNewlineDecoder(codecs.IncrementalDecoder):
             output = "\r" + output
             self.pendingcr = False
 
+        if "\r" not in output:
+            if "\n" in output:
+                self.seennl |= self._LF
+            return output
+
         # retain last \r even when not translating data:
         # then readline() is sure to get \r\n in one pass
         if output.endswith("\r") and not final:
@@ -2137,7 +2253,7 @@ class TextIOWrapper(TextIOBase):
     write contains a newline character.
     """
 
-    _CHUNK_SIZE = 2048
+    _CHUNK_SIZE = 8192
 
     # Initialize _buffer as soon as possible since it's used by __del__()
     # which calls close()
@@ -2360,11 +2476,13 @@ class TextIOWrapper(TextIOBase):
             self._decoder.reset()
         return length
 
+    @final
     def _get_encoder(self):
         make_encoder = codecs.getincrementalencoder(self._encoding)
         self._encoder = make_encoder(self._errors)
         return self._encoder
 
+    @final
     def _get_decoder(self):
         make_decoder = codecs.getincrementaldecoder(self._encoding)
         decoder = make_decoder(self._errors)
@@ -2376,11 +2494,13 @@ class TextIOWrapper(TextIOBase):
     # The following three methods implement an ADT for _decoded_chars.
     # Text returned from the decoder is buffered here until the client
     # requests it by calling our read() or readline() method.
+    @final
     def _set_decoded_chars(self, chars):
         """Set the _decoded_chars buffer."""
         self._decoded_chars = chars
         self._decoded_chars_used = 0
 
+    @final
     def _get_decoded_chars(self, n=None):
         """Advance into the _decoded_chars buffer."""
         offset = self._decoded_chars_used
@@ -2391,21 +2511,29 @@ class TextIOWrapper(TextIOBase):
         self._decoded_chars_used += len(chars)
         return chars
 
+    @final
     def _get_locale_encoding(self):
         try:
-            import locale
+            from _locale import getencoding
         except ImportError:
-            # Importing locale may fail if Python is being built
-            return "utf-8"
+            try:
+                import locale
+            except ImportError:
+                # Importing locale may fail if Python is being built
+                return "utf-8"
+            else:
+                return locale.getencoding()
         else:
-            return locale.getencoding()
+            return getencoding()
 
+    @final
     def _rewind_decoded_chars(self, n):
         """Rewind the _decoded_chars buffer."""
         if self._decoded_chars_used < n:
             raise AssertionError("rewind decoded_chars out of bounds")
         self._decoded_chars_used -= n
 
+    @final
     def _read_chunk(self):
         """
         Read and decode the next chunk of data from the BufferedReader.
@@ -2687,7 +2815,10 @@ class TextIOWrapper(TextIOBase):
 
     def __next__(self):
         self._telling = False
-        line = self.readline()
+        if type(self) is TextIOWrapper:
+            line = self._readline(-1)
+        else:
+            line = self.readline()
         if not line:
             self._snapshot = None
             self._telling = self._seekable
@@ -2695,8 +2826,6 @@ class TextIOWrapper(TextIOBase):
         return line
 
     def readline(self, size=None):
-        if self.closed:
-            raise ValueError("read from closed file")
         if size is None:
             size = -1
         else:
@@ -2706,15 +2835,49 @@ class TextIOWrapper(TextIOBase):
                 raise TypeError(f"{size!r} is not an integer")
             else:
                 size = size_index()
+        return self._readline(size)
 
-        # Grab all the decoded text (we will rewind any extra bits later).
-        line = self._get_decoded_chars()
-
-        start = 0
-        # Make the decoder if it doesn't already exist.
-        if not self._decoder:
+    @final
+    def _readline(self, size):
+        if self.closed:
+            raise ValueError("read from closed file")
+        if self._decoder is None:
             self._get_decoder()
+        if size == 0:
+            return ""
 
+        chars = self._decoded_chars
+        start = self._decoded_chars_used
+        chars_len = len(chars)
+        if start >= chars_len:
+            while self._read_chunk():
+                if self._decoded_chars:
+                    break
+            chars = self._decoded_chars
+            start = self._decoded_chars_used
+            chars_len = len(chars)
+            if start >= chars_len:
+                self._set_decoded_chars('')
+                self._snapshot = None
+                return ""
+
+        # Fast path: find the newline directly inside _decoded_chars[start:]
+        # without slicing the remaining buffer on every line.
+        if self._readtranslate:
+            pos = chars.find('\n', start)
+            if pos >= 0:
+                endpos = pos + 1
+                if size >= 0 and endpos - start > size:
+                    endpos = start + size
+                self._decoded_chars_used = endpos
+                return chars[start:endpos]
+            if size >= 0 and chars_len - start >= size:
+                endpos = start + size
+                self._decoded_chars_used = endpos
+                return chars[start:endpos]
+
+        line = self._get_decoded_chars()
+        start = 0
         pos = endpos = None
         while True:
             if self._readtranslate:
@@ -3060,6 +3223,7 @@ _STRINGIO_FIELDS = ("_readnl", "_readuniversal", "_readtranslate", "_writenl",
                     "_decoder", "_chunks", "_size", "_pos", "_stringio_closed")
 
 
+@final
 def _optional_size(size):
     if size is None:
         return -1
@@ -3071,6 +3235,7 @@ def _optional_size(size):
     return size_index()
 
 
+@final
 def _index(value):
     try:
         value_index = value.__index__
