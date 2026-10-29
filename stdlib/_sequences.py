@@ -23,7 +23,7 @@ from _object import _bytes_special
 from _object import _index_integer
 from _mule_native import text_from_codepoints
 from _mule_native import typed_value
-from _str import TextStorage, ascii, decode, find_in, format, ord, repr
+from _str import TextIterator, TextStorage, ascii, decode, find_in, format, ord, repr
 from _str import str as _make_str
 from _str import _MISSING as _CODEC_ERRORS_MISSING
 from _attributes import delattr, getattr, hasattr, setattr
@@ -78,6 +78,9 @@ from _mule_native import math_fabs
 from _mule_native import set_instance_field
 from _mule_native import type_of
 from _slice import is_slice, positions, slice
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
 
 # ruff: noqa: F821
 
@@ -695,6 +698,8 @@ def abs(value, /):
 
 
 def integer_index(value):
+    if _type_of(value) is int:
+        return _integer_storage(value)
     if _index_method(value) is None:
         return _integer_storage(value)
     return _index_integer(value)
@@ -714,13 +719,23 @@ def getitem(value, index):
         if entry >= 0:
             return _storage_read(_instance_field(value, "_values"), entry)
         raise KeyError(index)
+    if cls is list:
+        if is_slice(index):
+            return _selected(value, index)
+        return _storage_read(value, storage_index(value, index))
+    if cls is tuple:
+        if is_slice(index):
+            return _storage_tuple(_selected(value, index))
+        return _storage_read(value, storage_index(value, index))
+    if cls is str:
+        return TextStorage.__getitem__(value, index)
+    if cls is bytes:
+        return BytesStorage.__getitem__(value, index)
     if cls is bytearray:
         values = value.values
         if is_slice(index):
             return bytearray(_selected(values, index))
         return _storage_read(values, storage_index(values, index))
-    if cls is list and is_slice(index):
-        return _selected(value, index)
     return _getitem_general(value, index)
 
 
@@ -1237,10 +1252,7 @@ def set_xor(left, right):
 
 def bytearray_getitem(array, index):
     values = array.values
-    if _index_method(index) is None:
-        index = _integer_storage(index)
-    else:
-        index = _index_integer(index)
+    index = integer_index(index)
     length = _byte_storage_length(values)
     if index < 0:
         index += length
@@ -1251,29 +1263,20 @@ def bytearray_getitem(array, index):
 
 def bytearray_setitem(array, index, item):
     values = array.values
-    if _index_method(index) is None:
-        index = _integer_storage(index)
-    else:
-        index = _index_integer(index)
+    index = integer_index(index)
     length = _byte_storage_length(values)
     if index < 0:
         index += length
     if index < 0 or index >= length:
         raise IndexError("sequence index out of range")
-    if _index_method(item) is None:
-        item = _integer_storage(item)
-    else:
-        item = _index_integer(item)
+    item = integer_index(item)
     if item < 0 or item > 255:
         raise ValueError("byte must be in range(0, 256)")
     _byte_storage_write(values, index, item)
 
 
 def bytearray_append(array, value):
-    if _index_method(value) is None:
-        value = _integer_storage(value)
-    else:
-        value = _index_integer(value)
+    value = integer_index(value)
     if value < 0 or value > 255:
         raise ValueError("byte must be in range(0, 256)")
     if _byte_storage_exports(array.values):
@@ -1295,9 +1298,13 @@ def _getitem_general(value, index):
 
 
 def delitem(value, index):
-    if _type_of(value) is dict:
+    cls = _type_of(value)
+    if cls is dict:
         if _table_remove(value, index) is _DICT_MISSING:
             raise KeyError(index)
+        return
+    if cls is list:
+        ListStorage.__delitem__(value, index)
         return
     method = _delitem_method(value)
     if method is None:
@@ -1484,6 +1491,8 @@ ReverseIterator.__qualname__ = "reversed"
 
 def reversed(sequence, /):
     cls = _type_of(sequence)
+    if cls is list:
+        return ListReverseIterator(sequence)
     if cls is tuple:
         items = list(sequence)
         _reverse_in_place(items)
@@ -1992,15 +2001,18 @@ def setitem(value, index, item):
     if cls is dict:
         _table_insert(value, index, item)
         return
+    if cls is list:
+        if is_slice(index):
+            _list_set_slice(value, index, item)
+            return
+        _storage_write(value, storage_index(value, index), item)
+        return
     if cls is bytearray:
         if is_slice(index):
             bytearray.__setitem__(value, index, item)
             return
         values = value.values
         _storage_write(values, storage_index(values, index), _byte_value(item))
-        return
-    if cls is list and is_slice(index):
-        _list_set_slice(value, index, item)
         return
     method = _setitem_method(value)
     if method is None:
@@ -2011,7 +2023,9 @@ def setitem(value, index, item):
 
 
 def storage_index(value, index):
-    if _index_method(index) is None:
+    if _type_of(index) is int:
+        index = _integer_storage(index)
+    elif _index_method(index) is None:
         index = _integer_storage(index)
     else:
         index = _index_integer(index)
@@ -2084,6 +2098,10 @@ class TupleIterator(StorageIterator):
     pass
 
 
+class BytesIterator(StorageIterator):
+    pass
+
+
 class ListReverseIterator:
     def __init__(self, sequence):
         self.sequence = sequence
@@ -2112,6 +2130,8 @@ StorageIterator.__name__ = "list_iterator"
 StorageIterator.__qualname__ = "list_iterator"
 TupleIterator.__name__ = "tuple_iterator"
 TupleIterator.__qualname__ = "tuple_iterator"
+BytesIterator.__name__ = "bytes_iterator"
+BytesIterator.__qualname__ = "bytes_iterator"
 ListReverseIterator.__name__ = "list_reverseiterator"
 ListReverseIterator.__qualname__ = "list_reverseiterator"
 
@@ -3698,7 +3718,7 @@ class BytesStorage:
 
     def __iter__(self):
         _require_bytes(self, "__iter__")
-        return SequenceIterator(self)
+        return BytesIterator(self)
 
     def __buffer__(self, flags, /):
         return memoryview(self)
@@ -3891,6 +3911,17 @@ def _iterate(value, membership):
         iterator.index = 0
         iterator.exhausted = False
         return iterator
+    if cls is str:
+        iterator = _allocate_instance(TextIterator)
+        iterator.text = value
+        iterator.index = 0
+        return iterator
+    if cls is bytes:
+        iterator = _allocate_instance(BytesIterator)
+        iterator.sequence = value
+        iterator.index = 0
+        iterator.exhausted = False
+        return iterator
     if cls is bytearray:
         iterator = _allocate_instance(StorageIterator)
         iterator.sequence = value
@@ -3976,7 +4007,7 @@ def text_not_contains(text, item):
 
 def next_item(value):
     cls = _type_of(value)
-    if cls is StorageIterator or cls is TupleIterator:
+    if cls is StorageIterator or cls is TupleIterator or cls is BytesIterator:
         if value.exhausted:
             raise StopIteration
         index = value.index
@@ -3987,6 +4018,25 @@ def next_item(value):
         item = _storage_read(sequence, index)
         value.index = index + 1
         return item
+    if cls is TextIterator:
+        index = value.index
+        text = value.text
+        if index >= _text_length(text):
+            raise StopIteration
+        value.index = index + 1
+        return _text_character(text, index)
+    if cls is RangeIterator:
+        current = value.current
+        step = value.step
+        if (
+            value.exhausted
+            or (step > 0 and current >= value.stop)
+            or (step < 0 and current <= value.stop)
+        ):
+            value.exhausted = True
+            raise StopIteration
+        value.current = current + step
+        return current
     if cls is Enumerate:
         item = next_item(value.iterator)
         index = value.index
@@ -4538,10 +4588,7 @@ def _integer_storage_kind(value):
 
 
 def _byte_value(value, range_message="byte must be in range(0, 256)"):
-    if _index_method(value) is None:
-        value = _integer_storage(value)
-    else:
-        value = _index_integer(value)
+    value = integer_index(value)
     if value < 0 or value > 255:
         raise ValueError(range_message)
     return value

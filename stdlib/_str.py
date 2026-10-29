@@ -36,6 +36,9 @@ from _unicode_data import (
     upper_full,
 )
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
 
@@ -57,7 +60,9 @@ def _start_bound(length, start):
     ``ADJUST_INDICES`` does; ``start`` may still exceed ``length``."""
     if start is None:
         return 0
-    if _index_method(start) is not None:
+    if _type_of(start) is int:
+        start = _integer_storage(start)
+    elif _index_method(start) is not None:
         start = _index(start)
     else:
         start = _integer_storage(start)
@@ -74,7 +79,9 @@ def _end_bound(length, end):
     """Clamp optional ``end`` like slice indices."""
     if end is None:
         return length
-    if _index_method(end) is not None:
+    if _type_of(end) is int:
+        end = _integer_storage(end)
+    elif _index_method(end) is not None:
         end = _index(end)
     else:
         end = _integer_storage(end)
@@ -1253,7 +1260,9 @@ class TextStorage:
         return _text_join((self, other))
 
     def __mul__(self, count):
-        if _index_method(count) is None:
+        if _type_of(count) is int:
+            count = _integer_storage(count)
+        elif _index_method(count) is None:
             try:
                 count = _integer_storage(count)
             except TypeError:
@@ -1367,64 +1376,16 @@ class TextStorage:
         if not _text_storage(sub):
             _require_text(sub, "find() argument 1 must be str")
         length = _text_length(self)
-        if start is None:
-            start = 0
-        else:
-            if _index_method(start) is not None:
-                start = _index(start)
-            else:
-                start = _integer_storage(start)
-            if start < 0:
-                start += length
-                if start < 0:
-                    start = 0
-            elif start > length:
-                start = length + 1
-        if end is None:
-            end = length
-        else:
-            if _index_method(end) is not None:
-                end = _index(end)
-            else:
-                end = _integer_storage(end)
-            if end > length:
-                end = length
-            elif end < 0:
-                end += length
-                if end < 0:
-                    end = 0
+        start = 0 if start is None else _start_bound(length, start)
+        end = length if end is None else _end_bound(length, end)
         return find_in(self, sub, start, end)
 
     def rfind(self, sub, start=None, end=None, /):
         if not _text_storage(sub):
             _require_text(sub, "rfind() argument 1 must be str")
         length = _text_length(self)
-        if start is None:
-            start = 0
-        else:
-            if _index_method(start) is not None:
-                start = _index(start)
-            else:
-                start = _integer_storage(start)
-            if start < 0:
-                start += length
-                if start < 0:
-                    start = 0
-            elif start > length:
-                start = length + 1
-        if end is None:
-            end = length
-        else:
-            if _index_method(end) is not None:
-                end = _index(end)
-            else:
-                end = _integer_storage(end)
-            if end > length:
-                end = length
-            elif end < 0:
-                end += length
-                if end < 0:
-                    end = 0
+        start = 0 if start is None else _start_bound(length, start)
+        end = length if end is None else _end_bound(length, end)
         return rfind_in(self, sub, start, end)
 
     def index(self, sub, start=None, end=None, /):
@@ -1515,7 +1476,9 @@ class TextStorage:
         return _text_join(pieces)
 
     def split(self, sep=None, maxsplit=-1):
-        if _index_method(maxsplit) is not None:
+        if _type_of(maxsplit) is int:
+            maxsplit = _integer_storage(maxsplit)
+        elif _index_method(maxsplit) is not None:
             maxsplit = _index(maxsplit)
         else:
             maxsplit = _integer_storage(maxsplit)
@@ -1541,7 +1504,9 @@ class TextStorage:
         return result
 
     def rsplit(self, sep=None, maxsplit=-1):
-        if _index_method(maxsplit) is not None:
+        if _type_of(maxsplit) is int:
+            maxsplit = _integer_storage(maxsplit)
+        elif _index_method(maxsplit) is not None:
             maxsplit = _index(maxsplit)
         else:
             maxsplit = _integer_storage(maxsplit)

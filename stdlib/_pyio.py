@@ -11,7 +11,7 @@ import sys
 # Import _thread instead of threading to reduce startup cost
 from _thread import allocate_lock as Lock
 from _collections_abc import _check_methods
-from mule_types import final
+from mule_types import optimize
 
 __speed__ = 3
 __mule_builtin_implementation__ = True
@@ -105,7 +105,7 @@ BlockingIOError = BlockingIOError
 _CHECK_ERRORS = (hasattr(sys, "gettotalrefcount") or sys.flags.dev_mode)
 
 
-@final
+@optimize(speed=3)
 def text_encoding(encoding, stacklevel=2):
     """
     A helper function to choose the text encoding.
@@ -341,7 +341,7 @@ def open(file, mode="r", buffering=-1, encoding=None, errors=None,
 
 # Define a default pure-Python implementation for open_code()
 # that does not allow hooks. Warn on first use. Defined for tests.
-@final
+@optimize(speed=3)
 def _open_code_with_warning(path):
     """Opens the provided file with mode ``'rb'``. This function
     should be used when the intent is to treat the contents as
@@ -996,7 +996,7 @@ class BytesIO(BufferedIOBase):
         """
         return self.read(size)
 
-    @final
+    @optimize(speed=3)
     def _readline(self, size=-1):
         buf = self._buffer
         buf_len = len(buf)
@@ -1130,7 +1130,7 @@ class BufferedReader(_BufferedIOMixin):
     def readable(self):
         return self.raw.readable()
 
-    @final
+    @optimize(speed=3)
     def _reset_read_buf(self):
         self._read_buf = b""
         self._read_pos = 0
@@ -1148,7 +1148,7 @@ class BufferedReader(_BufferedIOMixin):
         with self._read_lock:
             return self._read_unlocked(size)
 
-    @final
+    @optimize(speed=3)
     def _read_unlocked(self, n=None):
         nodata_val = b""
         empty_values = (b"", None)
@@ -1212,7 +1212,7 @@ class BufferedReader(_BufferedIOMixin):
         with self._read_lock:
             return self._peek_unlocked(size)
 
-    @final
+    @optimize(speed=3)
     def _peek_unlocked(self, n=0):
         want = min(n, self.buffer_size)
         have = len(self._read_buf) - self._read_pos
@@ -1224,7 +1224,7 @@ class BufferedReader(_BufferedIOMixin):
                 self._read_pos = 0
         return self._read_buf[self._read_pos:]
 
-    @final
+    @optimize(speed=3)
     def _readline_unlocked(self, size=-1):
         if size == 0:
             return b""
@@ -1658,7 +1658,7 @@ class BufferedRandom(BufferedWriter, BufferedReader):
         return BufferedWriter.write(self, b)
 
 
-@final
+@optimize(speed=3)
 def _new_buffersize(bytes_read):
     # Parallels _io/fileio.c new_buffersize
     if bytes_read > 65536:
@@ -2476,13 +2476,13 @@ class TextIOWrapper(TextIOBase):
             self._decoder.reset()
         return length
 
-    @final
+    @optimize(speed=3)
     def _get_encoder(self):
         make_encoder = codecs.getincrementalencoder(self._encoding)
         self._encoder = make_encoder(self._errors)
         return self._encoder
 
-    @final
+    @optimize(speed=3)
     def _get_decoder(self):
         make_decoder = codecs.getincrementaldecoder(self._encoding)
         decoder = make_decoder(self._errors)
@@ -2494,13 +2494,13 @@ class TextIOWrapper(TextIOBase):
     # The following three methods implement an ADT for _decoded_chars.
     # Text returned from the decoder is buffered here until the client
     # requests it by calling our read() or readline() method.
-    @final
+    @optimize(speed=3)
     def _set_decoded_chars(self, chars):
         """Set the _decoded_chars buffer."""
         self._decoded_chars = chars
         self._decoded_chars_used = 0
 
-    @final
+    @optimize(speed=3)
     def _get_decoded_chars(self, n=None):
         """Advance into the _decoded_chars buffer."""
         offset = self._decoded_chars_used
@@ -2511,29 +2511,18 @@ class TextIOWrapper(TextIOBase):
         self._decoded_chars_used += len(chars)
         return chars
 
-    @final
+    @optimize(speed=3)
     def _get_locale_encoding(self):
-        try:
-            from _locale import getencoding
-        except ImportError:
-            try:
-                import locale
-            except ImportError:
-                # Importing locale may fail if Python is being built
-                return "utf-8"
-            else:
-                return locale.getencoding()
-        else:
-            return getencoding()
+        return sys.getfilesystemencoding()
 
-    @final
+    @optimize(speed=3)
     def _rewind_decoded_chars(self, n):
         """Rewind the _decoded_chars buffer."""
         if self._decoded_chars_used < n:
             raise AssertionError("rewind decoded_chars out of bounds")
         self._decoded_chars_used -= n
 
-    @final
+    @optimize(speed=3)
     def _read_chunk(self):
         """
         Read and decode the next chunk of data from the BufferedReader.
@@ -2837,7 +2826,7 @@ class TextIOWrapper(TextIOBase):
                 size = size_index()
         return self._readline(size)
 
-    @final
+    @optimize(speed=3)
     def _readline(self, size):
         if self.closed:
             raise ValueError("read from closed file")
@@ -3223,7 +3212,7 @@ _STRINGIO_FIELDS = ("_readnl", "_readuniversal", "_readtranslate", "_writenl",
                     "_decoder", "_chunks", "_size", "_pos", "_stringio_closed")
 
 
-@final
+@optimize(speed=3)
 def _optional_size(size):
     if size is None:
         return -1
@@ -3235,7 +3224,7 @@ def _optional_size(size):
     return size_index()
 
 
-@final
+@optimize(speed=3)
 def _index(value):
     try:
         value_index = value.__index__

@@ -9,13 +9,11 @@ Written by Marc-Andre Lemburg (mal@lemburg.com).
 
 import builtins
 import sys
+import _codecs
+from _codecs import *
 
-### Registry and builtin stateless codec functions
-
-try:
-    from _codecs import *
-except ImportError as why:
-    raise SystemError('Failed to load the builtin codecs: %s' % why)
+__speed__ = 3
+__mule_builtin_implementation__ = True
 
 __all__ = ["register", "lookup", "open", "EncodedFile", "BOM", "BOM_BE",
            "BOM_LE", "BOM32_BE", "BOM32_LE", "BOM64_BE", "BOM64_LE",
@@ -1117,6 +1115,107 @@ replace_errors = lookup_error("replace")
 xmlcharrefreplace_errors = lookup_error("xmlcharrefreplace")
 backslashreplace_errors = lookup_error("backslashreplace")
 namereplace_errors = lookup_error("namereplace")
+
+
+def _utf_8_decode_final(input, errors='strict'):
+    return utf_8_decode(input, errors, True)
+
+
+class _UTF8IncrementalEncoder(IncrementalEncoder):
+    def encode(self, input, final=False):
+        return utf_8_encode(input, self.errors)[0]
+
+
+class _UTF8IncrementalDecoder(BufferedIncrementalDecoder):
+    _buffer_decode = utf_8_decode
+
+
+class _UTF8StreamWriter(StreamWriter):
+    encode = utf_8_encode
+
+
+class _UTF8StreamReader(StreamReader):
+    decode = utf_8_decode
+
+
+class _ASCIIIncrementalEncoder(IncrementalEncoder):
+    def encode(self, input, final=False):
+        return ascii_encode(input, self.errors)[0]
+
+
+class _ASCIIIncrementalDecoder(IncrementalDecoder):
+    def decode(self, input, final=False):
+        return ascii_decode(input, self.errors)[0]
+
+
+class _ASCIIStreamWriter(StreamWriter):
+    encode = ascii_encode
+
+
+class _ASCIIStreamReader(StreamReader):
+    decode = ascii_decode
+
+
+class _Latin1IncrementalEncoder(IncrementalEncoder):
+    def encode(self, input, final=False):
+        return latin_1_encode(input, self.errors)[0]
+
+
+class _Latin1IncrementalDecoder(IncrementalDecoder):
+    def decode(self, input, final=False):
+        return latin_1_decode(input, self.errors)[0]
+
+
+class _Latin1StreamWriter(StreamWriter):
+    encode = latin_1_encode
+
+
+class _Latin1StreamReader(StreamReader):
+    decode = latin_1_decode
+
+
+_utf8_codec_info = CodecInfo(
+    name='utf-8',
+    encode=utf_8_encode,
+    decode=_utf_8_decode_final,
+    incrementalencoder=_UTF8IncrementalEncoder,
+    incrementaldecoder=_UTF8IncrementalDecoder,
+    streamreader=_UTF8StreamReader,
+    streamwriter=_UTF8StreamWriter,
+)
+_ascii_codec_info = CodecInfo(
+    name='ascii',
+    encode=ascii_encode,
+    decode=ascii_decode,
+    incrementalencoder=_ASCIIIncrementalEncoder,
+    incrementaldecoder=_ASCIIIncrementalDecoder,
+    streamreader=_ASCIIStreamReader,
+    streamwriter=_ASCIIStreamWriter,
+)
+_latin1_codec_info = CodecInfo(
+    name='iso8859-1',
+    encode=latin_1_encode,
+    decode=latin_1_decode,
+    incrementalencoder=_Latin1IncrementalEncoder,
+    incrementaldecoder=_Latin1IncrementalDecoder,
+    streamreader=_Latin1StreamReader,
+    streamwriter=_Latin1StreamWriter,
+)
+for _alias, _info in (
+    ("utf_8", _utf8_codec_info),
+    ("utf8", _utf8_codec_info),
+    ("cp65001", _utf8_codec_info),
+    ("ascii", _ascii_codec_info),
+    ("us_ascii", _ascii_codec_info),
+    ("646", _ascii_codec_info),
+    ("latin_1", _latin1_codec_info),
+    ("latin1", _latin1_codec_info),
+    ("iso8859_1", _latin1_codec_info),
+    ("iso_8859_1", _latin1_codec_info),
+    ("8859", _latin1_codec_info),
+):
+    _codecs._codec_cache[_alias] = _info
+del _alias, _info
 
 # Tell modulefinder that using codecs probably needs the encodings
 # package

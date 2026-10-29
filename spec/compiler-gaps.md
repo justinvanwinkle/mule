@@ -1615,3 +1615,40 @@ describe the Python mutation and ownership adaptations to SBCL.
      Latin-1, and ASCII incremental encoders/decoders directly through `_codecs`
      before importing `encodings`) so standard file I/O never spawns a runtime
      `--dynamic-module` compiler subprocess.
+
+
+### 6U. Runtime special-method helpers allocate heap `Data::BoundMethod` and `String` on every call (`mule/runtime/object.rs`, `mule/runtime/classes.rs`) (proposed)
+
+- **Observed impact**: Any unspecialized special-method dispatch (`next()`,
+  `iter()`, `x[i]`, `x[i] = v`, `del x[i]`, `+x`, `-x`, `~x`, `abs(x)`,
+  `str(x)`, `repr(x)`, `format(x)`, `operator.index(x)`, `with` context
+  managers) and `class_lookup_default` in `stdlib/_sequences.py`,
+  `stdlib/_object.py`, and `stdlib/_format.py`.
+- **Current Mule defect**:
+  1. **Heap `Data::BoundMethod` allocation per special-method call**:
+     - `mule_object_next_method`, `mule_object_getitem_method`,
+       `mule_object_setitem_method`, `mule_object_delitem_method`,
+       `mule_object_pos_method`, `mule_object_neg_method`,
+       `mule_object_invert_method`, `mule_object_abs_method`,
+       `mule_object_str_method`, `mule_object_repr_method`,
+       `mule_object_format_method`, and `mule_object_index_method` in
+       `mule/runtime/object.rs` look up the special method on `type(value)` and
+       call `classes::bind_instance_attribute`, which allocates a boxed
+       `Data::BoundMethod { function, receiver }` on the heap just so the
+       caller can immediately invoke `method(...)` and drop it.
+  2. **Heap `String` allocation and MRO hash walk in `mule_class_lookup_default`**:
+     - `mule_class_lookup_default(class, name, default)` in
+       `mule/runtime/classes.rs` calls `object::string_value(name)` (allocating
+       a new Rust `String` on the heap on every call) and walks `mro_lookup`,
+       ignoring the precomputed `ClassLayout::special_slot` table.
+- **Required implementation**:
+  1. In `mule/runtime/classes.rs`, make `mule_class_lookup_default` borrow
+     `Data::Text` ASCII bytes directly (`text.as_ascii_bytes()`) without heap
+     `String` allocation, and consult `ClassLayout::special_slot(name)` before
+     falling back to `mro_lookup`.
+  2. Provide direct unbound special-method invocation primitives (or lower
+     `_next_method(x)()`, `_getitem_method(x)(i)`, etc.) that pass `receiver` as
+     arg 0 to `Data::Function` without allocating a transient
+     `Data::BoundMethod` on the heap, matching CPython's
+     `_PyObject_VectorcallTstate` / `PY_VECTORCALL_ARGUMENTS_OFFSET` special
+     method call path.
