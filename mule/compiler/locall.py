@@ -70,6 +70,7 @@ from .ctype import (
     UNKNOWN,
     ClassType,
     DictType,
+    FunctionType,
     InstanceType,
     IntegerType,
     ListType,
@@ -646,6 +647,17 @@ class LambdaFacts:
     parameters: tuple[ValueType, ...] = ()
     element_contracts: dict[object, object] = field(default_factory=dict)
     in_bounds_nodes: frozenset[object] = frozenset()
+    final_bindings: tuple[GlobalVar, ...] = ()
+
+    def ready_final_facts(self, types, targets):
+        """Facts valid after the body's final-binding readiness guard."""
+        ready_types, ready_targets = dict(types), dict(targets)
+        for binding in self.final_bindings:
+            for ref in binding.refs:
+                if ref in types:
+                    ready_types[ref] = FunctionType(target=binding.final_function)
+                    ready_targets[ref] = binding.final_function
+        return ready_types, ready_targets
 
     def method_return_type(self, receiver: ValueType) -> ValueType:
         """Predict a method result without narrowing its ordinary arguments.
@@ -4792,6 +4804,13 @@ def analyze(
                 )
             )
         facts.variants = tuple(entries)
+        if lambda_.kind is not FunctionalKind.TOPLEVEL:
+            facts.final_bindings = tuple(
+                leaf
+                for leaf in global_leaves[lambda_.namespace].values()
+                if leaf.final_function is not None
+                and any(ref in facts.types for ref in leaf.refs)
+            )
         results[lambda_] = facts
         _mark_guarded_calls(graph, general)
         _publish_derived_types(lambda_, graph, facts.types)

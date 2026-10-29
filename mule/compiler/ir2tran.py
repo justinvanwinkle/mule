@@ -408,6 +408,46 @@ class CallSite:
     proven: bool
     borrowable_arguments: frozenset[int] = frozenset()
     local_environment: bool = False
+    final_binding: bool = False
+    callee_required: bool = True
+
+
+def _final_call_needs_object(target, call, caller):
+    if target.takes_closure or target.namespace != caller.namespace:
+        return True
+    keywords = call.info.keywords if call.info is not None else ()
+    order = target.call_order(keywords, len(call.args))
+    return order is None or any(index < 0 for index in order)
+
+
+class _FinalBindingRef(NodeVisitor, LeafVisitor):
+    def __init__(self, context):
+        self.context = context
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node):
+        return node.leaf.accept(self)
+
+    def visit_GlobalVar(self, leaf):
+        return leaf.final_function if leaf in self.context.final_bindings else None
+
+
+class _ObjectFreeFinalUse(NodeVisitor):
+    def __init__(self, lvar, target, caller):
+        self.lvar, self.target, self.caller = lvar, target, caller
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node):
+        return node.fun is self.lvar and not _final_call_needs_object(
+            self.target, node, self.caller
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2935,6 +2975,14 @@ class _LoadLeaf(LeafVisitor):
         self.load(vops.CONSTANT, info=leaf.value)
 
     def visit_GlobalVar(self, leaf: GlobalVar):
+        node = linked(self.node, self, "reference node")
+        final_target = node.accept(_FinalBindingRef(self.converter.context))
+        if final_target is not None and node.lvar is not None:
+            consumer = node.lvar.dest
+            if consumer is not None and consumer.accept(
+                _ObjectFreeFinalUse(node.lvar, final_target, self.converter.lambda_)
+            ):
+                return
         self.load(vops.LOAD_GLOBAL, info=leaf)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
@@ -3912,6 +3960,13 @@ class _Converter(NodeVisitor):
             target,
             proven,
             borrowable,
+            final_binding=fun.use().accept(_FinalBindingRef(self.context)) is target
+            and target is not None,
+            callee_required=not (
+                target is not None
+                and fun.use().accept(_FinalBindingRef(self.context)) is target
+                and not _final_call_needs_object(target, node, self.lambda_)
+            ),
         )
         result, discard = self.result_tn(node)
         if discard and not proven:
@@ -3924,7 +3979,10 @@ class _Converter(NodeVisitor):
         self.emit(
             template,
             node,
-            args=(self.lvar_tn(fun), *(self.lvar_tn(arg) for arg in node.args)),
+            args=(
+                *((self.lvar_tn(fun),) if site.callee_required else ()),
+                *(self.lvar_tn(arg) for arg in node.args),
+            ),
             results=(result,),
             info=site,
         )
