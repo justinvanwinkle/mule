@@ -18,6 +18,13 @@ link Mule's Rust runtime, GMP, and platform services required by Rust. They
 have no CPython headers, API dependencies, library links, interpreter initialization,
 or Python installation paths. Program source files are read as UTF-8.
 
+Both commands accept `--arch ARCH`, which passes `-march=ARCH` to Clang for
+compilation and linking, including LTO. For example, `mule --arch native script.py`
+or `python -m mule.compiler script.py --arch native -O3 -o program` enables the
+host CPU's instruction set for generated LLVM units. Omitting the option retains
+Clang's default target. The architecture is part of the Clang artifact cache
+settings. This option does not change the Rust runtime's compilation flags.
+
 `uv run mule` runs a program the way the `python` command does:
 `mule script.py args`, `mule -m module args` (a package runs its `__main__`
 submodule), `mule -c command args` and `mule - args`. Options end at the program;

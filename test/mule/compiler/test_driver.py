@@ -4,7 +4,26 @@ from pathlib import Path
 import pytest
 
 from mule.compiler import ToolchainError, build
-from mule.compiler.driver import link_llvm
+from mule.compiler.driver import Toolchain, link_llvm
+
+
+@pytest.mark.parametrize("arch", [None, "native", "x86-64-v3"])
+@pytest.mark.parametrize("lto", [False, True])
+def test_architecture_is_forwarded_to_clang_compile_and_link(arch, lto):
+    toolchain = Toolchain(optimize=3, lto=lto, arch=arch)
+    for flags in (toolchain.compile_flags(), toolchain.link_flags()):
+        architecture_flags = [flag for flag in flags if flag.startswith("-march=")]
+        assert architecture_flags == ([] if arch is None else [f"-march={arch}"])
+
+
+def test_architecture_changes_clang_artifact_cache_identity():
+    from mule.compiler.artifacts import artifact_key
+
+    keys = {
+        artifact_key(Toolchain(arch=arch).clang_settings(), [])
+        for arch in (None, "native", "x86-64-v3")
+    }
+    assert len(keys) == 3
 
 
 def test_failed_compilation_preserves_existing_executable(tmp_path):

@@ -68,6 +68,28 @@ def test_lto_is_independent_and_stops_at_program_boundary(
     assert options.lto is lto
 
 
+@pytest.mark.parametrize(
+    ("argv", "arch", "arguments"),
+    [
+        (["--arch", "native", "s.py"], "native", []),
+        (["--arch=x86-64-v3", "s.py"], "x86-64-v3", []),
+        (["--arch", "native", "--lto", "-c", "pass"], "native", []),
+        (["s.py", "--arch", "native"], None, ["--arch", "native"]),
+        (["-c", "pass", "--arch=native"], None, ["--arch=native"]),
+    ],
+)
+def test_architecture_option_stops_at_program_boundary(argv, arch, arguments):
+    options = Options()
+    assert parse(argv, options=options)[2] == arguments
+    assert options.arch == arch
+
+
+@pytest.mark.parametrize("argv", [["--arch"], ["--arch="], ["--arch", "--lto", "s.py"]])
+def test_architecture_option_requires_a_value(argv):
+    with pytest.raises(UsageError, match="--arch"):
+        parse(argv)
+
+
 def test_help_exposes_real_build_defaults():
     parser = help_parser()
     help_text = " ".join(parser.format_help().split())
