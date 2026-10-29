@@ -41,6 +41,7 @@ from .vop import (
     BOOLEAN_T,
     BOXED_FLOAT,
     BOXED_I64,
+    BOXED_REAL,
     FIXNUM,
     IMMORTAL_T,
     NONE_T,
@@ -280,6 +281,17 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
 
     def visit_FloatType(self, fact: ValueType) -> PrimitiveType:
         return T if fact.may_be_unbound else BOXED_FLOAT
+
+    def visit_UnionType(self, fact: ValueType) -> PrimitiveType:
+        if fact.may_be_unbound:
+            return T
+        member_ptypes = {m.accept(self) for m in fact.members}
+        if (
+            member_ptypes <= {FIXNUM, BOOLEAN_T, BOXED_FLOAT}
+            and BOXED_FLOAT in member_ptypes
+        ):
+            return BOXED_REAL
+        return self.visit_ValueType(fact)
 
     visit_TextType = visit_ValueType
     visit_BytesType = visit_ValueType

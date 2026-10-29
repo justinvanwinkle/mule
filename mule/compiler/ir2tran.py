@@ -1627,12 +1627,24 @@ _BORROWED_LIST_GETITEM_READERS = (
         "boxed-float-add",
         "boxed-float-subtract",
         "boxed-float-multiply",
+        "boxed-float-divide",
+        "boxed-float-power",
         "mixed-float-add-left",
         "mixed-float-add-right",
         "mixed-float-subtract-left",
         "mixed-float-subtract-right",
         "mixed-float-multiply-left",
         "mixed-float-multiply-right",
+        "mixed-float-divide-left",
+        "mixed-float-divide-right",
+        "mixed-real-float-add-left",
+        "mixed-real-float-add-right",
+        "mixed-real-float-subtract-left",
+        "mixed-real-float-subtract-right",
+        "mixed-real-float-multiply-left",
+        "mixed-real-float-multiply-right",
+        "mixed-real-float-divide-left",
+        "mixed-real-float-divide-right",
     }
 )
 
@@ -1642,12 +1654,24 @@ _PURE_FLOAT_STEP_VOPS = frozenset(
         "boxed-float-add",
         "boxed-float-subtract",
         "boxed-float-multiply",
+        "boxed-float-divide",
+        "boxed-float-power",
         "mixed-float-add-left",
         "mixed-float-add-right",
         "mixed-float-subtract-left",
         "mixed-float-subtract-right",
         "mixed-float-multiply-left",
         "mixed-float-multiply-right",
+        "mixed-float-divide-left",
+        "mixed-float-divide-right",
+        "mixed-real-float-add-left",
+        "mixed-real-float-add-right",
+        "mixed-real-float-subtract-left",
+        "mixed-real-float-subtract-right",
+        "mixed-real-float-multiply-left",
+        "mixed-real-float-multiply-right",
+        "mixed-real-float-divide-left",
+        "mixed-real-float-divide-right",
         "boxed-float-compare-equal",
         "boxed-float-compare-not_equal",
         "boxed-float-compare-less",
@@ -1755,6 +1779,10 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
         )
     if name in ("constant", "coerce"):
         return True
+    if name == "discard":
+        return bool(step.args and step.args[0].tn.borrowed_from is not None)
+    if name in ("unpack-ref", "structural-unpack"):
+        return step.codegen_info is not None and bool(step.codegen_info.proved)
     if name == "type-check":
         check: TypeCheck = linked(step.codegen_info, step, "type-check info")
         actual = step.args[0].tn.type or UNKNOWN
@@ -1927,6 +1955,24 @@ def _try_borrow_unpacked_getitem(
             ):
                 return False
             cursor += 1
+        coerced_res_tn = None
+        if vops_list[cursor].info is vops.COERCE:
+            coerce_vop = vops_list[cursor]
+            if (
+                coerce_vop.args[0].tn is not ref_res_tn
+                or not coerce_vop.results
+                or coerce_vop.results[0].tn.sc not in (DOUBLE, SIGNED)
+                or cursor + 1 >= n_vops
+            ):
+                return False
+            ref_res_tn = coerce_vop.results[0].tn
+            coerced_res_tn = ref_res_tn
+            if (
+                len(writes.get(ref_res_tn, ())) != 1
+                or len(reads.get(ref_res_tn, ())) != 1
+            ):
+                return False
+            cursor += 1
         store_vop = vops_list[cursor]
         slot_target = store_vop.results[0].tn if store_vop.results else None
         if (
@@ -1940,7 +1986,14 @@ def _try_borrow_unpacked_getitem(
         ):
             return False
         slot_records.append(
-            (ref_vop, orig_ref_res_tn, checked_res_tn, store_vop, cursor)
+            (
+                ref_vop,
+                orig_ref_res_tn,
+                checked_res_tn,
+                coerced_res_tn,
+                store_vop,
+                cursor,
+            )
         )
         cursor += 1
     if cursor + 1 >= n_vops:
@@ -1973,11 +2026,55 @@ def _try_borrow_unpacked_getitem(
     proof = _BorrowedLifetime(component)
     for (
         ref_vop,
-        _orig_ref_res_tn,
+        orig_ref_res_tn,
         checked_res_tn,
+        coerced_res_tn,
         store_vop,
         store_pos,
     ) in slot_records:
+        if coerced_res_tn is not None:
+            ref_vop.codegen_info = replace(ref_vop.codegen_info, borrow_element=True)
+            orig_ref_res_tn.borrowed_from = root_local
+            if checked_res_tn is not None:
+                checked_res_tn.borrowed_from = root_local
+            continue
+        slot_target = store_vop.results[0].tn
+        slot_reads = reads.get(slot_target, ())
+        if (
+            slot_target.leaf is not None
+            and slot_target.leaf.expression_temporary
+            and len(writes.get(slot_target, ())) == 1
+            and len(slot_reads) == 1
+            and slot_reads[0][0].info is vops.LOAD_LOCAL
+            and slot_reads[0][0].codegen_info is not None
+            and slot_reads[0][0].codegen_info.bound
+        ):
+            load_vop = slot_reads[0][0]
+            load_pos_info = proof.positions.get(load_vop)
+            if (
+                load_pos_info is not None
+                and load_pos_info[0] is block
+                and load_pos_info[1] > store_pos
+                and _try_borrow_unpacked_getitem(
+                    component,
+                    block,
+                    load_pos_info[1],
+                    load_vop,
+                    replace(load_vop.codegen_info, move=False, borrow=True),
+                    seq_local,
+                    root_local,
+                    writer_index,
+                )
+            ):
+                ref_vop.codegen_info = replace(
+                    ref_vop.codegen_info, borrow_element=True
+                )
+                orig_ref_res_tn.borrowed_from = root_local
+                slot_target.borrowed_from = root_local
+                store_vop.codegen_info = False
+                if checked_res_tn is not None:
+                    checked_res_tn.borrowed_from = root_local
+                continue
         if (
             _try_borrow_container_element_local(
                 component,
@@ -2027,7 +2124,7 @@ def _safe_container_local_region_step(
         return step.codegen_info is None or step.codegen_info.reuse_local is None
     if name in _FIXNUM_COMPARISON_VOPS | _FIXNUM_UNARY_VOPS:
         return True
-    if name == "unpack-ref":
+    if name in ("unpack-ref", "structural-unpack"):
         return step.codegen_info is not None and bool(step.codegen_info.proved)
     if name == "type-check":
         check = step.codegen_info

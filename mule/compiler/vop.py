@@ -160,6 +160,12 @@ BOXED_FLOAT = PrimitiveType(
     object_boundary_scs=(DESCRIPTOR,),
     boxed_layout=FLOAT_BOX_LAYOUT,
 )
+# A tagged fixnum or boxed Python float (e.g. a float accumulator initialized to 0).
+BOXED_REAL = PrimitiveType(
+    "boxed-real",
+    (DESCRIPTOR,),
+    object_boundary_scs=(DESCRIPTOR,),
+)
 # Loop state.
 RANGE_T = PrimitiveType("range-state", (RANGE,))
 # A native class object: owned, or borrowed once its layout is guarded.
@@ -398,6 +404,9 @@ class IR2Component:
 __all__ = [
     "BOOLEAN",
     "BOOLEAN_T",
+    "BOXED_FLOAT",
+    "BOXED_I64",
+    "BOXED_REAL",
     "CLASS",
     "CLASS_T",
     "DESCRIPTOR",

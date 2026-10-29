@@ -53,6 +53,7 @@ from .node import (
 from .vop import (
     BOOLEAN_T,
     BOXED_FLOAT,
+    BOXED_REAL,
     CLASS_T,
     DESCRIPTOR,
     DOUBLE,
@@ -156,12 +157,16 @@ def _variable_type(tn, component, writes) -> PrimitiveType:
         if any(writer.info is vops.UNBIND_LOCAL for writer, _ in writes.get(tn, ())):
             return IMMORTAL_T
         return FIXNUM
-    if joined_ptype.boxed_layout is not None:
+    if joined_ptype.boxed_layout is not None or joined_ptype is BOXED_REAL:
         return joined_ptype
     if len(written_types) == 1:
         written = next(iter(written_types))
-        if written.boxed_layout is not None:
+        if written.boxed_layout is not None or written is BOXED_REAL:
             return written
+    if written_types <= {FIXNUM, BOOLEAN_T, BOXED_FLOAT, BOXED_REAL} and (
+        BOXED_FLOAT in written_types or BOXED_REAL in written_types
+    ):
+        return BOXED_REAL
     if joined_ptype in IMMORTAL_TYPES or written_types.issubset(IMMORTAL_TYPES):
         return IMMORTAL_T
     return T

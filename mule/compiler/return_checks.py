@@ -4,7 +4,17 @@ from collections import defaultdict
 
 from . import fndb
 from .annotation_types import DeclaredReturnContract, InferredReturnContract
-from .ctype import BOTTOM, UNKNOWN, InstanceType, TupleType, ValueType, ValueTypeVisitor
+from .ctype import (
+    BOTTOM,
+    LIST_TYPE,
+    UNKNOWN,
+    FunctionType,
+    InstanceType,
+    ListType,
+    TupleType,
+    ValueType,
+    ValueTypeVisitor,
+)
 from .ir1util import insert_cast_after
 from .locall import global_bindings, made_function
 from .node import (
@@ -178,6 +188,14 @@ class _ContractPrediction(ValueTypeVisitor):
             fact.may_be_unbound,
         )
 
+    def visit_ListType(self, fact):
+        if fact.element is BOTTOM or fact.element is UNKNOWN:
+            return LIST_TYPE if not fact.may_be_unbound else ListType(UNKNOWN, True)
+        elem = fact.element.accept(self)
+        if elem is UNKNOWN and not fact.may_be_unbound:
+            return LIST_TYPE
+        return ListType(elem, fact.may_be_unbound)
+
     def visit_UnionType(self, fact):
         result = BOTTOM
         for member in fact.members:
@@ -248,7 +266,14 @@ class _AssertResult(NodeVisitor):
     def lvar_type(self, lvar):
         result = BOTTOM
         for producer in lvar.uses:
-            result = result.join(self.facts.types.get(producer, UNKNOWN))
+            ptype = self.facts.types.get(producer, UNKNOWN)
+            if (
+                ptype is UNKNOWN
+                and (target := self.facts.targets.get(producer)) is not None
+                and (lam := target.as_lambda()) is not None
+            ):
+                ptype = FunctionType(target=lam)
+            result = result.join(ptype)
         return result
 
     def _resolved_method_contract(self, call: Combination):

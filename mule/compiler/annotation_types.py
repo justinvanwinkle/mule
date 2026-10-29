@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from .ctype import (
     BOOLEAN,
+    BOTTOM,
     BYTEARRAY_TYPE,
     BYTES_TYPE,
     DICT_TYPE,
@@ -17,6 +18,7 @@ from .ctype import (
     LIST_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
+    REAL,
     SET_TYPE,
     TEXT_TYPE,
     UNKNOWN,
@@ -1025,7 +1027,17 @@ class _RuntimeCheckedReturnFact(ValueTypeVisitor):
         return TupleType(fact.arity, elements)
 
     def visit_ListType(self, fact):
-        return UNKNOWN if fact.may_be_unbound else LIST_TYPE
+        if fact.may_be_unbound:
+            return UNKNOWN
+        if (
+            fact.element is not BOTTOM
+            and fact.element is not UNKNOWN
+            and (fact.has_float_specialization() or fact.element.fits_real(REAL))
+        ):
+            elem = fact.element.accept(self)
+            if elem is not UNKNOWN:
+                return ListType(elem)
+        return LIST_TYPE
 
     def visit_DictType(self, fact):
         if fact.may_be_unbound or not fact.proven:

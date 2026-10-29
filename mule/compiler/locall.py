@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import local
 
 from mule import ast
@@ -865,6 +865,89 @@ class _WidenUserConstantType(ValueTypeVisitor):
             if fact.elements is None
             else tuple(el.accept(self) for el in fact.elements),
         )
+
+    def visit_ListType(self, fact):
+        elem = fact.element.accept(self)
+        return fact if elem == fact.element else replace(fact, element=elem)
+
+    def visit_DictType(self, fact):
+        key = fact.key.accept(self)
+        value = fact.value.accept(self)
+        if key == fact.key and value == fact.value:
+            return fact
+        return replace(fact, key=key, value=value)
+
+    def visit_SetType(self, fact):
+        elem = fact.element.accept(self)
+        return fact if elem == fact.element else replace(fact, element=elem)
+
+
+_MUTATING_CONTAINER_METHODS = frozenset(
+    {
+        "append",
+        "clear",
+        "discard",
+        "extend",
+        "insert",
+        "pop",
+        "popitem",
+        "remove",
+        "setdefault",
+        "update",
+    }
+)
+
+
+class _RefMutatesContainer(NodeVisitor):
+    def __init__(self, target_lvar, *, allow_setitem: bool = False):
+        self.target_lvar = target_lvar
+        self.allow_setitem = allow_setitem
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return False
+        info = node.fun_info
+        if (
+            info is SETITEM
+            and not self.allow_setitem
+            and len(node.args) == 3
+            and node.args[0] is self.target_lvar
+        ):
+            return True
+        if info is DELITEM and len(node.args) == 2 and node.args[0] is self.target_lvar:
+            return True
+        return (
+            info is RESOLVE_METHOD
+            and node.info is not None
+            and node.info.name in _MUTATING_CONTAINER_METHODS
+            and len(node.args) == 1
+            and node.args[0] is self.target_lvar
+        )
+
+
+def _global_container_is_mutated(leaf: GlobalVar) -> bool:
+    for ref in leaf.refs:
+        if (
+            ref.lvar is not None
+            and ref.dest is not None
+            and ref.dest.accept(_RefMutatesContainer(ref.lvar))
+        ):
+            return True
+    return False
+
+
+def _default_param_container_is_mutated(var: LambdaVar) -> bool:
+    for ref in var.refs:
+        if (
+            ref.lvar is not None
+            and ref.dest is not None
+            and ref.dest.accept(_RefMutatesContainer(ref.lvar, allow_setitem=True))
+        ):
+            return True
+    return False
 
 
 _WIDEN_USER_CONSTANT_TYPE = _WidenUserConstantType()
@@ -3033,11 +3116,60 @@ def analyze(
         if leaf.sets and leaf.sets[0].home_lambda is not None:
             ns = leaf.sets[0].home_lambda.namespace
             global_constants_by_ns.setdefault(ns, {})[leaf.name] = vtype
+    lambdas_by_ns: dict[str, list[Lambda]] = defaultdict(list)
+    for lambda_ in lambdas:
+        lambdas_by_ns[lambda_.namespace].append(lambda_)
+    mutated_namespaces = {
+        ns
+        for ns, ns_lambdas in lambdas_by_ns.items()
+        if has_module_namespace_mutations(ns_lambdas)
+    }
+    unconditional_by_ns: dict[str, set[Set]] = {}
+    inferred_global_constants: dict[str, dict[str, ValueType]] = (
+        {
+            ns: dict(prev_c)
+            for ns, prev_c in state_cache.get("inferred_global_constants", {}).items()
+            if ns not in mutated_namespaces
+        }
+        if state_cache is not None
+        else {}
+    )
+    for ns, ns_lambdas in lambdas_by_ns.items():
+        if ns in mutated_namespaces:
+            continue
+        toplevels = [lam for lam in ns_lambdas if lam.kind is FunctionalKind.TOPLEVEL]
+        if len(toplevels) == 1 and toplevels[0].policy.safety < 3:
+            unconditional_by_ns[ns] = _unconditional_toplevel_stores(toplevels[0])
+            prev_c = inferred_global_constants.get(ns)
+            if prev_c:
+                ns_consts = global_constants_by_ns.setdefault(ns, {})
+                ns_leaves = global_leaves.get(ns, {})
+                for gname, vtype in prev_c.items():
+                    if gname not in ns_consts:
+                        ns_consts[gname] = vtype
+                        leaf = ns_leaves.get(gname)
+                        if leaf is not None:
+                            for ref in leaf.refs:
+                                home = ref.home_lambda
+                                if (
+                                    home is not None
+                                    and home.kind is not FunctionalKind.TOPLEVEL
+                                    and home.policy.safety < 3
+                                    and ref.lexenv.policy.safety < 3
+                                ):
+                                    old_constant_ref_types.setdefault(
+                                        ref, ref.derived_type
+                                    )
+                                    ref.derived_type = vtype
     defaults_mutated = any(
         node.accept(_MUTATES_FUNCTION_DEFAULTS)
         for graph in graphs.values()
         for block in graph.blocks
         for node in graph.block_nodes[block]
+    )
+    default_lvars_by_lam: dict[Lambda, tuple] = {}
+    prev_default_types = (
+        state_cache.get("default_types", {}) if state_cache is not None else {}
     )
     if not defaults_mutated:
         for lambda_ in lambdas:
@@ -3050,6 +3182,12 @@ def analyze(
                 ]
                 default_lvars = make_defaults[0] if len(make_defaults) == 1 else ()
                 if default_lvars:
+                    default_lvars_by_lam[lambda_] = default_lvars
+                    if lambda_ in prev_default_types and len(
+                        prev_default_types[lambda_]
+                    ) == len(default_lvars):
+                        lambda_.default_types = prev_default_types[lambda_]
+                        continue
                     ns_consts = global_constants_by_ns.get(lambda_.namespace, {})
                     def_types: list[ValueType] = []
                     for def_lvar in default_lvars:
@@ -3393,7 +3531,9 @@ def analyze(
         for key, prev_body in prev_bodies.items():
             lam, ctx_name = key
             if lam not in must_recompute:
-                if ctx_name == "observed" and lam in affected_observed_targets:
+                if (
+                    ctx_name == "observed" or ctx_name.startswith("observed.")
+                ) and lam in affected_observed_targets:
                     continue
                 if key not in parameters and key in prev_parameters:
                     parameters[key] = prev_parameters[key]
@@ -3417,6 +3557,15 @@ def analyze(
                 if d_key[0] not in affected:
                     deriver_cache[d_key] = d_body
 
+    def _observed_context_names(target: Lambda, ctx_params) -> tuple[str, ...]:
+        base = ("observed",) if (target, "observed") in ctx_params else ()
+        extras = sorted(
+            ctx
+            for lam, ctx in ctx_params
+            if lam is target and ctx.startswith("observed.")
+        )
+        return (*base, *extras)
+
     def lookup_return_type(
         target, arguments, context_parameters, context_summaries
     ) -> ValueType:
@@ -3427,13 +3576,14 @@ def analyze(
         obs = context_parameters.get((target, "observed"))
         fix = context_parameters.get((target, "fixnum"))
         gen = context_parameters.get((target, "general"))
+        obs_names = _observed_context_names(target, context_parameters)
         order_contexts = (
-            ("fixnum", "observed", "general")
+            ("fixnum", *obs_names, "general")
             if obs is not None
             and fix is not None
             and all(a.fits(b) or a is UNKNOWN for a, b in zip(obs, fix, strict=True))
             and not all(a.fits(b) for a, b in zip(obs, fix, strict=True))
-            else ("observed", "fixnum", "general")
+            else (*obs_names, "fixnum", "general")
         )
         for context in order_contexts:
             key = target, context
@@ -3522,6 +3672,7 @@ def analyze(
                 if (
                     param_types == parameters.get(ctx_key)
                     and (ctx_body := bodies.get(ctx_key)) is not None
+                    and not ctx_body.return_type.has_unspecialized_part()
                     and (rec := inputs.get(ctx_key)) is not None
                     and rec[2] == cur_clos
                 ):
@@ -3582,7 +3733,9 @@ def analyze(
                     recursive_targets=recursive_targets_by_caller.get(
                         target_lam, frozenset()
                     ),
+                    unique_targets=frozenset(unique_global_lambdas),
                     is_specialized_context=True,
+                    for_return_derivation=True,
                 )
             if len(deriver_cache) > 4096:
                 deriver_cache.clear()
@@ -3686,6 +3839,7 @@ def analyze(
     consulted: dict[tuple[Lambda, tuple], ValueType] = {}
     pending_reset: set[tuple[Lambda, str]] = set(initial_pending_reset)
     seeded_params: set[tuple[Lambda, str, int]] = set()
+    narrowed_seed_params: set[tuple[Lambda, str, int]] = set()
 
     while True:
         changed = False
@@ -3793,18 +3947,23 @@ def analyze(
                 target, arguments, context_parameters, context_summaries
             )
             if (
-                result is UNKNOWN
+                result.has_unspecialized_part()
                 and not needs_physical_fallback(target, arguments)
                 and arguments != context_parameters.get((target, "general"))
             ):
                 derived = target.derive_return_type(arguments)
-                if derived is not UNKNOWN and derived is not BOTTOM:
+                if (
+                    derived is not UNKNOWN
+                    and derived is not BOTTOM
+                    and (result is UNKNOWN or derived.fits(result))
+                ):
                     result = derived
             consulted[target, arguments] = result
             return result
 
         for lambda_ in ordered_lambdas:
-            for ctx_name in ("observed", "fixnum", "general"):
+            obs_ctxs = _observed_context_names(lambda_, previous_parameters)
+            for ctx_name in (*obs_ctxs, "fixnum", "general"):
                 key = lambda_, ctx_name
                 expected = previous_parameters.get(key)
                 if expected is None:
@@ -3823,7 +3982,7 @@ def analyze(
                         )
                         == result
                         or (
-                            new_res is UNKNOWN
+                            new_res.has_unspecialized_part()
                             and args != previous_parameters.get((target, "general"))
                             and result is not UNKNOWN
                             and result is not BOTTOM
@@ -3882,9 +4041,133 @@ def analyze(
                             recursive_targets=recursive_targets_by_caller.get(
                                 lambda_, frozenset()
                             ),
+                            unique_targets=frozenset(unique_global_lambdas),
                             is_specialized_context=(ctx_name != "general"),
                         )
                     bodies[key] = body
+                    if (
+                        lambda_.kind is FunctionalKind.TOPLEVEL
+                        and ctx_name == "general"
+                        and lambda_.namespace in unconditional_by_ns
+                    ):
+                        ns = lambda_.namespace
+                        ns_consts = global_constants_by_ns.setdefault(ns, {})
+                        inf_consts = inferred_global_constants.setdefault(ns, {})
+                        affected_by_consts: set[Lambda] = set()
+                        for store in unconditional_by_ns[ns]:
+                            leaf = store.accept(_SET_GLOBAL_VAR)
+                            if (
+                                leaf is None
+                                or len(leaf.sets) != 1
+                                or leaf in global_constants
+                                or leaf.name in _IMPLICIT_MODULE_GLOBALS
+                                or leaf.name in global_targets[ns]
+                                or store.value is None
+                            ):
+                                continue
+                            vtype = body.facts.get(store.value.use(), NO_FACT).type
+                            if (
+                                vtype is UNKNOWN
+                                or vtype is BOTTOM
+                                or vtype.may_be_unbound
+                                or vtype.has_bottom_part()
+                                or vtype.fits_none(NONE_TYPE)
+                            ):
+                                continue
+                            if vtype.widen_mutable_containers() != vtype and (
+                                _global_container_is_mutated(leaf)
+                            ):
+                                vtype = vtype.widen_mutable_containers()
+                            vtype = _widen_user_constant_type(vtype)
+                            if vtype is UNKNOWN:
+                                continue
+                            if ns_consts.get(leaf.name) != vtype:
+                                ns_consts[leaf.name] = vtype
+                                inf_consts[leaf.name] = vtype
+                                for ref in leaf.refs:
+                                    home = ref.home_lambda
+                                    if (
+                                        home is not None
+                                        and home.kind is not FunctionalKind.TOPLEVEL
+                                        and home.policy.safety < 3
+                                        and ref.lexenv.policy.safety < 3
+                                    ):
+                                        old_constant_ref_types.setdefault(
+                                            ref, ref.derived_type
+                                        )
+                                        ref.derived_type = vtype
+                                        affected_by_consts.add(home)
+                        if not defaults_mutated:
+                            for lam in lambdas_by_ns[ns]:
+                                default_lvars = default_lvars_by_lam.get(lam)
+                                if not default_lvars:
+                                    continue
+                                num_req = len(lam.vars) - len(default_lvars)
+                                def_types: list[ValueType] = []
+                                for def_idx, def_lvar in enumerate(default_lvars):
+                                    lit = def_lvar.accept(_MadeConstant())
+                                    if lit is not None:
+                                        def_types.append(constant_type(lit))
+                                        continue
+                                    def_type = body.facts.get(
+                                        def_lvar.use(), NO_FACT
+                                    ).type
+                                    if (
+                                        def_type is not UNKNOWN
+                                        and def_type is not BOTTOM
+                                        and not def_type.may_be_unbound
+                                        and not def_type.has_bottom_part()
+                                        and not def_type.fits_none(NONE_TYPE)
+                                    ):
+                                        param_var = (
+                                            lam.vars[num_req + def_idx]
+                                            if 0 <= num_req + def_idx < len(lam.vars)
+                                            else None
+                                        )
+                                        if (
+                                            def_type.widen_mutable_containers()
+                                            != def_type
+                                            and param_var is not None
+                                            and _default_param_container_is_mutated(
+                                                param_var
+                                            )
+                                        ):
+                                            def_type = (
+                                                def_type.widen_mutable_containers()
+                                            )
+                                        def_type = _widen_user_constant_type(def_type)
+                                    elif (
+                                        len(def_lvar.uses) == 1
+                                        and (
+                                            gname := def_lvar.uses[0].accept(
+                                                _GLOBAL_CALLEE_REF_NAME
+                                            )
+                                        )
+                                        is not None
+                                    ):
+                                        def_type = ns_consts.get(gname, UNKNOWN)
+                                    else:
+                                        def_type = UNKNOWN
+                                    def_types.append(def_type)
+                                new_defaults = tuple(def_types)
+                                if lam.default_types != new_defaults:
+                                    lam.default_types = new_defaults
+                                    affected_by_consts.add(lam)
+                                    for caller_lam, callees in static_callees.items():
+                                        if lam in callees:
+                                            affected_by_consts.add(caller_lam)
+                        if affected_by_consts:
+                            deriver_cache.clear()
+                            for lam in affected_by_consts:
+                                if lam.kind is not FunctionalKind.TOPLEVEL:
+                                    narrowed_targets.add(lam)
+                                    for c_name in (
+                                        *_observed_context_names(lam, parameters),
+                                        "fixnum",
+                                        "general",
+                                    ):
+                                        inputs.pop((lam, c_name), None)
+                            changed = True
                     if ctx_name == "general" and lambda_ in closed_seeded:
                         closed_propagated.add(lambda_)
                     inputs[key] = (
@@ -3964,6 +4247,9 @@ def analyze(
         # entries, including recursive calls, independently of that context.
         seeds: dict[Lambda, tuple] = {}
         recursive_seeds: dict[Lambda, tuple] = {}
+        callable_seed_groups: dict[Lambda, dict[tuple, tuple[ValueType, ...]]] = (
+            defaultdict(dict)
+        )
         for target, call_refs in closed_lambdas.items():
             target_reach = can_reach.get(target, frozenset())
             external_args: list[tuple[ValueType, ...]] = []
@@ -4074,7 +4360,7 @@ def analyze(
         for key, body in bodies.items():
             caller, ctx_name = key
             if (caller, "observed") in bodies:
-                if ctx_name != "observed":
+                if ctx_name != "observed" and not ctx_name.startswith("observed."):
                     continue
             elif (caller, "fixnum") in bodies and caller in declared_entry_lambdas:
                 if ctx_name != "fixnum":
@@ -4140,6 +4426,7 @@ def analyze(
                                 TEXT_TYPE,
                                 BYTES_TYPE,
                                 BYTEARRAY_TYPE,
+                                FLOAT,
                             )
                             or fix_param.instance_class() is not None
                         )
@@ -4153,6 +4440,23 @@ def analyze(
                     and caller not in closed_propagated
                 )
                 dest_seeds = recursive_seeds if is_unseeded_recursive else seeds
+                if not is_unseeded_recursive:
+                    callable_sig = tuple(
+                        (idx, c_target)
+                        for idx, dom in enumerate(domains)
+                        if (c_target := dom.callable_target()) is not None
+                    )
+                    if callable_sig:
+                        grp = callable_seed_groups[target]
+                        if callable_sig not in grp:
+                            grp[callable_sig] = domains
+                        else:
+                            grp[callable_sig] = tuple(
+                                old.join(new).dispatch_domain() or UNKNOWN
+                                for old, new in zip(
+                                    grp[callable_sig], domains, strict=True
+                                )
+                            )
                 if target not in dest_seeds:
                     dest_seeds[target] = domains
                 else:
@@ -4163,29 +4467,49 @@ def analyze(
         for target, rec_seed in recursive_seeds.items():
             if target not in seeds and (target, "observed") not in parameters:
                 seeds[target] = rec_seed
+        ctx_seeds: list[tuple[tuple[Lambda, str], tuple[ValueType, ...]]] = []
         for target, seed in seeds.items():
-            key = target, "observed"
+            grp = callable_seed_groups.get(target)
+            if grp is not None and 1 < len(grp) <= 4:
+                for idx_c, c_seed in enumerate(grp.values()):
+                    c_name = "observed" if idx_c == 0 else f"observed.{idx_c}"
+                    ctx_seeds.append(((target, c_name), c_seed))
+            else:
+                ctx_seeds.append(((target, "observed"), seed))
+        for key, seed in ctx_seeds:
+            target, ctx_name = key
             old = parameters.get(key)
             if old is None:
                 for idx, p in enumerate(seed):
                     if p is not UNKNOWN:
-                        seeded_params.add((target, "observed", idx))
+                        seeded_params.add((target, ctx_name, idx))
             else:
-                seed = tuple(
-                    b
-                    if a is UNKNOWN
-                    and b is not UNKNOWN
-                    and (target, "observed", idx) not in seeded_params
-                    else (a.join(b).dispatch_domain() or UNKNOWN)
-                    for idx, (a, b) in enumerate(zip(old, seed, strict=True))
-                )
+                new_seed = []
+                for idx, (a, b) in enumerate(zip(old, seed, strict=True)):
+                    if (
+                        a is UNKNOWN
+                        and b is not UNKNOWN
+                        and (target, ctx_name, idx) not in seeded_params
+                    ):
+                        new_seed.append(b)
+                    elif (
+                        b is not UNKNOWN
+                        and b != a
+                        and b.fits(a)
+                        and (target, ctx_name, idx) not in narrowed_seed_params
+                    ):
+                        narrowed_seed_params.add((target, ctx_name, idx))
+                        new_seed.append(b)
+                    else:
+                        new_seed.append(a.join(b).dispatch_domain() or UNKNOWN)
+                seed = tuple(new_seed)
                 widened_seeded = any(
-                    (target, "observed", idx) in seeded_params and not b.fits(a)
+                    (target, ctx_name, idx) in seeded_params and not b.fits(a)
                     for idx, (a, b) in enumerate(zip(old, seed, strict=True))
                 )
                 for idx, p in enumerate(seed):
                     if p is not UNKNOWN:
-                        seeded_params.add((target, "observed", idx))
+                        seeded_params.add((target, ctx_name, idx))
                 if widened_seeded:
                     argument_changes[key] += 1
                     if argument_changes[key] > 3:
@@ -4228,7 +4552,9 @@ def analyze(
                 if callee in affected and lambda_order[k[0]] <= lambda_order[callee]
             }
             for key, expected in parameters.items():
-                if key == (key[0], "observed") and key[0] in narrowed_targets:
+                if (key[1] == "observed" or key[1].startswith("observed.")) and key[
+                    0
+                ] in narrowed_targets:
                     summaries[key] = BOTTOM
                     return_changes.pop(key, None)
                     pending_reset.discard(key)
@@ -4245,13 +4571,20 @@ def analyze(
                         pending_reset.discard(key)
                     elif affected.intersection(recorded[3]):
                         pending_reset.add(key)
-        if field_changes < 3 and _update_class_field_types(
-            class_facts,
-            setattr_sites,
-            setitem_sites,
-            bodies,
-            parameters,
-            list_mutation_sites,
+        if (
+            field_changes < 3
+            and not any(
+                (lam, "observed") in parameters and (lam, "observed") not in bodies
+                for lam, _ in setattr_sites
+            )
+            and _update_class_field_types(
+                class_facts,
+                setattr_sites,
+                setitem_sites,
+                bodies,
+                parameters,
+                list_mutation_sites,
+            )
         ):
             field_changes += 1
             inputs.clear()
@@ -4288,16 +4621,19 @@ def analyze(
     )
     results: dict[Lambda, LambdaFacts] = {}
     for lambda_ in lambdas:
+        obs_ctxs = _observed_context_names(lambda_, parameters)
+        prev_obs_ctxs = _observed_context_names(lambda_, prev_parameters_ref)
         if (
             lambda_ not in must_recompute
             and lambda_ in prev_results
+            and obs_ctxs == prev_obs_ctxs
             and all(
                 bodies.get((lambda_, ctx)) is prev_bodies_ref.get((lambda_, ctx))
                 and summaries.get((lambda_, ctx))
                 == prev_summaries_ref.get((lambda_, ctx))
                 and parameters.get((lambda_, ctx))
                 == prev_parameters_ref.get((lambda_, ctx))
-                for ctx in ("general", "fixnum", "observed")
+                for ctx in ("general", "fixnum", *obs_ctxs)
             )
         ):
             results[lambda_] = prev_results[lambda_]
@@ -4316,7 +4652,7 @@ def analyze(
         obs_params = parameters.get((lambda_, "observed"))
         fix_params = parameters.get((lambda_, "fixnum"))
         variant_order = (
-            ("fixnum", "observed")
+            ("fixnum", *obs_ctxs)
             if obs_params is not None
             and fix_params is not None
             and all(
@@ -4324,7 +4660,7 @@ def analyze(
                 for a, b in zip(obs_params, fix_params, strict=True)
             )
             and not all(a.fits(b) for a, b in zip(obs_params, fix_params, strict=True))
-            else ("observed", "fixnum")
+            else (*obs_ctxs, "fixnum")
         )
         for identifier in variant_order:
             key = lambda_, identifier
@@ -4333,11 +4669,15 @@ def analyze(
             body = bodies[key]
             candidate_types = body.types()
             ret_type = summaries[key].normalized_bottom()
+            is_observed_id = identifier == "observed" or identifier.startswith(
+                "observed."
+            )
             if (
                 identifier == "fixnum"
                 and lambda_.entry_parameter_types is None
                 and not any(
-                    param.fits_float(FLOAT) and not gen_p.fits_float(FLOAT)
+                    param.has_float_specialization()
+                    and not gen_p.has_float_specialization()
                     for param, gen_p in zip(
                         parameters[key], facts.parameters, strict=True
                     )
@@ -4355,10 +4695,13 @@ def analyze(
             ):
                 continue
             if (
-                identifier == "observed"
+                is_observed_id
                 and not any(
                     (param.is_fixnum and not gen_p.is_fixnum)
-                    or (param.fits_float(FLOAT) and not gen_p.fits_float(FLOAT))
+                    or (
+                        param.has_float_specialization()
+                        and not gen_p.has_float_specialization()
+                    )
                     for param, gen_p in zip(
                         parameters[key], facts.parameters, strict=True
                     )
@@ -4376,7 +4719,7 @@ def analyze(
             ):
                 continue
             if (
-                identifier == "observed"
+                is_observed_id
                 and (lambda_, "fixnum") in parameters
                 and (
                     bodies[lambda_, "fixnum"].element_contracts
@@ -4411,7 +4754,10 @@ def analyze(
                         )
                         and not any(
                             (obs_p.is_fixnum and not fix_p.is_fixnum)
-                            or (obs_p.fits_float(FLOAT) and not fix_p.fits_float(FLOAT))
+                            or (
+                                obs_p.has_float_specialization()
+                                and not fix_p.has_float_specialization()
+                            )
                             for obs_p, fix_p in zip(
                                 parameters[key],
                                 parameters[lambda_, "fixnum"],
@@ -4469,6 +4815,12 @@ def analyze(
         state_cache["class_layouts"] = {
             cls_id: InstanceType(cls_id, fixed_slots=cf.fixed_slots)
             for cls_id, cf in class_facts.items()
+        }
+        state_cache["inferred_global_constants"] = {
+            ns: dict(c) for ns, c in inferred_global_constants.items()
+        }
+        state_cache["default_types"] = {
+            lam: lam.default_types for lam in lambdas if lam.default_types
         }
     return results
 
@@ -4649,8 +5001,10 @@ def _would_reoptimize_for_context(lambda_: Lambda, context: EntryContext) -> boo
     component = lambda_.component
     if component is None or context.id is None:
         return False
-    if context.id not in ("fixnum", "observed") and not context.id.startswith(
-        "borrow.fixnum."
+    if (
+        context.id not in ("fixnum", "observed")
+        and not context.id.startswith("observed.")
+        and not context.id.startswith("borrow.fixnum.")
     ):
         return False
     for block in component.blocks():
