@@ -91,6 +91,89 @@ Consequences for lowering:
 These are design constraints. They do not require every internal temporary to
 be boxed or every internal call to use the public C convention.
 
+## Implemented profile: proxy objects
+
+Mule's runtime objects keep their own layout (`mule/runtime/object.rs`):
+tagged fixnums and heap `Object`s whose class lives inside the data variant.
+Neither has `ob_refcnt` or `ob_type`. The C interface therefore gives each Mule
+object at most one *proxy*: a C-allocated `PyObject` with `ob_refcnt`,
+`ob_type`, and a Mule-private `ob_mule` field naming the Mule object. This is
+PyPy cpyext's model. A proxy is not a copy: it refers to the one Mule object,
+so identity and shared mutation are preserved, and its address is stable for
+the object's lifetime.
+
+- The runtime keeps a side table from Mule object to proxy. Converting the same
+  object twice yields the same pointer.
+- While `ob_refcnt` is positive the proxy owns one Mule reference, so C
+  references keep the object alive. When it drops to zero the proxy releases
+  that reference but survives until the Mule object is destroyed; borrowed
+  results such as `PyTuple_GET_ITEM` therefore stay valid while their owner
+  holds the object. Object destruction removes the proxy.
+- Tagged fixnums have no destruction event. Their proxies are interned by value
+  and freed when a positive reference count returns to zero; a fixnum proxy
+  that was only ever borrowed is retained.
+- `None`, `True`, `False`, `NotImplemented`, `Ellipsis`, the builtin type objects
+  (`PyType_Type`, `PyLong_Type`, ...) and `PyExc_*` are exported runtime data
+  bound to the corresponding Mule objects when the first extension loads.
+- Every Mule class has a full `PyTypeObject` proxy: `tp_name`, `tp_flags`
+  (heap-type and builtin subclass bits), `tp_mro`, `tp_dict` (the class
+  `__dict__` view), `tp_base(s)`, and slot pointers. Slots that a C type
+  supplied are copied to it and inherited by Mule subclasses; other slots that C
+  code calls directly (`tp_descr_get`, `tp_alloc`, `tp_free`) are runtime
+  trampolines into the Mule protocol. A type proxy owns references to its MRO
+  and dictionary, so a class seen by C code is not freed.
+- An instance of a C type (or of a Mule subclass of one) is a Mule instance
+  whose proxy is the `tp_basicsize` block that `tp_alloc` returned; C fields live
+  in that block. When the Mule instance is destroyed with no C references, the
+  runtime runs the type's `tp_dealloc`, which frees the block through `tp_free`.
+  `tp_traverse` and `tp_clear` do not participate in Mule's cycle collector yet,
+  so a cycle through C fields is not reclaimed.
+- Field-access macros that CPython implements by reading storage
+  (`Py_TYPE`, `Py_REFCNT`, `PyTuple_GET_ITEM`, `PyTuple_SET_ITEM`,
+  `PyUnicode_GET_LENGTH`, `Py_INCREF`, `Py_DECREF`) call runtime functions.
+  `PyType_HasFeature` and the `Py*_Check` subclass-bit tests read `tp_flags`.
+  This is a source-level profile; the CPython binary ABI and `abi3` are not
+  supported, and extensions must be built against Mule's headers.
+
+The headers are `mule/include/Python.h` and `structmember.h`. They contain
+declarations and macros only. C API entry points are Rust shims in
+`mule/runtime/capi.rs` that translate references and the error indicator;
+the operations themselves (attribute access, calls, arithmetic, comparison,
+class construction from `PyType_Spec`, generic attribute lookup through
+`tp_dictoffset`) are compiled Mule Python in `stdlib/_capi.py`. A C type becomes
+a Mule class whose namespace holds compiled wrappers for its slots, methods,
+getsets and members, as CPython's `add_operators` and `type_new` slot wrappers
+do.
+
+Mule programs run one thread. Extensions see a build with a global interpreter
+lock: `Py_GIL_DISABLED` is not defined and critical-section macros are plain
+blocks. When Mule gains language threads, the `Py_mod_gil` declaration must be
+honored.
+
+### Loading: departure from SBCL `load-shared-object`
+
+SBCL loads foreign code with `load-shared-object`
+(`src/code/foreign-load.lisp`), which records a `shared-object` and calls
+`dlopen-or-lose` with `RTLD_GLOBAL | RTLD_NOW`
+(`src/code/unix-foreign-load.lisp`); symbols are then found with `dlsym`
+(`find-dynamic-foreign-symbol-address`). SBCL has no notion of a module that
+initializes itself from a foreign library.
+
+Mule loads an extension module the same way: `dlopen` with
+`RTLD_NOW | RTLD_GLOBAL`, then `dlsym` for `PyInit_<name>`. The departure is
+that the import system, not an explicit call, finds the library: CPython's
+`ExtensionFileLoader` contract (PEP 489) requires `import name` to find
+`name<EXT_SUFFIX>` before `name.py` and run single- or multi-phase
+initialization. `mule/runtime/imports.rs` resolves `<name>.mule-314-x86_64-linux-gnu.so`
+ahead of source files; it never loads `.cpython-*.so` or `.abi3.so` files,
+whose object layout differs. Creation and execution follow the existing
+create/execute split of compiled modules: `PyModuleDef_Init` results run
+`Py_mod_create` and `Py_mod_exec` slots; a module returned directly is
+single-phase. Extension symbols resolve against the executable, which already
+exports the runtime with `--export-dynamic`, as SBCL's runtime exports its C
+symbols to loaded objects. The cost is one `dlopen` per extension and no change
+to FASL loading.
+
 ## Ownership, allocation, and collection
 
 Honor each API's new/strong, borrowed, and stolen reference contract. Emit

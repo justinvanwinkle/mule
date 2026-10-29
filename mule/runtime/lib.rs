@@ -14,6 +14,7 @@ pub mod annotations;
 pub mod builtins;
 pub mod buffers;
 pub mod byte_buffer;
+pub mod capi;
 pub mod faults;
 pub mod classes;
 pub mod coroutine;

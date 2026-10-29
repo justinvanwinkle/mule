@@ -26,6 +26,7 @@ struct Artifact {
     entry: Option<Entry>,
     create: Option<Entry>,
     execute: Option<Execute>,
+    c_ext: Option<PathBuf>,
     filename: Option<String>,
     paths: Vec<String>,
 }
@@ -67,6 +68,7 @@ fn registered_search_path() -> Vec<String> {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_set_image_search_path(paths: *const *const c_char, count: i64) {
+    crate::capi::ensure_linked();
     unsafe {
         let stored = (0..count as usize).filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned)).collect();
         let mut img = image().lock().expect("compiled image registry poisoned");
@@ -128,6 +130,7 @@ pub unsafe extern "C" fn mule_register_compiled_module(
             entry: Some(std::mem::transmute::<*mut c_void, Entry>(entry)),
             create: Some(std::mem::transmute::<*mut c_void, Entry>(create)),
             execute: Some(std::mem::transmute::<*mut c_void, Execute>(execute)),
+            c_ext: None,
             filename: if filename.is_null() { None } else { object::name_from_c(filename).map(str::to_owned) },
             paths: (0..count as usize).filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned)).collect(),
         };
@@ -144,6 +147,7 @@ pub unsafe extern "C" fn mule_register_compiled_module(
 enum Candidate {
     Missing,
     NamespacePackage(Vec<String>),
+    CExtension(PathBuf),
     SourceFile(PathBuf, Option<(String, Vec<String>)>),
 }
 
@@ -230,6 +234,14 @@ unsafe fn resolve_candidate(name: &str, search_roots: &[String]) -> Candidate {
     let mut namespace_paths = Vec::new();
     for dir in &dirs {
         let base = Path::new(dir).join(&relative);
+        let init_so = base.join("__init__.mule-314-x86_64-linux-gnu.so");
+        if init_so.is_file() {
+            return Candidate::CExtension(init_so);
+        }
+        let mod_so = PathBuf::from(format!("{}.mule-314-x86_64-linux-gnu.so", base.display()));
+        if mod_so.is_file() {
+            return Candidate::CExtension(mod_so);
+        }
         let init_py = base.join("__init__.py");
         if init_py.is_file() {
             return Candidate::SourceFile(init_py, custom_parent);
@@ -370,7 +382,6 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
         }
     }
     let _guard = LoadingGuard(name.to_owned());
-    let toolchain = image().lock().expect("compiled image registry poisoned").toolchain.clone()?;
     let mut roots = unsafe { crate::builtins::current_sys_path() }.unwrap_or_else(registered_search_path);
     for r in registered_search_path() {
         if !roots.contains(&r) {
@@ -405,6 +416,7 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
                 entry: None,
                 create: None,
                 execute: None,
+                c_ext: None,
                 filename: None,
                 paths,
             };
@@ -412,7 +424,28 @@ unsafe fn ensure_artifact(name: &str) -> Option<Artifact> {
             img.entries.entry(name.to_owned()).or_insert_with(|| art.clone());
             img.entries.get(name).cloned()
         }
+        Candidate::CExtension(so_path) => {
+            let filename = Some(so_path.to_string_lossy().into_owned());
+            let paths = if so_path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("__init__.")) {
+                so_path.parent().map(|p| vec![p.to_string_lossy().into_owned()]).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let art = Artifact {
+                name: name.to_owned(),
+                entry: None,
+                create: None,
+                execute: None,
+                c_ext: Some(so_path),
+                filename,
+                paths,
+            };
+            let mut img = image().lock().expect("compiled image registry poisoned");
+            img.entries.entry(name.to_owned()).or_insert_with(|| art.clone());
+            img.entries.get(name).cloned()
+        }
         Candidate::SourceFile(src_path, custom_parent) => {
+            let toolchain = image().lock().expect("compiled image registry poisoned").toolchain.clone()?;
             let (py_host, clang, rustc_and_hash, optimize) = toolchain;
             let (rustc, compiler_hash) = rustc_and_hash
                 .split_once('\n')
@@ -518,6 +551,20 @@ impl Artifact {
             if let Some(entry) = self.entry {
                 return entry();
             }
+            if let Some(so_path) = &self.c_ext {
+                match crate::builtins::find_loaded_module(&self.name) {
+                    Ok(Some(existing)) => return existing,
+                    Err(()) => return null_mut(),
+                    Ok(None) => {}
+                }
+                return match crate::capi::load_c_extension(&self.name, so_path) {
+                    Ok(m) => m,
+                    Err(msg) => {
+                        object::error("ImportError", &msg);
+                        null_mut()
+                    }
+                };
+            }
             match crate::builtins::find_loaded_module(&self.name) {
                 Ok(Some(existing)) => return existing,
                 Err(()) => return null_mut(),
@@ -540,6 +587,15 @@ impl Artifact {
         unsafe {
             if let Some(create) = self.create {
                 return create();
+            }
+            if let Some(so_path) = &self.c_ext {
+                return match crate::capi::load_c_extension(&self.name, so_path) {
+                    Ok(m) => m,
+                    Err(msg) => {
+                        object::error("ImportError", &msg);
+                        null_mut()
+                    }
+                };
             }
             create_namespace_module(&self.name, &self.paths)
         }

@@ -42,8 +42,12 @@ from _mule_native import set_instance_field
 from _mule_native import delete_instance_field
 from _mule_native import storage_dictionary
 from _mule_native import is_class
-from _mule_native import is_instance
+from _mule_native import is_instance as _raw_is_instance
 from _mule_native import is_subclass
+
+
+def is_instance(value, cls):
+    return is_subclass(type_of(value), cls)
 from _mule_native import new_class
 from _mule_native import namespace_items
 from _mule_native import namespace_binding
@@ -673,7 +677,7 @@ class type(object):
         return list(class_mro(cls))
 
     def __instancecheck__(cls, instance):
-        return is_instance(instance, cls)
+        return _raw_is_instance(instance, cls)
 
     def __subclasscheck__(cls, subclass):
         if not is_class(subclass):
@@ -951,6 +955,8 @@ def _object_dictionary(owner):
     namespace = storage_dictionary(owner)
     if namespace is None:
         return _instance_dict(owner)
+    if is_instance(namespace, dict):
+        return namespace
     return _globals_dict(namespace)
 
 
@@ -2038,7 +2044,7 @@ class int(object):
     def __divmod__(self, other):
         if not is_instance(self, int):
             raise TypeError(f"descriptor '__divmod__' requires a 'int' object but received a '{type_of(self).__name__}'")
-        if not isinstance(other, int):
+        if not is_instance(other, int):
             return NotImplemented
         left, right = _convert_int(self), _convert_int(other)
         if right == 0:
@@ -2048,7 +2054,7 @@ class int(object):
     def __rdivmod__(self, other):
         if not is_instance(self, int):
             raise TypeError(f"descriptor '__rdivmod__' requires a 'int' object but received a '{type_of(self).__name__}'")
-        if not isinstance(other, int):
+        if not is_instance(other, int):
             return NotImplemented
         left, right = _convert_int(other), _convert_int(self)
         if right == 0:
@@ -3303,8 +3309,8 @@ def isinstance(obj, classinfo, /):
     if type_of(classinfo) is type:
         if type_of(obj) is classinfo:
             return True
-        return is_instance(obj, classinfo)
-    if is_instance(classinfo, tuple):
+        return _raw_is_instance(obj, classinfo)
+    if is_subclass(type_of(classinfo), tuple):
         n = len(classinfo)
         if n == 0:
             return False
@@ -3326,6 +3332,13 @@ def isinstance(obj, classinfo, /):
         return False
     check = getattr(type_of(classinfo), "__instancecheck__", None)
     if check is None:
+        bases = getattr(classinfo, "__bases__", None)
+        if bases is not None and is_subclass(type_of(bases), tuple):
+            cls_attr = getattr(obj, "__class__", None)
+            if cls_attr is not None:
+                if cls_attr is classinfo or issubclass(cls_attr, classinfo):
+                    return True
+            return False
         raise TypeError(
             "isinstance() arg 2 must be a type, a tuple of types, or a union"
         )
@@ -3334,10 +3347,16 @@ def isinstance(obj, classinfo, /):
 
 def issubclass(cls, classinfo, /):
     if type_of(classinfo) is type:
-        if not is_class(cls):
-            raise TypeError("issubclass() arg 1 must be a class")
-        return is_subclass(cls, classinfo)
-    if is_instance(classinfo, tuple):
+        if is_class(cls):
+            return is_subclass(cls, classinfo)
+        bases = getattr(cls, "__bases__", None)
+        if bases is not None and is_subclass(type_of(bases), tuple):
+            for base in bases:
+                if base is classinfo or issubclass(base, classinfo):
+                    return True
+            return False
+        raise TypeError("issubclass() arg 1 must be a class")
+    if is_subclass(type_of(classinfo), tuple):
         n = len(classinfo)
         if n == 0:
             return False
@@ -3359,6 +3378,17 @@ def issubclass(cls, classinfo, /):
         return False
     check = getattr(type_of(classinfo), "__subclasscheck__", None)
     if check is None:
+        info_bases = getattr(classinfo, "__bases__", None)
+        if info_bases is not None and is_subclass(type_of(info_bases), tuple):
+            if cls is classinfo:
+                return True
+            cls_bases = getattr(cls, "__bases__", None)
+            if cls_bases is None or not is_subclass(type_of(cls_bases), tuple):
+                raise TypeError("issubclass() arg 1 must be a class")
+            for base in cls_bases:
+                if base is classinfo or issubclass(base, classinfo):
+                    return True
+            return False
         raise TypeError(
             "issubclass() arg 2 must be a class, a tuple of classes, or a union"
         )
