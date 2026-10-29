@@ -3172,19 +3172,20 @@ class ModuleGenerator:
             return None
         site = vop.codegen_info
         target = site.target
+        call_args = vop.args[1:] if site.callee_required else vop.args
         if (
             not site.proven
             or site.keywords
             or target not in self.owned
             or target is component.lambda_
-            or target.call_order((), len(vop.args) - 1)
+            or target.call_order((), len(call_args))
             != tuple(range(len(target.vars)))
         ):
             return None
         layout = vop.results[0].tn.primitive_type.boxed_layout
         if layout is None:
             return None
-        sources = tuple(ref.tn.type or UNKNOWN for ref in vop.args[1:])
+        sources = tuple(ref.tn.type or UNKNOWN for ref in call_args)
         general, variants = self.contexts(target)
         contexts = {None: general, **{context.id: context for context in variants}}
         for selected, _guards in entry_steps(self, target, sources):
@@ -5227,7 +5228,11 @@ class FunctionGenerator:
     def numeric_call(self, vop) -> None:
         entry = vop.codegen_info
         convention = linked(entry.context.convention, entry, "convention")
-        callable_ref, *arguments = vop.args
+        if entry.callee_required:
+            callable_ref, *arguments = vop.args
+        else:
+            callable_ref = None
+            arguments = list(vop.args)
         converted = []
         # Keep original operands owned until all fallible extraction and frame
         # entry checks succeed. Their ordinary landing releases them on failure.
@@ -5239,11 +5244,12 @@ class FunctionGenerator:
                 converted.append(self.decode(value) if ref.tn.sc in OBJECT else value)
             else:
                 converted.append(self.load(ref))
-        callee = self.load(callable_ref)
+        callee = self.load(callable_ref) if callable_ref is not None else "null"
         if not entry.proven:
             self.uses_numeric_error = True
             self.line("store i1 false, ptr %numeric.error")
-            self.take(callable_ref)
+            if callable_ref is not None:
+                self.take(callable_ref)
             raw_owned = []
             for ref, sc in zip(arguments, convention.parameters, strict=True):
                 taken = self.take(ref)
@@ -5267,7 +5273,8 @@ class FunctionGenerator:
             )
             for owned in raw_owned:
                 self.release(owned)
-            self.release(callee)
+            if callable_ref is not None:
+                self.release(callee)
             failed = self.operation("load i1, ptr %numeric.error")
             self.guard(failed)
             result = vop.results[0]
@@ -5302,7 +5309,8 @@ class FunctionGenerator:
             self.check_status(status)
         self.uses_numeric_error = True
         self.line("store i1 false, ptr %numeric.error")
-        self.take(callable_ref)
+        if callable_ref is not None:
+            self.take(callable_ref)
         raw_owned = []
         for ref, sc in zip(arguments, convention.parameters, strict=True):
             taken = self.take(ref)
@@ -5326,7 +5334,7 @@ class FunctionGenerator:
             self.line("call void @mule_leave_frame()")
         for owned in raw_owned:
             self.release(owned)
-        if not local_environment:
+        if not local_environment and callable_ref is not None:
             self.release(callee)
         failed = self.operation("load i1, ptr %numeric.error")
         self.guard(failed)

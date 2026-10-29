@@ -324,9 +324,10 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
         rhs_type = vop.args[1].tn.type or UNKNOWN
         return rhs_type.fits_dict() or rhs_type.fits_set()
     if name in ("full-call", "local-extent-call") and vop.args:
-        return ref is vop.args[0] or any(
-            ref is vop.args[index + 1]
-            for index in linked(vop.codegen_info, vop, "call site").borrowable_arguments
+        site = linked(vop.codegen_info, vop, "call site")
+        offset = 1 if site.callee_required else 0
+        return (site.callee_required and ref is vop.args[0]) or any(
+            ref is vop.args[index + offset] for index in site.borrowable_arguments
         )
     if name == "call-resolved":
         info = vop.codegen_info
@@ -674,12 +675,10 @@ def select_tuple_delivery(component, arities, method_targets):
             ):
                 if producer.info is vops.FULL_CALL:
                     site = producer.codegen_info
+                    arg_count = len(producer.args) - (1 if site.callee_required else 0)
                     if (
                         arities.get(site.target) == arity
-                        and site.target.call_order(
-                            site.keywords, len(producer.args) - 1
-                        )
-                        is not None
+                        and site.target.call_order(site.keywords, arg_count) is not None
                     ):
                         call = producer
                 elif producer.info is vops.LOCAL_EXTENT_CALL:
@@ -783,10 +782,10 @@ def select_tuple_delivery(component, arities, method_targets):
                 )
             else:
                 site = call.codegen_info
+                arg_count = len(call.args) - (1 if site.callee_required else 0)
                 direct = (
                     site.target is not None
-                    and site.target.call_order(site.keywords, len(call.args) - 1)
-                    is not None
+                    and site.target.call_order(site.keywords, arg_count) is not None
                 )
             if direct:
                 plan.direct_assertions[call] = assertion
@@ -1332,6 +1331,7 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                 if (
                     reader.info is not vops.FULL_CALL
                     or not reader.args
+                    or not reader.codegen_info.callee_required
                     or ref is not reader.args[0]
                     or not reader.codegen_info.proven
                     or reader.codegen_info.keywords
