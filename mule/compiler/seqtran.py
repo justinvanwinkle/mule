@@ -1904,6 +1904,53 @@ def _transform_len(node: Combination) -> bool:
     return True
 
 
+class _ConstantOrdValue(ast.Visitor):
+    """Extract the codepoint or byte of a 1-element constant str or bytes literal."""
+
+    def visit_Node(self, node) -> int | None:
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> int | None:
+        return ord(node.value) if len(node.value) == 1 else None
+
+    def visit_BytesLiteral(self, node: ast.BytesLiteral) -> int | None:
+        return node.value[0] if len(node.value) == 1 else None
+
+
+_CONSTANT_ORD_VALUE = _ConstantOrdValue()
+
+
+@deftransform("ord")
+def _transform_ord(node: Combination) -> bool:
+    """Fold constant ``ord('a')`` / ``ord(b'a')`` and fuse ``ord(s[i])`` into
+    direct codepoint extraction when ``s`` is a proven builtin ``str`` and ``i``
+    is a nonnegative integer."""
+    if len(node.args) != 1:
+        return False
+    arg = node.args[0]
+    if is_pure_bound_ref(arg):
+        lit = constant_lvar_value(arg)
+        if lit is not None:
+            code = lit.accept(_CONSTANT_ORD_VALUE)
+            if code is not None:
+                folded = ast.IntegerLiteral(code)
+                folded.span = node.source.span if node.source is not None else None
+                replace_combination_with_constant(node, folded)
+                return True
+    getitem_node = splice_fun_args(arg, ("%getitem",), 2, splice=False)
+    if getitem_node is not None:
+        seq_lvar, idx_lvar = getitem_node.args
+        seq_type = lvar_type(seq_lvar)
+        idx_type = lvar_type(idx_lvar)
+        if seq_type.exact_text and idx_type.fits_python_integer(PYTHON_INTEGER):
+            splice_fun_args(arg, ("%getitem",), 2)
+            retarget_known_combination(
+                node, KNOWN["_text_codepoint"], [seq_lvar, idx_lvar]
+            )
+            return True
+    return False
+
+
 class _AttributeName(ast.Visitor):
     """The text of a constant attribute name, or None."""
 

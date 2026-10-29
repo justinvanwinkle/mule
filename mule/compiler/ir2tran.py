@@ -2153,6 +2153,7 @@ def _safe_container_local_region_step(
         "fast-len",
         "primitive-_storage_length",
         "primitive-_text_length",
+        "primitive-_text_codepoint",
         "range-prepare",
         "range-available",
         "range-advance",

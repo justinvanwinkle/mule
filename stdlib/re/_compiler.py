@@ -483,29 +483,35 @@ def _get_charset_prefix(pattern, flags):
         if not pattern.data:
             return None
         op, av = pattern.data[0]
-        if op is not SUBPATTERN:
+        if op is SUBPATTERN:
+            group, add_flags, del_flags, pattern = av
+            if (add_flags | del_flags) & _parser.TYPE_FLAGS:
+                return None
+            flags = _combine_flags(flags, add_flags, del_flags)
+            if flags & SRE_FLAG_IGNORECASE and flags & SRE_FLAG_LOCALE:
+                return None
+        elif op in (MAX_REPEAT, MIN_REPEAT, POSSESSIVE_REPEAT) and av[0] != 0:
+            pattern = av[2]
+        else:
             break
-        group, add_flags, del_flags, pattern = av
-        flags = _combine_flags(flags, add_flags, del_flags)
-        if flags & SRE_FLAG_IGNORECASE and flags & SRE_FLAG_LOCALE:
-            return None
 
     iscased = _get_iscased(flags)
     if op is LITERAL:
         if iscased and iscased(av):
             return None
         return [(op, av)]
+    elif op is CATEGORY:
+        return [(op, av)]
     elif op is BRANCH:
         charset = []
-        charsetappend = charset.append
         for p in av[1]:
-            if not p:
+            arm_cs = _get_charset_prefix(p, flags)
+            if not arm_cs:
                 return None
-            op, av = p[0]
-            if op is LITERAL and not (iscased and iscased(av)):
-                charsetappend((op, av))
-            else:
-                return None
+            for op1, _ in arm_cs:
+                if op1 is NEGATE:
+                    return None
+            charset.extend(arm_cs)
         return charset
     elif op is IN:
         charset = av

@@ -1147,7 +1147,12 @@ def _binary_generic(gen, vop, opcode, *, inplace):
             gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reuse_slot
         )
         return
-    if opcode in (2, 4, 5, 8, 9, 10, 11, 12):
+    if opcode in (10, 11, 12):
+        _tagged_bitwise(
+            gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reuse_slot
+        )
+        return
+    if opcode in (2, 4, 5, 8, 9):
         operation = (
             f"call ptr @mule.{prefix}.binary.{opcode}(ptr {lhs}, ptr {rhs}, "
             f"i32 {int(inplace)}, ptr {reuse}, ptr {reuse_slot})"
@@ -1158,6 +1163,50 @@ def _binary_generic(gen, vop, opcode, *, inplace):
             f"i32 {int(inplace)}, ptr null)"
         )
     gen.pointer_result(result, operation, (lhs, rhs))
+
+
+def _tagged_bitwise(gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reuse_slot):
+    """Emit inline tagged bitwise AND/XOR/OR without overflow or fast-path null checks."""
+    left_bits = gen.operation(f"ptrtoint ptr {lhs} to i64")
+    right_bits = gen.operation(f"ptrtoint ptr {rhs} to i64")
+    if fixnums:
+        if opcode == 10:
+            bits = gen.operation(f"and i64 {left_bits}, {right_bits}")
+        elif opcode == 12:
+            bits = gen.operation(f"or i64 {left_bits}, {right_bits}")
+        else:
+            xored = gen.operation(f"xor i64 {left_bits}, {right_bits}")
+            bits = gen.operation(f"or i64 {xored}, 1")
+        value = gen.operation(f"inttoptr i64 {bits} to ptr")
+        gen.native_result(result, value)
+        gen.refine(result.tn, value)
+        return
+    slow = gen.fresh("bitwise.slow")[1:]
+    fast = gen.fresh("bitwise.fast")[1:]
+    done = gen.fresh("bitwise.done")[1:]
+    tags = gen.operation(f"and i64 {left_bits}, {right_bits}")
+    tag = gen.operation(f"and i64 {tags}, 1")
+    integers = gen.operation(f"icmp ne i64 {tag}, 0")
+    gen.line(f"br i1 {integers}, label %{fast}, label %{slow}")
+    gen.lines.append(fast + ":")
+    if opcode == 10:
+        bits = gen.operation(f"and i64 {left_bits}, {right_bits}")
+    elif opcode == 12:
+        bits = gen.operation(f"or i64 {left_bits}, {right_bits}")
+    else:
+        xored = gen.operation(f"xor i64 {left_bits}, {right_bits}")
+        bits = gen.operation(f"or i64 {xored}, 1")
+    value = gen.operation(f"inttoptr i64 {bits} to ptr")
+    gen.line(f"br label %{done}")
+
+    gen.lines.append(slow + ":")
+    fallback = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
+    slow_success = gen.current_block()
+    gen.line(f"br label %{done}")
+    gen.lines.append(done + ":")
+    merged = gen.operation(f"phi ptr [{value}, %{fast}], [{fallback}, %{slow_success}]")
+    gen.native_result(result, merged)
+    gen.refine(result.tn, merged)
 
 
 def _tagged_add_sub(gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reuse_slot):
@@ -3689,13 +3738,19 @@ def protocol_getitem(gen, vop):
     if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
         if idx_type.is_fixnum:
             sequence = gen.take(vop.args[0])
-            index = gen.take(vop.args[1])
+            raw_index = vop.args[1].tn.sc is SIGNED
+            index = (
+                gen.encode(gen.take(vop.args[1]))
+                if raw_index
+                else gen.take(vop.args[1])
+            )
             result = gen.operation(
                 f"call ptr @mule_bytearray_getitem_fast(ptr {sequence}, ptr {index})"
             )
             gen.immortal_values.add(result)
             gen.release(sequence)
-            gen.release(index)
+            if not raw_index:
+                gen.release(index)
             gen.publish(vop.results[0], result)
             gen.check_pointer(result)
             gen.refine(vop.results[0].tn, result)
@@ -3704,13 +3759,17 @@ def protocol_getitem(gen, vop):
         return
     if seq_type.fits_bytes(seq_type) and idx_type.is_fixnum:
         sequence = gen.take(vop.args[0])
-        index = gen.take(vop.args[1])
+        raw_index = vop.args[1].tn.sc is SIGNED
+        index = (
+            gen.encode(gen.take(vop.args[1])) if raw_index else gen.take(vop.args[1])
+        )
         result = gen.operation(
             f"call ptr @mule_bytes_getitem(ptr {sequence}, ptr {index})"
         )
         gen.immortal_values.add(result)
         gen.release(sequence)
-        gen.release(index)
+        if not raw_index:
+            gen.release(index)
         gen.publish(vop.results[0], result)
         gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
@@ -4276,12 +4335,13 @@ def primitive(name, info, emit, *, consumes_arguments=False):
                     if arg.tn.sc in OBJECT:
                         gen.release(value)
             return
+        known_nonnull = result.startswith("@mule.") or result in gen.immortal_values
         gen.publish(vop.results[0], result)
         if not consumes_arguments:
             for ref, value in zip(vop.args, values, strict=True):
                 if ref.tn.sc is not SIGNED:
                     gen.release(value)
-        if not result.startswith("@mule.") and result not in gen.immortal_values:
+        if not known_nonnull:
             gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
 
@@ -4508,8 +4568,10 @@ def text_access(function):
             return "@mule.true"
         if function == "mule_text_codepoint" and len(vop.args) == 2:
             index_type = vop.args[1].tn.type or UNKNOWN
-            if index_type.is_fixnum and (index_type.minimum or 0) >= 0:
-                index = gen.decode(values[1])
+            if index_type.is_fixnum:
+                index = (
+                    values[1] if vop.args[1].tn.sc is SIGNED else gen.decode(values[1])
+                )
                 return gen.operation(
                     f"call ptr @mule_text_codepoint_at(ptr {values[0]}, i64 {index})"
                 )

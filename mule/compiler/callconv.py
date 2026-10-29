@@ -362,9 +362,7 @@ def select_numeric_calls(module, component) -> bool:
                     else ref.tn.primitive_type.admits(DESCRIPTOR)
                 )
             )
-            if borrowed_args and (
-                not site.proven or not (borrowed_args <= site.borrowable_arguments)
-            ):
+            if borrowed_args and not (borrowed_args <= site.borrowable_arguments):
                 continue
             target = site.target
             if (

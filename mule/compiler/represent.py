@@ -659,8 +659,19 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
                 and vop.info.name == "protocol-getitem"
                 and len(vop.args) == 2
                 and ref is vop.args[1]
-                and vop.codegen_info
-                in ("list_borrow", "list_owned", "tuple_borrow", "tuple_owned")
+                and (
+                    vop.codegen_info
+                    in ("list_borrow", "list_owned", "tuple_borrow", "tuple_owned")
+                    or (
+                        (
+                            (vop.args[0].tn.type or UNKNOWN).fits_bytes(
+                                vop.args[0].tn.type or UNKNOWN
+                            )
+                            or (vop.args[0].tn.type or UNKNOWN).fits_bytearray()
+                        )
+                        and (vop.args[1].tn.type or UNKNOWN).is_fixnum
+                    )
+                )
             )
             or (
                 not raw
@@ -678,6 +689,13 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
                 and len(vop.args) == 3
                 and ref is vop.args[1]
                 and (vop.args[0].tn.type or UNKNOWN).is_exact_list
+            )
+            or (
+                not raw
+                and vop.info.name == "primitive-_text_codepoint"
+                and len(vop.args) == 2
+                and ref is vop.args[1]
+                and (vop.args[1].tn.type or UNKNOWN).is_fixnum
             )
         )
     ):
@@ -728,6 +746,15 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
             if (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
                 vop.args[1].tn.type or UNKNOWN
             ).is_fixnum:
+                return (SIGNED,)
+        if (
+            not ref.write_p
+            and vop_name == "primitive-_text_codepoint"
+            and len(vop.args) == 2
+            and ref is vop.args[1]
+        ):
+            idx_type = vop.args[1].tn.type or UNKNOWN
+            if idx_type.is_fixnum:
                 return (SIGNED,)
         if (
             not ref.write_p

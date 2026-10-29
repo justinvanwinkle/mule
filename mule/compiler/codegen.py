@@ -2990,6 +2990,7 @@ class ModuleGenerator:
             "$call.numeric",
             entry.function,
             entry.context.id,
+            entry.context.borrowed_parameters,
             convention.parameters,
             convention.returned,
             entry.result_contract,
@@ -3011,8 +3012,12 @@ class ModuleGenerator:
         fallback_helper = self.positional_call_helper(arity)
         builder = _HelperBuilder(self)
         check_depth = self.needs_frame_depth_check(entry.function)
-        has_descriptors = any(sc is DESCRIPTOR for sc in convention.parameters)
-        frame_fail_label = "frame.failed" if has_descriptors else "failed"
+        owned_descriptors = [
+            i
+            for i, sc in enumerate(convention.parameters)
+            if sc is DESCRIPTOR and i not in entry.context.borrowed_parameters
+        ]
+        frame_fail_label = "frame.failed" if owned_descriptors else "failed"
         builder.lines = [
             _helper_comment(
                 f"guarded numeric call; target: {entry.function.name}; context: {entry.context.id}"
@@ -3033,13 +3038,12 @@ class ModuleGenerator:
                     f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered",
                 ]
             )
-            if has_descriptors:
+            if owned_descriptors:
                 builder.lines.append("frame.failed:")
-                for i, sc in enumerate(convention.parameters):
-                    if sc is DESCRIPTOR:
-                        builder.lines.append(
-                            f"  call void @mule.fast.release(ptr %arg.{i})"
-                        )
+                for i in owned_descriptors:
+                    builder.lines.append(
+                        f"  call void @mule.fast.release(ptr %arg.{i})"
+                    )
                 builder.lines.append("  br label %failed")
             builder.lines.append("entered:")
         builder.lines.append("  %callee.globals = load ptr, ptr %fn.globals.slot")
@@ -3066,6 +3070,8 @@ class ModuleGenerator:
                 "fallback:",
             ]
         )
+        for index in entry.context.borrowed_parameters:
+            builder.line(f"  call ptr @mule.fast.retain(ptr %arg.{index})")
         boxed_args = []
         for i, sc in enumerate(convention.parameters):
             if sc is DOUBLE:

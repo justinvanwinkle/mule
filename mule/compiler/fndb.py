@@ -662,6 +662,7 @@ MAX2 = defknown(
 MIN_BUILTIN = defknown("min", "call", "unsafe")
 MAX_BUILTIN = defknown("max", "call", "unsafe")
 INT_BUILTIN = defknown("int", "call", "unsafe")
+ORD_BUILTIN = defknown("ord", "call", "unsafe")
 SET_BUILTIN = defknown("set", "call", "unsafe")
 PARSE_INT_TEXT = defknown(
     "%parse_int_text",
@@ -968,6 +969,7 @@ __all__ = [
     "MAX_BUILTIN",
     "MIN2",
     "MIN_BUILTIN",
+    "ORD_BUILTIN",
     "PARSE_INT_SLICE",
     "PARSE_INT_TEXT",
     "PROTOCOLS",
