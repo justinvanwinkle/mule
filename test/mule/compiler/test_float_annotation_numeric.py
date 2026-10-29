@@ -1,5 +1,7 @@
 """Python float annotations enforce exact float values and enable unboxed double storage."""
 
+import re
+
 from mule.compiler import emit_llvm
 from mule.compiler.annotation_types import BUILTINS
 from mule.compiler.ctype import (
@@ -56,4 +58,9 @@ def test_float_annotation_asserts_exact_float_and_unboxes():
     )
     assert "call i32 @mule_assert_float" in llvm
     assert "call i32 @mule_assert_real" not in llvm
-    assert 'define internal double @"mule_fn_add_one.numeric.fixnum"(' in llvm
+    assert re.search(
+        r'^define internal double @"mule_fn_add_one\.numeric\.[^"]+"\('
+        r"[^)\n]*\bdouble %[^),\n]+",
+        llvm,
+        re.MULTILINE,
+    )
