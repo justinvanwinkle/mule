@@ -347,10 +347,10 @@ def test_entry_context_runs_specialized_ir1_transforms_without_mutating_general(
     assert len(list(known_calls(fn, "%multiply"))) == 1
 
     llvm = emit_llvm(source)
-    spec_start = llvm.index('define internal ptr @"mule_fn_f.spec.0"')
+    spec_start = llvm.index('define internal ptr @"mule_fn_f.numeric.observed"')
     spec_end = llvm.index("\n}", spec_start)
     spec_body = llvm[spec_start:spec_end]
-    # In spec.0 (observed x=7, s=TEXT_TYPE), IR1 folds (7 + 0) * 8 -> 56 and str(s) -> s!
+    # In the specialized observed entry (x=7, s=TEXT_TYPE), IR1 folds (7 + 0) * 8 -> 56 and str(s) -> s!
     assert "mule.fast.binary" not in spec_body
     assert "@mule.call.1" not in spec_body
     assert "store ptr %parameter.1" in spec_body

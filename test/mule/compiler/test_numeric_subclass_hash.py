@@ -3,7 +3,9 @@
 from test.mule.compiler.test_exception_groups import compare
 
 
-def test_numeric_subclass_hash_matches_equal_builtin_keys_and_respects_overrides(tmp_path):
+def test_numeric_subclass_hash_matches_equal_builtin_keys_and_respects_overrides(
+    tmp_path,
+):
     compare(
         tmp_path,
         """

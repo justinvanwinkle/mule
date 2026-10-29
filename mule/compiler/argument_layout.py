@@ -29,7 +29,7 @@ def helpers() -> str:
     A set mask bit transfers an existing owned reference exactly once;
     an unset bit, or an index outside the mask's 64 bits, retains the value.
     """
-    return f"""define internal i1 @mule.argument_view.is_view(ptr %args) alwaysinline {{
+    return f"""define internal i1 @mule.argument_view.is_view(ptr %args) {{
 entry:
   %null = icmp eq ptr %args, null
   %bits = ptrtoint ptr %args to i64
@@ -46,7 +46,7 @@ no:
   ret i1 false
 }}
 
-define internal i32 @mule.argument_view.positional(ptr %args, i32 %required, i32 %positional, i32 %rest) alwaysinline {{
+define internal i32 @mule.argument_view.positional(ptr %args, i32 %required, i32 %positional, i32 %rest) {{
 entry:
   %count.addr = getelementptr i8, ptr %args, i64 {ARGUMENT_COUNT_OFFSET}
   %count = load i64, ptr %count.addr
@@ -62,7 +62,7 @@ entry:
   ret i32 %result
 }}
 
-define internal ptr @mule.argument_view.take(ptr %args, i32 %index) alwaysinline {{
+define internal ptr @mule.argument_view.take(ptr %args, i32 %index) {{
 entry:
   %values.addr = getelementptr i8, ptr %args, i64 {ARGUMENT_VALUES_OFFSET}
   %values = load ptr, ptr %values.addr
@@ -88,7 +88,7 @@ borrowed:
   ret ptr %retained
 }}
 
-define internal ptr @mule.argument_view.arg_or_default(ptr %args, i32 %index, i32 %default) alwaysinline {{
+define internal ptr @mule.argument_view.arg_or_default(ptr %args, i32 %index, i32 %default) {{
 entry:
   %count.addr = getelementptr i8, ptr %args, i64 {ARGUMENT_COUNT_OFFSET}
   %count = load i64, ptr %count.addr

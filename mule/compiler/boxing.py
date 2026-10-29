@@ -35,7 +35,7 @@ def _header(layout: BoxLayout) -> str:
 
 def _private_helpers(layout: BoxLayout, skip: str, cleanup: str) -> str:
     """Local counts are legal only after the whole-group privacy proof."""
-    return f"""define internal ptr @{layout.symbol("private.retain")}(ptr %box) alwaysinline {{
+    return f"""define internal ptr @{layout.symbol("private.retain")}(ptr %box) {{
 entry:
 {skip}
   br i1 %skip, label %done, label %retain
@@ -48,7 +48,7 @@ done:
   ret ptr %box
 }}
 
-define internal void @{layout.symbol("private.release")}(ptr %box) alwaysinline {{
+define internal void @{layout.symbol("private.release")}(ptr %box) {{
 entry:
 {skip}
   br i1 %skip, label %done, label %release
@@ -94,7 +94,7 @@ class ScalarPayload(_Payload):
 
     def _box(self, layout: BoxLayout) -> str:
         llvm_type = layout.storage.llvm_type
-        return f"""define internal nonnull align 8 ptr @{layout.symbol()}({llvm_type} %value) alwaysinline {{
+        return f"""define internal nonnull align 8 ptr @{layout.symbol()}({llvm_type} %value) {{
 entry:
   %box = call noalias nonnull align 8 ptr @mule_allocate_object_storage()
 {_header(layout)}
@@ -104,7 +104,7 @@ entry:
 
     def _load(self, layout: BoxLayout) -> str:
         llvm_type = layout.storage.llvm_type
-        return f"""define internal {llvm_type} @{layout.symbol("load")}(ptr %box) alwaysinline {{
+        return f"""define internal {llvm_type} @{layout.symbol("load")}(ptr %box) {{
 entry:
   %payload = getelementptr i8, ptr %box, i64 {layout.payload_offset}
   %value = load {llvm_type}, ptr %payload
@@ -130,7 +130,7 @@ class IntegerPayload(_Payload):
     """
 
     def _box(self, layout: BoxLayout) -> str:
-        return f"""define internal ptr @{layout.symbol()}(i64 %value) alwaysinline {{
+        return f"""define internal ptr @{layout.symbol()}(i64 %value) {{
 entry:
   %lower = icmp sge i64 %value, -4611686018427387904
   %upper = icmp sle i64 %value, 4611686018427387903
@@ -166,7 +166,7 @@ fallback:
 }}"""
 
     def _load(self, layout: BoxLayout) -> str:
-        return f"""define internal i64 @{layout.symbol("load")}(ptr %box) alwaysinline {{
+        return f"""define internal i64 @{layout.symbol("load")}(ptr %box) {{
 entry:
   %output = alloca i64
   %bits = ptrtoint ptr %box to i64

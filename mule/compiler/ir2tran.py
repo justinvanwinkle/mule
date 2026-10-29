@@ -32,7 +32,7 @@ from mule import ast
 
 from . import fndb, vops
 from .annotation_types import InferredReturnContract
-from .callconv import TupleDelivery, tuple_return_convention
+from .callconv import TupleDelivery, physical_entry, tuple_return_convention
 
 if TYPE_CHECKING:
     from .annotation_types import Contract
@@ -1339,7 +1339,16 @@ def _mark_borrowed_local_reads(component: IR2Component) -> None:
                     or not reader.args
                     or not reader.codegen_info.callee_required
                     or ref is not reader.args[0]
-                    or not reader.codegen_info.proven
+                    or not (
+                        reader.codegen_info.proven
+                        or (
+                            (
+                                component.lambda_.policy.safety == 0
+                                or vop.codegen_info in component.context.final_bindings
+                            )
+                            and not vop.codegen_info.sets
+                        )
+                    )
                     or reader.codegen_info.keywords
                 ):
                     continue
@@ -3949,23 +3958,57 @@ class _Converter(NodeVisitor):
             if len(fun.uses) == 1
             else None
         )
+        final_binding = (
+            fun.use().accept(_FinalBindingRef(self.context)) is target
+            and target is not None
+        )
         proven = target is not None and (
-            code_target is target or (node.kind is CallKind.GUARDED and node.proven)
+            code_target is target
+            or final_binding
+            or (node.kind is CallKind.GUARDED and node.proven)
         )
         info = node.info
         keywords = info.keywords if info is not None else ()
         order = (
             target.call_order(keywords, len(node.args))
-            if target is not None and target in self.context.borrowed_callees
+            if target is not None
+            and (
+                target in self.context.borrowed_callees
+                or (target, "variants") in self.context.borrowed_callees
+            )
             else None
         )
+        borrowed_params = (
+            set(self.context.borrowed_callees.get(target, ()))
+            if order is not None
+            else set()
+        )
+        if (
+            order is not None
+            and (target, "variants") in self.context.borrowed_callees
+            and all(arg_idx is not None and arg_idx >= 0 for arg_idx in order)
+            and not physical_entry(target)
+        ):
+            arg_types = tuple(
+                self.context.type_of(node.args[arg_idx].use())
+                if len(node.args[arg_idx].uses) == 1
+                else UNKNOWN
+                for arg_idx in order
+            )
+            for v_params, v_borrowed in self.context.borrowed_callees[
+                target, "variants"
+            ]:
+                if all(
+                    expected is UNKNOWN or actual.dispatch_fits(expected)
+                    for actual, expected in zip(arg_types, v_params, strict=True)
+                ):
+                    borrowed_params |= v_borrowed
+                    break
         borrowable = (
             frozenset(
                 arg_idx
                 for param_idx, arg_idx in enumerate(order)
-                if arg_idx is not None
-                and arg_idx >= 0
-                and param_idx in self.context.borrowed_callees[target]
+                if arg_idx is not None and arg_idx >= 0 and param_idx in borrowed_params
             )
             if order is not None
             else frozenset()
@@ -3976,11 +4019,9 @@ class _Converter(NodeVisitor):
             target,
             proven,
             borrowable,
-            final_binding=fun.use().accept(_FinalBindingRef(self.context)) is target
-            and target is not None,
+            final_binding=final_binding,
             callee_required=not (
-                target is not None
-                and fun.use().accept(_FinalBindingRef(self.context)) is target
+                final_binding
                 and not _final_call_needs_object(target, node, self.lambda_)
             ),
         )

@@ -225,6 +225,8 @@ class CallConvention:
         elif vop.info.name == "move-argument" and ref.write_p:
             if self.parameters[vop.codegen_info] is DOUBLE:
                 return (DOUBLE,)
+            if self.parameters[vop.codegen_info] is SIGNED:
+                return (IMMEDIATE, SIGNED)
         return None
 
 
@@ -261,7 +263,11 @@ def numeric_entry(
 ) -> NumericEntry:
     """Select an internal ABI without changing the entry's semantic facts."""
     returned = (
-        DOUBLE if primitive_type_of(context.return_type) is BOXED_FLOAT else SIGNED
+        DOUBLE
+        if primitive_type_of(context.return_type) is BOXED_FLOAT
+        else SIGNED
+        if context.return_type.is_fixnum
+        else DESCRIPTOR
     )
     parameters = tuple(
         DOUBLE
@@ -338,7 +344,7 @@ def numeric_entry(
 
 def select_numeric_calls(module, component) -> bool:
     """Use scalar locations for proven or guarded calls and compatible consumers."""
-    if component.context.plan is not None or component.context.borrowed_parameters:
+    if component.context.plan is not None:
         return False
     changed = False
     block_by_vop = {vop: block for block in component.blocks for vop in block.vops}
@@ -380,37 +386,36 @@ def select_numeric_calls(module, component) -> bool:
                 continue
             assertion_vop = None
             result_contract = None
-            if site.proven:
-                result = vop.results[0].tn
-            else:
-                block = block_by_vop.get(vop)
-                if block is None or vop not in block.vops:
-                    continue
-                idx = block.vops.index(vop)
+            block = block_by_vop.get(vop)
+            if block is None or vop not in block.vops:
+                continue
+            idx = block.vops.index(vop)
+            if (
+                idx + 1 < len(block.vops)
+                and block.vops[idx + 1].info is vops.TYPE_CHECK
+            ):
+                candidate_assertion = block.vops[idx + 1]
+                delivered = vop.results[0].tn
                 if (
-                    idx + 1 < len(block.vops)
-                    and block.vops[idx + 1].info is vops.TYPE_CHECK
+                    candidate_assertion.args[0].tn is delivered
+                    and len(component.writes.get(delivered, ())) == 1
+                    and len(component.reads.get(delivered, ())) == 1
                 ):
-                    candidate_assertion = block.vops[idx + 1]
-                    delivered = vop.results[0].tn
-                    if (
-                        candidate_assertion.args[0].tn is delivered
-                        and len(component.writes.get(delivered, ())) == 1
-                        and len(component.reads.get(delivered, ())) == 1
-                    ):
-                        assertion_vop = candidate_assertion
-                        result = assertion_vop.results[0].tn
-                        if assertion_vop.codegen_info.safety:
-                            result_contract = assertion_vop.codegen_info.contract
-                    else:
-                        continue
-                elif (
-                    component.lambda_.policy.infers_return_contracts
-                    and target.policy.infers_return_contracts
-                ):
+                    assertion_vop = candidate_assertion
+                    result = assertion_vop.results[0].tn
+                    if not site.proven and assertion_vop.codegen_info.safety:
+                        result_contract = assertion_vop.codegen_info.contract
+                elif site.proven:
                     result = vop.results[0].tn
                 else:
                     continue
+            elif site.proven or (
+                component.lambda_.policy.infers_return_contracts
+                and target.policy.infers_return_contracts
+            ):
+                result = vop.results[0].tn
+            else:
+                continue
             fact = result.type or UNKNOWN
             ignore_vops = [vop]
             if assertion_vop is not None:
@@ -429,11 +434,10 @@ def select_numeric_calls(module, component) -> bool:
                         is other_vop.results[0].tn
                     ):
                         ignore_vops.append(other_block.vops[other_idx + 1])
-            if primitive_type_of(fact) is BOXED_FLOAT:
-                if not can_use_double(component, result, ignore=tuple(ignore_vops)):
-                    remaining.append(vop)
-                    continue
-            elif not fact.is_fixnum:
+            if primitive_type_of(fact) is BOXED_FLOAT and not can_use_double(
+                component, result, ignore=tuple(ignore_vops)
+            ):
+                remaining.append(vop)
                 continue
             arguments = tuple(arg.tn.type or UNKNOWN for arg in call_args)
             general, variants = module.contexts(target)
@@ -457,11 +461,27 @@ def select_numeric_calls(module, component) -> bool:
                         )
                     )
                     and (
-                        candidate.return_type.is_fixnum
+                        (
+                            candidate.return_type.is_fixnum
+                            and candidate.return_type.fits(fact)
+                        )
                         if fact.is_fixnum
-                        else primitive_type_of(candidate.return_type) is BOXED_FLOAT
+                        else (
+                            primitive_type_of(candidate.return_type) is BOXED_FLOAT
+                            and candidate.return_type.fits(fact)
+                        )
+                        if primitive_type_of(fact) is BOXED_FLOAT
+                        else (
+                            not candidate.return_type.is_fixnum
+                            and primitive_type_of(candidate.return_type)
+                            is not BOXED_FLOAT
+                            and any(
+                                param.is_fixnum
+                                or primitive_type_of(param) is BOXED_FLOAT
+                                for param in candidate.parameters
+                            )
+                        )
                     )
-                    and candidate.return_type.fits(fact)
                 ),
                 None,
             )
@@ -477,7 +497,12 @@ def select_numeric_calls(module, component) -> bool:
                 )
             ):
                 continue
-            if not site.proven and result_contract is None and assertion_vop is None:
+            if (
+                not site.proven
+                and result_contract is None
+                and assertion_vop is None
+                and (fact.is_fixnum or primitive_type_of(fact) is BOXED_FLOAT)
+            ):
                 result_contract = InferredReturnContract(
                     target.name, context.return_type
                 )
@@ -520,7 +545,11 @@ def select_numeric_calls(module, component) -> bool:
                     ),
                 ),
                 results=(
-                    (DOUBLE,) if convention.returned is DOUBLE else (IMMEDIATE, SIGNED),
+                    (DOUBLE,)
+                    if convention.returned is DOUBLE
+                    else (IMMEDIATE, SIGNED)
+                    if convention.returned is SIGNED
+                    else OBJECT,
                 ),
             )
             vop.codegen_info = (

@@ -314,6 +314,12 @@ must print nothing.
   Interpolation fragments must retain coordinates relative to the original source.
 - Reject unsupported compiler syntax explicitly, including unreachable source.
   Do not add execution fallbacks through the host parser, compiler, or evaluator.
+- Never emit LLVM `alwaysinline` (or Rust `#[inline(always)]`) on generated
+  functions, internal helpers, adapters, or runtime primitives. Unconditional
+  inlining runs before LLVM's CGSCC inliner, expands helpers into cold and
+  fallback paths, inflates caller instruction counts, and blocks LLVM from
+  inlining user and protocol functions where specialization matters. Leave
+  inlining decisions to LLVM.
 - Preserve evaluation order, dynamic global lookup, and owned-reference cleanup
   on success and error paths. `None` is an object, not an unbound-slot marker.
 

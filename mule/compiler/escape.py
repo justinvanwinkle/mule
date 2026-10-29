@@ -205,6 +205,7 @@ def analyze_escapes(
     local_environments: LocalEnvironments | None = None,
     base_facts: EscapeFacts | None = None,
     expand: bool = True,
+    node_types: dict | None = None,
 ) -> EscapeFacts:
     if base_facts is not None and local_environments is not None:
         lambdas = _expand_local_family(lambdas, local_environments)
@@ -215,7 +216,12 @@ def analyze_escapes(
     if local_environments is None:
         local_environments = find_local_environments(lambdas)
     facts = EscapeFacts()
-    solver = _Solver(facts, local_environments, analyzed_lambdas=frozenset(lambdas))
+    solver = _Solver(
+        facts,
+        local_environments,
+        analyzed_lambdas=frozenset(lambdas),
+        node_types=node_types,
+    )
     for lambda_ in lambdas:
         facts._analyzed.update(lambda_.locals)
     for lambda_ in lambdas:
@@ -265,10 +271,13 @@ class _Solver:
         facts: EscapeFacts,
         local_environments: LocalEnvironments | None = None,
         analyzed_lambdas: frozenset[Lambda] = frozenset(),
+        *,
+        node_types: dict | None = None,
     ):
         self.facts = facts
         self.local_environments = local_environments or LocalEnvironments()
         self.analyzed_lambdas = analyzed_lambdas
+        self.node_types = node_types or {}
         # var -> variables whose escape makes ``var`` escape
         self.depends_on: dict[LambdaVar, list[LambdaVar]] = {}
         self.dependents: dict[LambdaVar, list[LambdaVar]] = {}
@@ -289,6 +298,10 @@ class _Solver:
         ) or _all_uses_are_direct_summary_calls(function, self.analyzed_lambdas)
 
     def effective_lvar_type(self, lvar: Lvar) -> ValueType:
+        if len(lvar.uses) == 1:
+            override = self.node_types.get(lvar.use(), UNKNOWN)
+            if override is not UNKNOWN:
+                return override
         direct = lvar_type(lvar)
         if direct is not UNKNOWN or len(lvar.uses) != 1:
             return direct
