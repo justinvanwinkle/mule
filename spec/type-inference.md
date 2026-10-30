@@ -213,6 +213,22 @@ ownership does not prove the runtime receiver's class. A variadic constructor
 can have only a general entry with an unknown receiver. Its assignments must
 not disappear from the evidence used to predict the field type.
 
+A stored value that derives from a parameter takes its type from the general
+entry, not from a guarded observed or fixnum entry that narrows that parameter.
+Those entries are specializations selected by argument-domain guards. Any call
+outside their domains runs the general entry, and so does any call that
+local-call analysis never saw, such as a construction through a class object
+it cannot resolve. The general entry carries the declared parameter types, or
+the join of every call's arguments when closed-callee seeding proves that all
+calls are known. This follows SBCL's `optimistic-type-propagatable-fun-p` and
+`propagate-local-call-args` in `src/compiler/ir1opt.lisp`, which narrow a
+lambda's variables from call-site argument types only when it has no external
+entry (`functional-entry-fun`) and every reference is a local call. A class's
+methods are reachable through the class object, so an `int` parameter stored
+in a field predicts `int`, not the fixnum interval its observed callers pass.
+A value whose derivation from such a parameter cannot be ruled out is treated
+as derived from it.
+
 Ambiguous fields retain generic access rather than a checked narrow prediction
 from the remaining stores. This preserves `None` defaults and arbitrary supplied
 values when another method later writes text, integers, or dictionaries.

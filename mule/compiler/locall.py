@@ -2071,6 +2071,9 @@ class _AppendsFromField(NodeVisitor):
 
 
 class _DependsOnVars(NodeVisitor, LeafVisitor):
+    """Whether a value may derive from one of ``targets``. A variable whose
+    definitions cannot all be followed may derive from any of them."""
+
     def __init__(self, targets: set[LambdaVar]):
         self.targets = targets
         self.seen: set[LambdaVar] = set()
@@ -2087,13 +2090,15 @@ class _DependsOnVars(NodeVisitor, LeafVisitor):
     def visit_LambdaVar(self, leaf: LambdaVar):
         if leaf in self.targets:
             return True
-        if leaf.indirect or leaf in self.seen:
+        if leaf in self.seen:
             return False
+        if leaf.indirect:
+            return True
         self.seen.add(leaf)
-        definitions = [store.value for store in leaf.sets if store.value is not None]
-        if len(definitions) == 1 and len(definitions[0].uses) == 1:
-            return definitions[0].uses[0].accept(self)
-        return False
+        return any(
+            store.value is None or any(use.accept(self) for use in store.value.uses)
+            for store in leaf.sets
+        )
 
     def visit_Combination(self, node: Combination):
         return any(use.accept(self) for arg in node.args for use in arg.uses)
@@ -2185,6 +2190,27 @@ class _InstanceClasses(ValueTypeVisitor):
 _INSTANCE_CLASSES = _InstanceClasses()
 
 
+def _entry_narrowed_parameters(
+    lam: Lambda,
+    ctx_name: str,
+    parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]],
+) -> set[LambdaVar]:
+    """The non-receiver parameters whose type in entry ``ctx_name`` is
+    narrower than in the general entry that every other call reaches."""
+    if ctx_name == "general":
+        return set()
+    return {
+        var
+        for var, entry_p, general_p in zip(
+            lam.vars[1:],
+            parameters.get((lam, ctx_name), ())[1:],
+            parameters.get((lam, "general"), ())[1:],
+            strict=False,
+        )
+        if entry_p != general_p
+    }
+
+
 def _update_class_field_types(
     class_facts: dict[str, ClassFacts],
     setattr_sites: list[tuple[Lambda, Combination]],
@@ -2217,16 +2243,6 @@ def _update_class_field_types(
         stored_var = val_use.accept(_READ_LAMBDA_VAR)
         if stored_var is not None:
             stored_field_targets[(lam, stored_var)].append((node.args[0], field_name))
-        narrowed_non_self = {
-            var
-            for var, fix_p, gen_p in zip(
-                lam.vars[1:],
-                parameters.get((lam, "fixnum"), ())[1:],
-                parameters.get((lam, "general"), ())[1:],
-                strict=False,
-            )
-            if fix_p != gen_p
-        }
         found_context = False
         saw_typed_receiver = False
         best_stores: dict[str, ValueType] = {}
@@ -2237,10 +2253,16 @@ def _update_class_field_types(
                 continue
             recv_fact = body.facts.get(recv_use, NO_FACT)
             val_body = body
+            # The observed and fixnum entries are guarded specializations; any
+            # call outside their parameter domains, including callers this
+            # analysis never saw, runs the general entry. A field fact must
+            # cover every store, so a value derived from a parameter those
+            # entries narrow takes its general-entry fact, as SBCL's
+            # propagate-local-call-args uses call-site argument types only
+            # for a lambda without an external entry.
+            narrowed = _entry_narrowed_parameters(lam, ctx_name, parameters)
             if (ctx_name == "observed" and lam.signature.default_parameters) or (
-                ctx_name == "fixnum"
-                and narrowed_non_self
-                and val_use.accept(_DependsOnVars(narrowed_non_self))
+                narrowed and val_use.accept(_DependsOnVars(narrowed))
             ):
                 val_body = bodies.get((lam, "general")) or body
             val_fact = val_body.facts.get(val_use, NO_FACT)

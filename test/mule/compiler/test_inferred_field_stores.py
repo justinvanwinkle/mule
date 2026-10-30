@@ -6,6 +6,7 @@ from mule.compiler.ctype import (
     FIXNUM_MAX,
     FIXNUM_MIN,
     NONE_TYPE,
+    PYTHON_INTEGER,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -14,6 +15,54 @@ from mule.compiler.ir1util import known_calls
 from mule.compiler.main import compile_source
 
 FIXNUM = IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+
+# ``bits`` exceeds the fixnum range at run time, while each ``ident``
+# argument lies in range(4). The guarded observed entry of
+# ``Block.__init__`` sees both as fixnums, but any caller outside the
+# analyzed calls reaches the general entry with an arbitrary value.
+BIGINT_ACCUMULATOR_SOURCE = """
+class Block:
+    def __init__(self, ident{annotation}, bits{annotation}):
+        self.ident = ident
+        self.bits = bits
+
+def build(seed: int) -> list[Block]:
+    blocks = []
+    for ident in range(4):
+        bits = 0
+        for offset in range(3):
+            bits |= 1 << ((seed + ident * 70 + offset) % 300)
+        blocks.append(Block(ident, bits))
+    return blocks
+
+total = 0
+for block in build(7):
+    total ^= block.bits
+"""
+
+
+def _class_fields(compilation):
+    class_ids = {}
+    for call in known_calls(compilation.entry, "%make_class"):
+        assert call.info is not None
+        class_ids[call.info.public_name] = call.info.identity
+    state = compilation.locall_state
+    assert state is not None
+    field_types = state["class_fields"]
+    return {name: field_types.get(identity, {}) for name, identity in class_ids.items()}
+
+
+@pytest.mark.parametrize(
+    ("annotation", "field_type"),
+    [(": int", PYTHON_INTEGER), ("", None)],
+)
+def test_field_from_parameter_takes_the_general_entry_type(annotation, field_type):
+    compilation = compile_source(
+        BIGINT_ACCUMULATOR_SOURCE.format(annotation=annotation)
+    )
+    fields = _class_fields(compilation)["Block"]
+    assert fields.get("bits") == field_type
+    assert fields.get("ident") == field_type
 
 
 @pytest.mark.parametrize("variadic_constructor", [False, True])

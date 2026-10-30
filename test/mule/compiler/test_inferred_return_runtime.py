@@ -5,11 +5,76 @@ import pytest
 from mule.compiler.driver import emit_llvm
 from test.mule.compiler.test_modules import execute
 
+# Each constructor call that local-call analysis sees passes a fixnum ident,
+# while bits accumulates past the fixnum range.
+BIGINT_FIELD_FROM_SEEN_CALLS_SOURCE = """
+class Block:
+    def __init__(self, ident: int, bits: int) -> None:
+        self.ident = ident
+        self.bits = bits
+
+
+def build(seed: int) -> list[Block]:
+    blocks = []
+    for ident in range(4):
+        bits = 0
+        for offset in range(3):
+            bits |= 1 << ((seed + ident * 70 + offset) % 300)
+        blocks.append(Block(ident, bits))
+    return blocks
+
+
+def checksum(blocks: list[Block]) -> int:
+    total = 0
+    for block in blocks:
+        total ^= block.bits + block.ident
+    return total
+
+
+print(checksum(build(7)))
+"""
+
+# Local-call analysis sees only fixnum arguments; the bigint reaches the
+# constructor through a class object it cannot resolve.
+BIGINT_FIELD_FROM_UNSEEN_CALL_SOURCE = """
+class Block:
+    def __init__(self, ident: int) -> None:
+        self.ident = ident
+
+
+def total(blocks: list[Block]) -> int:
+    result = 0
+    for block in blocks:
+        result += block.ident
+    return result
+
+
+blocks = [Block(ident) for ident in range(4)]
+kinds = [int, Block]
+kind = kinds[len(blocks) % 3]
+blocks.append(kind(1 << 70))
+print(total(blocks))
+"""
+
 
 def run_source(tmp_path, source):
     result = execute(tmp_path, {}, source)
     assert result.returncode == 0, result.stderr
     return result.stdout
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            BIGINT_FIELD_FROM_SEEN_CALLS_SOURCE,
+            "1474372083359800613772101229302503767360458393641048028605216457600\n",
+        ),
+        (BIGINT_FIELD_FROM_UNSEEN_CALL_SOURCE, "1180591620717411303430\n"),
+    ],
+)
+def test_int_parameter_field_reads_bigint_values(tmp_path, source, expected):
+    assert run_source(tmp_path, source) == expected
 
 
 @pytest.mark.integration
