@@ -145,6 +145,10 @@ This file is both the project overview and repository guidance for coding agents
 `README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
 README copy. The instructions below apply whether this section is expanded or not.
 
+> **WE DO WHAT SBCL DOES.** Every compiler, runtime, build, and loading decision
+> follows SBCL unless the user has explicitly approved an exception. Agents never
+> approve exceptions themselves. See [Mandatory SBCL architecture](#mandatory-sbcl-architecture).
+
 ## Performance design goal
 
 Every operation in a compiled program must be as efficient as it theoretically
@@ -169,6 +173,43 @@ operation is already as specialized as its information allows and a measured
 remainder justifies them.
 
 ## Mandatory SBCL architecture
+
+**WE DO WHAT SBCL DOES unless an exception is clearly decided on by the user.**
+This is the first rule of this repository. It overrides convenience, apparent
+performance gains, an agent's own design judgment, and existing Mule code that
+already does something different.
+
+1. **Find SBCL's mechanism first.** Before designing, proposing, or implementing
+   any compiler, runtime, build, or loading change, including a bug fix, find the
+   code in `~/checkout/sbcl` that does the same job and read it. Every proposal
+   and every commit message for such a change names the SBCL files and
+   functions it follows.
+2. **Implement SBCL's mechanism.** Use the same phase, data structures,
+   analyses, invariants, representation choices, and policies.
+3. **If SBCL has no such mechanism, Mule does not get one.** Do not invent an
+   analysis, lattice, kind of fact, cache, side table, or runtime machinery to
+   fill the gap. Stop and ask the user.
+4. **Existing Mule departures are not precedents.** Mule code that does
+   something SBCL does not is a departure, even when it is old, tested, or fast.
+   When a defect's root cause is such a departure, report the departure and the
+   SBCL mechanism, and ask whether to move to SBCL's design. Do not add machinery
+   that keeps the departure working; that extends the departure and needs the
+   same approval. Example: SBCL keeps no flow facts about what a mutable
+   container holds. Array element types are fixed by the array's representation
+   when it is created. Making Mule's mutable-container contents facts sound with
+   a new escape or ownership analysis is a new departure, not a bug fix.
+5. **Reasons are not approval.** Python semantics, LLVM, the approved
+   implementation languages, performance, missing infrastructure, and design
+   preference are reasons to present when asking. None of them authorizes a
+   departure.
+6. **Approval comes first, in conversation.** Ask before writing any code for a
+   departure. Name the SBCL files and functions, what SBCL does, the proposed
+   difference, why it is necessary, and its semantic and performance
+   consequences. After the user approves, record the decision in this file or
+   the relevant `spec/` document. Writing the reasons in `spec/` does not
+   substitute for approval. Exceptions approved so far are the ones recorded
+   with an explicit decision, such as the dispatch exception in
+   [Object-oriented design](#object-oriented-design).
 
 ALWAYS refer to how SBCL does it. Before designing or implementing any compiler,
 module-compilation, FASL/object-loading, build, or runtime feature, STOP and
@@ -195,15 +236,12 @@ cache hit) when SBCL already has an established architecture:
   disk and loads it directly (`dlopen`) on a cache hit without spawning or
   consulting the compiler. Only a cache miss invokes `compile-file`.
 
-Doing anything differently from SBCL requires CLEAR REASONS AND JUSTIFICATION.
-Before implementing a departure, document the relevant SBCL files and functions,
-what SBCL does, the proposed difference, why it is necessary, and its semantic
-and performance consequences in the relevant `spec/` document. Python semantics,
-LLVM, and the approved implementation languages require adaptations, but they
-are not blanket justifications: explain each concrete departure. Convenience,
-missing compiler infrastructure, or an easier Rust implementation do not by
-themselves justify a different architecture. Identify missing stages explicitly
-and implement the corresponding compiler machinery.
+Doing anything differently from SBCL requires the user's explicit decision,
+obtained as described in rule 6 above, before any code is written. Python
+semantics, LLVM, and the approved implementation languages require adaptations,
+but each concrete adaptation is still a departure that the user decides on.
+Where Mule lacks a stage that SBCL has, identify the missing stage explicitly and
+implement SBCL's machinery for it.
 
 **SBCL parity is the completion standard.** Do not commit, merge, or report a
 compiler task as complete until the answer to "Is this at least as good as SBCL?"
