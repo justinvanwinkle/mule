@@ -145,7 +145,8 @@ This file is both the project overview and repository guidance for coding agents
 `README.md` is a relative symlink to `AGENTS.md`; edit this file, not a separate
 README copy. The instructions below apply whether this section is expanded or not.
 
-> **WE DO WHAT SBCL DOES.** Every compiler, runtime, build, and loading decision
+> **THE GOAL OF THIS PROJECT IS SBCL'S COMPILER, IMPLEMENTED FOR PYTHON.**
+> WE DO WHAT SBCL DOES. Every compiler, runtime, build, and loading decision
 > follows SBCL unless the user has explicitly approved an exception. Agents never
 > approve exceptions themselves. See [Mandatory SBCL architecture](#mandatory-sbcl-architecture).
 
@@ -174,6 +175,12 @@ remainder justifies them.
 
 ## Mandatory SBCL architecture
 
+**The goal of this entire project is to implement SBCL's compiler for Python.**
+Mule is not a Python compiler that borrows ideas from SBCL. It is SBCL's
+compiler, phase by phase and mechanism by mechanism, with Python as the source
+language. Any Mule code that does not do what SBCL does is a defect against that
+goal.
+
 **WE DO WHAT SBCL DOES unless an exception is clearly decided on by the user.**
 This is the first rule of this repository. It overrides convenience, apparent
 performance gains, an agent's own design judgment, and existing Mule code that
@@ -189,15 +196,19 @@ already does something different.
 3. **If SBCL has no such mechanism, Mule does not get one.** Do not invent an
    analysis, lattice, kind of fact, cache, side table, or runtime machinery to
    fill the gap. Stop and ask the user.
-4. **Existing Mule departures are not precedents.** Mule code that does
-   something SBCL does not is a departure, even when it is old, tested, or fast.
-   When a defect's root cause is such a departure, report the departure and the
-   SBCL mechanism, and ask whether to move to SBCL's design. Do not add machinery
-   that keeps the departure working; that extends the departure and needs the
-   same approval. Example: SBCL keeps no flow facts about what a mutable
-   container holds. Array element types are fixed by the array's representation
-   when it is created. Making Mule's mutable-container contents facts sound with
-   a new escape or ownership analysis is a new departure, not a bug fix.
+4. **Existing Mule departures are defects. Replace them with SBCL's mechanism.**
+   Mule code that does something SBCL does not is a departure, even when it is
+   old, tested, or fast, and it is never a precedent. Moving Mule to SBCL's
+   design is the job itself; it never needs permission. When a defect's root
+   cause is such a departure, the fix is to replace the departure with SBCL's
+   mechanism. Do not patch the departure, and do not add machinery that keeps it
+   working: that extends the departure. Only a departure needs the user's
+   approval, never a return to SBCL. Example: SBCL keeps no flow facts about
+   what a mutable container holds; array element types are fixed by the array's
+   representation when it is created. A miscompile caused by Mule's
+   mutable-container contents facts is fixed by removing those facts and using
+   SBCL's representation-based element types, not by inventing an escape or
+   ownership analysis to keep them.
 5. **Reasons are not approval.** Python semantics, LLVM, the approved
    implementation languages, performance, missing infrastructure, and design
    preference are reasons to present when asking. None of them authorizes a
