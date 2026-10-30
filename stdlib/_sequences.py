@@ -3998,11 +3998,38 @@ def not_contains(container, item):
 
 def text_contains(text, item):
     """``item in text`` with both operands proven exact ``str``."""
-    return find_in(text, item, 0, _text_length(text)) >= 0
+    end = _text_length(text)
+    size = _text_length(item)
+    if size > end:
+        return False
+    if size <= 0:
+        return True
+    first = _text_codepoint(item, 0)
+    position = 0
+    if size <= 1:
+        while position < end:
+            if _text_codepoint(text, position) == first:
+                return True
+            position += 1
+        return False
+    limit = end - size + 1
+    while position < limit:
+        if _text_codepoint(text, position) == first:
+            offset = 1
+            while offset < size:
+                if _text_codepoint(text, position + offset) != _text_codepoint(
+                    item, offset
+                ):
+                    break
+                offset += 1
+            if offset == size:
+                return True
+        position += 1
+    return False
 
 
 def text_not_contains(text, item):
-    return find_in(text, item, 0, _text_length(text)) < 0
+    return not text_contains(text, item)
 
 
 def next_item(value):

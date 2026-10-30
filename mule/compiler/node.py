@@ -1358,6 +1358,8 @@ def resolve_implementation_type(domain: ValueType, targets) -> ValueType:
     """Resolve one semantic domain through a unique implementation owner."""
     if domain is UNKNOWN:
         return UNKNOWN
+    if domain.fits_text(TEXT_TYPE):
+        return TEXT_TYPE
     implementations = {target.implementation_type(domain) for target in targets}
     implementations.discard(UNKNOWN)
     return next(iter(implementations)) if len(implementations) == 1 else UNKNOWN

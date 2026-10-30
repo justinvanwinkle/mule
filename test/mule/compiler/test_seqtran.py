@@ -353,7 +353,7 @@ def test_len_ir2_specialization_and_fast_len_emission():
     spec_start = ir.index('define internal ptr @"mule_fn_scan.spec.0"')
     spec_end = ir.index("\n}", spec_start)
     spec_body = ir[spec_start:spec_end]
-    assert "@mule_text_length(" in spec_body
+    assert "VOP: primitive-_text_length" in spec_body
     assert "@mule_fast_len(" not in spec_body
 
     body_start = ir.index('define internal ptr @"mule_fn_scan.body"')

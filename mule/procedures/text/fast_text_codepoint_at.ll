@@ -12,7 +12,7 @@
 ; For non-Latin-1 strings (UCS-2/UCS-4), negative or out-of-bounds indices, or
 ; non-text receivers, delegates to @mule_text_codepoint_at.
 
-define internal ptr @mule.fast.text.codepoint.at(ptr %value, i64 %index) alwaysinline {
+define internal ptr @mule.fast.text.codepoint.at(ptr %value, i64 %index) {
 entry:
   %null = icmp eq ptr %value, null
   br i1 %null, label %slow, label %nonnull, !prof !{!"branch_weights", i32 1, i32 2000}

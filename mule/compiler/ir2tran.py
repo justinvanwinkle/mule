@@ -466,6 +466,7 @@ class MethodResolution:
     exact_text_split: bool = False
     exact_text_partition: bool = False
     exact_text_affix: bool = False
+    exact_text_method: bool = False
     exact_dict_get: bool = False
     exact_bytearray_append: bool = False
 
@@ -478,6 +479,7 @@ class MethodResolution:
             or self.exact_text_split
             or self.exact_text_partition
             or self.exact_text_affix
+            or self.exact_text_method
             or self.exact_dict_get
             or self.exact_bytearray_append
         )
@@ -493,6 +495,7 @@ class MethodCall:
     exact_text_split: bool = False
     exact_text_partition: bool = False
     exact_text_affix: bool = False
+    exact_text_method: bool = False
     exact_dict_get: bool = False
     exact_bytearray_append: bool = False
     # The method the receiver's class resolves the name to, when analysis
@@ -511,6 +514,7 @@ class MethodCall:
             or self.exact_text_split
             or self.exact_text_partition
             or self.exact_text_affix
+            or self.exact_text_method
             or self.exact_dict_get
             or self.exact_bytearray_append
         )
@@ -1199,8 +1203,7 @@ def _specialize_sequence_iterations(component: IR2Component) -> None:
                 for step in block.vops
             )
             and all(
-                step.info.name
-                in ("insert-safepoint", "load-local", "branch")
+                step.info.name in ("insert-safepoint", "load-local", "branch")
                 or step.info.name.startswith(
                     (
                         "byte-cursor-mutable-list-%byte_available-",
@@ -1823,6 +1826,7 @@ _BORROWED_LIST_GETITEM_READERS = (
         "fast-len",
         "primitive-_storage_length",
         "primitive-_text_length",
+        "primitive-_text_codepoint",
         "boxed-float-compare-equal",
         "boxed-float-compare-not_equal",
         "boxed-float-compare-less",
@@ -2025,9 +2029,15 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
         return (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
             step.args[1].tn.type or UNKNOWN
         ).is_fixnum
-    if name == "primitive-_storage_read" and len(step.args) == 2:
+    if (
+        name in ("primitive-_storage_read", "primitive-_text_codepoint")
+        and len(step.args) == 2
+    ):
         return (step.args[1].tn.type or UNKNOWN).is_fixnum
-    return name == "primitive-_storage_length" and len(step.args) == 1
+    return (
+        name in ("primitive-_storage_length", "primitive-_text_length")
+        and len(step.args) == 1
+    )
 
 
 def _local_may_run_user_code(tn, component: IR2Component) -> bool:
@@ -2816,6 +2826,8 @@ def _borrow_fixed_slot_reads(component: IR2Component) -> None:
                 in (
                     "primitive-_storage_read",
                     "primitive-_storage_length",
+                    "primitive-_text_codepoint",
+                    "primitive-_text_length",
                     "physical-field-read",
                     "physical-field-read-name",
                     "physical-field-read-guarded",
@@ -3464,6 +3476,63 @@ class _ExactTextPartitionCall(NodeVisitor):
             else UNKNOWN
         )
         return sep.fits_text(TEXT_TYPE)
+
+
+_EXACT_TEXT_METHODS: dict[str, tuple[int, int]] = {
+    "isalpha": (0, 0),
+    "isalnum": (0, 0),
+    "isdigit": (0, 0),
+    "isdecimal": (0, 0),
+    "isnumeric": (0, 0),
+    "isspace": (0, 0),
+    "isupper": (0, 0),
+    "islower": (0, 0),
+    "istitle": (0, 0),
+    "isascii": (0, 0),
+    "isprintable": (0, 0),
+    "isidentifier": (0, 0),
+    "lower": (0, 0),
+    "upper": (0, 0),
+    "capitalize": (0, 0),
+    "title": (0, 0),
+    "swapcase": (0, 0),
+    "casefold": (0, 0),
+    "strip": (0, 1),
+    "lstrip": (0, 1),
+    "rstrip": (0, 1),
+    "splitlines": (0, 1),
+    "expandtabs": (0, 1),
+    "removeprefix": (1, 1),
+    "removesuffix": (1, 1),
+    "join": (1, 1),
+    "zfill": (1, 1),
+    "split": (0, 2),
+    "rsplit": (0, 2),
+    "count": (1, 3),
+    "index": (1, 3),
+    "rindex": (1, 3),
+    "replace": (2, 3),
+}
+
+
+class _ExactTextMethodCall(NodeVisitor):
+    """Whether the consumer of a resolved ``TextStorage`` method is a
+    positional call within the method's supported arity range."""
+
+    def __init__(self, min_args: int, max_args: int):
+        self.min_args = min_args
+        self.max_args = max_args
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Combination(self, node: Combination):
+        return (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is fndb.CALL_RESOLVED
+            and not linked(node.info, node, "call info").keywords
+            and 1 + self.min_args <= len(node.args) <= 1 + self.max_args
+        )
 
 
 class _ExactTextAffixCall(NodeVisitor):
@@ -4364,6 +4433,20 @@ class _Converter(NodeVisitor):
             and call.accept(_ExactTextAffixCall(self.context))
         )
 
+    def is_exact_text_method(self, resolve: Combination, call) -> bool:
+        if resolve.fun_info is not fndb.RESOLVE_METHOD:
+            return False
+        receiver = self.context.type_of(resolve.args[0].use())
+        info = linked(resolve.info, resolve, "method info")
+        arity_bounds = _EXACT_TEXT_METHODS.get(info.name)
+        return (
+            arity_bounds is not None
+            and receiver.fits_text(TEXT_TYPE)
+            and not receiver.may_be_unbound
+            and call is not None
+            and call.accept(_ExactTextMethodCall(*arity_bounds))
+        )
+
     def is_exact_dict_get(self, resolve: Combination, call) -> bool:
         if resolve.fun_info is not fndb.RESOLVE_METHOD:
             return False
@@ -4399,6 +4482,13 @@ class _Converter(NodeVisitor):
         exact_text_split = self.is_exact_text_split(node, lvar.dest)
         exact_text_partition = self.is_exact_text_partition(node, lvar.dest)
         exact_text_affix = self.is_exact_text_affix(node, lvar.dest)
+        exact_text_method = (
+            not exact_text_find
+            and not exact_text_split
+            and not exact_text_partition
+            and not exact_text_affix
+            and self.is_exact_text_method(node, lvar.dest)
+        )
         exact_dict_get = self.is_exact_dict_get(node, lvar.dest)
         exact_bytearray_append = self.is_exact_bytearray_append(node, lvar.dest)
         method = self.lvar_tn(lvar)
@@ -4412,6 +4502,7 @@ class _Converter(NodeVisitor):
             exact_text_split,
             exact_text_partition,
             exact_text_affix,
+            exact_text_method,
             exact_dict_get,
             exact_bytearray_append,
         )
@@ -4440,6 +4531,13 @@ class _Converter(NodeVisitor):
         exact_text_split = self.is_exact_text_split(resolve, node)
         exact_text_partition = self.is_exact_text_partition(resolve, node)
         exact_text_affix = self.is_exact_text_affix(resolve, node)
+        exact_text_method = (
+            not exact_text_find
+            and not exact_text_split
+            and not exact_text_partition
+            and not exact_text_affix
+            and self.is_exact_text_method(resolve, node)
+        )
         exact_dict_get = self.is_exact_dict_get(resolve, node)
         exact_bytearray_append = self.is_exact_bytearray_append(resolve, node)
         result, discard = self.result_tn(node)
@@ -4457,6 +4555,7 @@ class _Converter(NodeVisitor):
                 exact_text_split,
                 exact_text_partition,
                 exact_text_affix,
+                exact_text_method,
                 exact_dict_get,
                 exact_bytearray_append,
                 self.context.targets.get(node),

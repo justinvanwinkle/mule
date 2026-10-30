@@ -4647,9 +4647,12 @@ class _Walk:
             handler = handlers[block]
             has_handler = handler is not None
             visitor.reset(state, has_handler, in_relations.get(block))
+            terminated = False
             for node in block_nodes[block]:
                 fact = node.accept(visitor)
                 if fact is not None:
+                    if fact is NO_FACT:
+                        terminated = True
                     previous_fact = facts.get(node, NO_FACT)
                     if widening:
                         # join_fact returns ``previous_fact`` itself when nothing changed.
@@ -4669,9 +4672,11 @@ class _Walk:
                                 queued.add(consumer)
                 if has_handler:
                     visitor.note_handler_state()
+                if terminated:
+                    break
             state = visitor.state
             out_states[block] = state
-            if block in return_blocks:
+            if block in return_blocks and not terminated:
                 return_block_origins[block] = (
                     visitor.origins.copy(),
                     visitor.type_of_origins.copy(),
@@ -4692,6 +4697,8 @@ class _Walk:
                         if visitor.handler_relations is not None
                         else visitor.relations.copy()
                     )
+                elif terminated:
+                    continue
                 elif last is None:
                     edge = state
                     edge_rel = visitor.relations.copy()

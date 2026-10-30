@@ -48,13 +48,19 @@ _HEX_DIGITS = "0123456789abcdef"
 
 
 def _index(value):
+    if _type_of(value) is int:
+        return _integer_storage(value)
     return _index_integer(value)
+
+
+def _raise_not_text(value, message):
+    kind = "None" if value is None else _type_name(value)
+    raise TypeError(f"{message}, not {kind}")
 
 
 def _require_text(value, message):
     if not _text_storage(value):
-        kind = "None" if value is None else _type_name(value)
-        raise TypeError(f"{message}, not {kind}")
+        _raise_not_text(value, message)
 
 
 def _start_bound(length, start):
@@ -172,7 +178,7 @@ def rfind_in(text, sub, start, end):
 
 def _search(text, sub, start, end, method):
     if not _text_storage(sub):
-        _require_text(sub, f"{method}() argument 1 must be str")
+        _raise_not_text(sub, f"{method}() argument 1 must be str")
     length = _text_length(text)
     start = _start_bound(length, start)
     end = _end_bound(length, end)
@@ -273,7 +279,8 @@ def _strip(text, chars, left, right):
                     break
                 end -= 1
     else:
-        _require_text(chars, "strip arg must be None or str")
+        if not _text_storage(chars):
+            _raise_not_text(chars, "strip arg must be None or str")
         chars_len = _text_length(chars)
         if chars_len == 0:
             return text
@@ -1471,7 +1478,7 @@ class TextStorage:
 
     def find(self, sub, start=None, end=None, /):
         if not _text_storage(sub):
-            _require_text(sub, "find() argument 1 must be str")
+            _raise_not_text(sub, "find() argument 1 must be str")
         length = _text_length(self)
         start = 0 if start is None else _start_bound(length, start)
         end = length if end is None else _end_bound(length, end)
@@ -1479,7 +1486,7 @@ class TextStorage:
 
     def rfind(self, sub, start=None, end=None, /):
         if not _text_storage(sub):
-            _require_text(sub, "rfind() argument 1 must be str")
+            _raise_not_text(sub, "rfind() argument 1 must be str")
         length = _text_length(self)
         start = 0 if start is None else _start_bound(length, start)
         end = length if end is None else _end_bound(length, end)
@@ -1498,7 +1505,8 @@ class TextStorage:
         return result
 
     def count(self, sub, start=None, end=None, /):
-        _require_text(sub, "count() argument 1 must be str")
+        if not _text_storage(sub):
+            _raise_not_text(sub, "count() argument 1 must be str")
         length = _text_length(self)
         start = 0 if start is None else _start_bound(length, start)
         end = length if end is None else _end_bound(length, end)
@@ -1521,14 +1529,16 @@ class TextStorage:
         return _affix_match(self, suffix, start, end, True, "endswith")
 
     def removeprefix(self, prefix, /):
-        _require_text(prefix, "removeprefix() argument must be str")
+        if not _text_storage(prefix):
+            _raise_not_text(prefix, "removeprefix() argument must be str")
         size = _text_length(prefix)
         if size <= _text_length(self) and _matches_at(self, prefix, 0, size):
             return _text_slice(self, size, _text_length(self))
         return self
 
     def removesuffix(self, suffix, /):
-        _require_text(suffix, "removesuffix() argument must be str")
+        if not _text_storage(suffix):
+            _raise_not_text(suffix, "removesuffix() argument must be str")
         size = _text_length(suffix)
         length = _text_length(self)
         if size == 0:
@@ -1538,17 +1548,22 @@ class TextStorage:
         return self
 
     def replace(self, old, new, /, count=-1):
-        _require_text(old, "replace() argument 1 must be str")
-        _require_text(new, "replace() argument 2 must be str")
-        count = _index(count)
+        if not _text_storage(old):
+            _raise_not_text(old, "replace() argument 1 must be str")
+        if not _text_storage(new):
+            _raise_not_text(new, "replace() argument 2 must be str")
+        if _type_of(count) is int:
+            count = _integer_storage(count)
+        else:
+            count = _index(count)
         if count < 0:
             count = _text_length(self) + 1
         if count == 0:
             return self
         old_size = _text_length(old)
         length = _text_length(self)
-        pieces = []
         if old_size == 0:
+            pieces = []
             index = 0
             while index < length and count > 0:
                 _storage_append(pieces, new)
@@ -1563,13 +1578,18 @@ class TextStorage:
         position = find_in(self, old, 0, length)
         if position < 0:
             return self
+        pieces = []
+        new_nonempty = _text_length(new) > 0
         while position >= 0 and count > 0:
-            _storage_append(pieces, _text_slice(self, start, position))
-            _storage_append(pieces, new)
+            if position > start:
+                _storage_append(pieces, _text_slice(self, start, position))
+            if new_nonempty:
+                _storage_append(pieces, new)
             start = position + old_size
             count -= 1
             position = find_in(self, old, start, length)
-        _storage_append(pieces, _text_slice(self, start, length))
+        if start < length:
+            _storage_append(pieces, _text_slice(self, start, length))
         return _text_join(pieces)
 
     def split(self, sep=None, maxsplit=-1):
@@ -1584,7 +1604,7 @@ class TextStorage:
         if sep is None:
             return _split_whitespace(self, maxsplit)
         if not _text_storage(sep):
-            _require_text(sep, "must be str or None")
+            _raise_not_text(sep, "must be str or None")
         size = _text_length(sep)
         if size == 0:
             raise ValueError("empty separator")
@@ -1612,7 +1632,7 @@ class TextStorage:
         if sep is None:
             return _rsplit_whitespace(self, maxsplit)
         if not _text_storage(sep):
-            _require_text(sep, "must be str or None")
+            _raise_not_text(sep, "must be str or None")
         size = _text_length(sep)
         if size == 0:
             raise ValueError("empty separator")
@@ -1659,7 +1679,7 @@ class TextStorage:
 
     def partition(self, sep, /):
         if not _text_storage(sep):
-            _require_text(sep, "must be str")
+            _raise_not_text(sep, "must be str")
         size = _text_length(sep)
         if size == 0:
             raise ValueError("empty separator")
@@ -1675,7 +1695,7 @@ class TextStorage:
 
     def rpartition(self, sep, /):
         if not _text_storage(sep):
-            _require_text(sep, "must be str")
+            _raise_not_text(sep, "must be str")
         size = _text_length(sep)
         if size == 0:
             raise ValueError("empty separator")

@@ -24,6 +24,69 @@ print(search("hello world", "o", 2))
         assert "@mule_resolve_method" not in body
 
 
+def test_exact_text_method_dispatch_and_unboxed_text_codepoint(tmp_path):
+    llvm = emit_llvm(
+        """
+def classify_token(tok: str) -> int:
+    s = tok.strip()
+    if not s:
+        return 0
+    if s.startswith("0x") or s.startswith("0X"):
+        return 1
+    if s.endswith(";"):
+        s = s[:-1]
+    if s.isdigit():
+        return 2
+    if s.isalpha():
+        return 3
+    if s.isalnum():
+        return 4
+    if "_" in s:
+        parts = s.split("_")
+        if len(parts) == 2 and parts[0].isalpha() and parts[1].isdigit():
+            return 5
+    return 6
+
+print(classify_token("  foo_42; "))
+"""
+    )
+    for symbol, _parameters, body in numeric_entries(
+        llvm, "mule_fn_classify_token", "i64"
+    ):
+        assert "@mule_resolve_method" not in body
+        assert "@mule_method_entry" not in body
+        assert "@mule_function_default" not in body
+
+    result = compare(
+        tmp_path,
+        """
+def classify_token(tok: str) -> int:
+    s = tok.strip()
+    if not s:
+        return 0
+    if s.startswith("0x") or s.startswith("0X"):
+        return 1
+    if s.endswith(";"):
+        s = s[:-1]
+    if s.isdigit():
+        return 2
+    if s.isalpha():
+        return 3
+    if s.isalnum():
+        return 4
+    if "_" in s:
+        parts = s.split("_")
+        if len(parts) == 2 and parts[0].isalpha() and parts[1].isdigit():
+            return 5
+    return 6
+
+for sample in ("", "   ", "0x1a", "0XFF", "123;", "abc", "a1b2", "foo_42;", "a_b_c", "é_9", "😀_7"):
+    print(classify_token(sample))
+""",
+    )
+    assert result.stderr == ""
+
+
 def test_str_find_and_rfind_edge_cases(tmp_path):
     result = compare(
         tmp_path,

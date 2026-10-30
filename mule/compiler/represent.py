@@ -692,7 +692,8 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
             )
             or (
                 not raw
-                and vop.info.name in ("primitive-_text_codepoint", "primitive-_read_byte")
+                and vop.info.name
+                in ("primitive-_text_codepoint", "primitive-_read_byte")
                 and len(vop.args) == 2
                 and ref is vop.args[1]
                 and (vop.args[1].tn.type or UNKNOWN).is_fixnum
@@ -716,6 +717,15 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
             seq_type = vop.args[0].tn.type or UNKNOWN
             if seq_type.is_exact_list or seq_type.is_exact_tuple:
                 return (SIGNED,)
+        if ref.write_p and vop_name == "primitive-_text_length" and vop.args:
+            return (SIGNED,)
+        if (
+            ref.write_p
+            and vop_name == "primitive-_text_codepoint"
+            and len(vop.args) == 2
+            and (vop.args[1].tn.type or UNKNOWN).is_fixnum
+        ):
+            return (SIGNED,)
         if not ref.write_p and vop_name == "range-prepare" and ref is not vop.args[-1]:
             info = vop.codegen_info
             if info is not None and (

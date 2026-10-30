@@ -604,7 +604,9 @@ def _propagate_text_codepoint(visitor, node) -> ValueType | None:
         text_type = visitor.type_of(args[0])
         idx_type = visitor.type_of(args[1])
         if text_type is BOTTOM or idx_type is BOTTOM:
+            visitor.walk.in_bounds_nodes.discard(node)
             return BOTTOM
+        visitor.check_in_bounds_access(node, args[0], args[1])
         visitor.prove_argument_type(args[0], TEXT_TYPE)
         visitor.prove_argument_type(args[1], IntegerType(0, (1 << 58) - 1))
         idx = idx_type.exact_integer()

@@ -434,6 +434,8 @@ pub const TEXT_TAG: u32 = 4;
 pub const TEXT_KIND_TAG_OFFSET: usize = 24;
 pub const TEXT_INLINE_LEN_OFFSET: usize = 25;
 pub const TEXT_INLINE_WORDS_OFFSET: usize = 32;
+pub const TEXT_HEAP_DATA_OFFSET: usize = 40;
+pub const TEXT_HEAP_LEN_OFFSET: usize = 48;
 pub const INSTANCE_TAG: u32 = 16;
 pub const NATIVE_INSTANCE_TAG: u32 = 17;
 pub const NATIVE_INSTANCE_CLASS_OFFSET: usize = 24;
@@ -3936,7 +3938,7 @@ pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
     unsafe {
         let values = if !pieces.is_null() && !is_fixnum(pieces) {
             match &(*pieces).data {
-                Data::List(values, ..) | Data::Args(values, ..) => Some(values),
+                Data::List(values, ..) | Data::Args(values, ..) => Some(values.as_slice()),
                 _ => None,
             }
         } else {
@@ -3946,20 +3948,39 @@ pub unsafe extern "C" fn mule_text_join(pieces: Value) -> Value {
             error("TypeError", "text join requires list or tuple storage");
             return std::ptr::null_mut();
         };
-        let mut texts = Vec::with_capacity(values.len());
-        for value in values {
-            if is_fixnum(*value) || value.is_null() {
+        if values.is_empty() {
+            return empty_text();
+        }
+        for &value in values {
+            if is_fixnum(value) || value.is_null() {
                 error("TypeError", "text join requires str pieces");
                 return std::ptr::null_mut();
             }
-            let Data::Text(text, ..) = &(**value).data else {
+            if !matches!((*value).data, Data::Text(..)) {
                 error("TypeError", "text join requires str pieces");
                 return std::ptr::null_mut();
-            };
-            texts.push(text);
+            }
         }
-        match Text::join(texts.into_iter()) {
-            Ok(text) => new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut())),
+        if values.len() == 1 {
+            let single = values[0];
+            if let Data::Text(_, ty, ..) = &(*single).data {
+                if ty.is_null() {
+                    return retain(single);
+                }
+            }
+        }
+        let iter = values.iter().map(|&value| match &(*value).data {
+            Data::Text(text, ..) => text,
+            _ => unreachable!(),
+        });
+        match Text::join(iter) {
+            Ok(text) => {
+                if text.is_empty() {
+                    empty_text()
+                } else {
+                    new_value(Data::Text(text, std::ptr::null_mut(), std::ptr::null_mut()))
+                }
+            }
             Err(_) => {
                 error("MemoryError", "text storage allocation failed");
                 std::ptr::null_mut()
@@ -4988,7 +5009,41 @@ mod lifetime_tests {
             assert_eq!(word::<u8>(heap, TEXT_KIND_TAG_OFFSET), 1);
             assert_eq!(word::<u8>(heap, TEXT_INLINE_LEN_OFFSET), 0);
             assert_eq!(word::<u16>(heap, TEXT_KIND_TAG_OFFSET), 1);
+            let Data::Text(heap_text, ..) = &(*heap).data else { unreachable!() };
+            assert_eq!(
+                word::<*const u8>(heap, TEXT_HEAP_DATA_OFFSET),
+                heap_text.raw_storage().0
+            );
+            assert_eq!(word::<usize>(heap, TEXT_HEAP_LEN_OFFSET), 26);
             release(heap);
+
+            let ucs2 = new_value(Data::Text(
+                Text::from_rust_str("αβγ"),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ));
+            let Data::Text(ucs2_text, ..) = &(*ucs2).data else { unreachable!() };
+            assert_eq!(word::<u8>(ucs2, TEXT_KIND_TAG_OFFSET), 2);
+            assert_eq!(
+                word::<*const u8>(ucs2, TEXT_HEAP_DATA_OFFSET),
+                ucs2_text.raw_storage().0
+            );
+            assert_eq!(word::<usize>(ucs2, TEXT_HEAP_LEN_OFFSET), 3);
+            release(ucs2);
+
+            let ucs4 = new_value(Data::Text(
+                Text::from_rust_str("😀😁"),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ));
+            let Data::Text(ucs4_text, ..) = &(*ucs4).data else { unreachable!() };
+            assert_eq!(word::<u8>(ucs4, TEXT_KIND_TAG_OFFSET), 3);
+            assert_eq!(
+                word::<*const u8>(ucs4, TEXT_HEAP_DATA_OFFSET),
+                ucs4_text.raw_storage().0
+            );
+            assert_eq!(word::<usize>(ucs4, TEXT_HEAP_LEN_OFFSET), 2);
+            release(ucs4);
         }
     }
 

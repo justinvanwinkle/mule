@@ -4415,6 +4415,8 @@ def primitive(name, info, emit, *, consumes_arguments=False):
                 for arg, value in zip(vop.args, values):
                     if arg.tn.sc in OBJECT:
                         gen.release(value)
+            if result not in gen.nonnull_values and not result[0].isdigit():
+                gen.guard(gen.operation(f"icmp slt i64 {result}, 0"))
             return
         known_nonnull = result.startswith("@mule.") or result in gen.immortal_values
         gen.publish(vop.results[0], result)
@@ -4450,6 +4452,7 @@ def text_access(function):
                         f"getelementptr i64, ptr {values[0]}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
                     )
                     count = gen.operation(f"load i64, ptr {len_addr}")
+                gen.nonnull_values.add(count)
                 if vop.results and vop.results[0].tn.sc is SIGNED:
                     return count
                 encoded = gen.encode(count)
@@ -4645,20 +4648,367 @@ def text_access(function):
             return gen.operation(
                 f"call ptr @mule.fast.integer_storage(ptr {values[0]})"
             )
-        if function == "mule_text_storage" and arg_type.fits_text(arg_type):
-            return "@mule.true"
+        if function == "mule_text_storage":
+            if arg_type.fits_text(arg_type) and not arg_type.may_be_unbound:
+                return "@mule.true"
+            bits = gen.operation(f"ptrtoint ptr {values[0]} to i64")
+            tag = gen.operation(f"and i64 {bits}, 1")
+            is_heap = gen.operation(f"icmp eq i64 {tag}, 0")
+            heap_lbl = gen.fresh("text.storage.heap")[1:]
+            done_lbl = gen.fresh("text.storage.done")[1:]
+            start_blk = gen.current_block()
+            gen.line(f"br i1 {is_heap}, label %{heap_lbl}, label %{done_lbl}")
+            gen.lines.append(heap_lbl + ":")
+            kind_addr = gen.operation(
+                f"getelementptr inbounds i8, ptr {values[0]}, i64 {DATA_OFFSET}"
+            )
+            data_kind = gen.operation(
+                f"load i32, ptr {kind_addr}, !invariant.load !{{}}"
+            )
+            is_text = gen.operation(f"icmp eq i32 {data_kind}, {TEXT_TAG}")
+            heap_res = gen.operation(
+                f"select i1 {is_text}, ptr @mule.true, ptr @mule.false"
+            )
+            heap_blk = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(done_lbl + ":")
+            res = gen.operation(
+                f"phi ptr [@mule.false, %{start_blk}], [{heap_res}, %{heap_blk}]"
+            )
+            gen.immortal_values.add(res)
+            return res
+        if function == "mule_text_length" and len(vop.args) == 1:
+            seq = values[0]
+            signed_res = bool(vop.results and vop.results[0].tn.sc is SIGNED)
+            if arg_type.fits_text(arg_type) and not arg_type.may_be_unbound:
+                exact_len = arg_type.exact_length()
+                if exact_len is not None:
+                    count = str(exact_len)
+                else:
+                    repr_addr = gen.operation(
+                        f"getelementptr inbounds i8, ptr {seq}, i64 {TEXT_KIND_TAG_OFFSET}"
+                    )
+                    repr_val = gen.operation(
+                        f"load i8, ptr {repr_addr}, !invariant.load !{{}}"
+                    )
+                    inline_len_addr = gen.operation(
+                        f"getelementptr inbounds i8, ptr {seq}, i64 {TEXT_INLINE_LEN_OFFSET}"
+                    )
+                    inline_len8 = gen.operation(
+                        f"load i8, ptr {inline_len_addr}, !invariant.load !{{}}"
+                    )
+                    inline_len = gen.operation(f"zext i8 {inline_len8} to i64")
+                    heap_len_addr = gen.operation(
+                        f"getelementptr inbounds i8, ptr {seq}, i64 {TEXT_HEAP_LEN_OFFSET}"
+                    )
+                    heap_len = gen.operation(
+                        f"load i64, ptr {heap_len_addr}, !invariant.load !{{}}"
+                    )
+                    is_inline = gen.operation(f"icmp eq i8 {repr_val}, 0")
+                    count = gen.operation(
+                        f"select i1 {is_inline}, i64 {inline_len}, i64 {heap_len}"
+                    )
+                gen.nonnull_values.add(count)
+                if signed_res:
+                    return count
+                encoded = gen.encode(count)
+                gen.immortal_values.add(encoded)
+                return encoded
+            bits = gen.operation(f"ptrtoint ptr {seq} to i64")
+            tag = gen.operation(f"and i64 {bits}, 1")
+            is_heap = gen.operation(f"icmp eq i64 {tag}, 0")
+            heap_lbl = gen.fresh("text.len.heap")[1:]
+            read_lbl = gen.fresh("text.len.read")[1:]
+            slow_lbl = gen.fresh("text.len.slow")[1:]
+            done_lbl = gen.fresh("text.len.done")[1:]
+            gen.line(
+                f"br i1 {is_heap}, label %{heap_lbl}, label %{slow_lbl}, "
+                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+            )
+            gen.lines.append(heap_lbl + ":")
+            kind_addr = gen.operation(
+                f"getelementptr inbounds i8, ptr {seq}, i64 {DATA_OFFSET}"
+            )
+            data_kind = gen.operation(
+                f"load i32, ptr {kind_addr}, !invariant.load !{{}}"
+            )
+            is_text = gen.operation(f"icmp eq i32 {data_kind}, {TEXT_TAG}")
+            gen.line(
+                f"br i1 {is_text}, label %{read_lbl}, label %{slow_lbl}, "
+                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+            )
+            gen.lines.append(read_lbl + ":")
+            repr_addr = gen.operation(
+                f"getelementptr inbounds i8, ptr {seq}, i64 {TEXT_KIND_TAG_OFFSET}"
+            )
+            repr_val = gen.operation(f"load i8, ptr {repr_addr}, !invariant.load !{{}}")
+            inline_len_addr = gen.operation(
+                f"getelementptr inbounds i8, ptr {seq}, i64 {TEXT_INLINE_LEN_OFFSET}"
+            )
+            inline_len8 = gen.operation(
+                f"load i8, ptr {inline_len_addr}, !invariant.load !{{}}"
+            )
+            inline_len = gen.operation(f"zext i8 {inline_len8} to i64")
+            heap_len_addr = gen.operation(
+                f"getelementptr inbounds i8, ptr {seq}, i64 {TEXT_HEAP_LEN_OFFSET}"
+            )
+            heap_len = gen.operation(
+                f"load i64, ptr {heap_len_addr}, !invariant.load !{{}}"
+            )
+            is_inline = gen.operation(f"icmp eq i8 {repr_val}, 0")
+            fast_len = gen.operation(
+                f"select i1 {is_inline}, i64 {inline_len}, i64 {heap_len}"
+            )
+            fast_out = fast_len if signed_res else gen.encode(fast_len)
+            read_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(slow_lbl + ":")
+            slow_ptr = gen.operation(f"call ptr @mule_text_length(ptr {seq})")
+            if signed_res:
+                slow_null = gen.operation(f"icmp eq ptr {slow_ptr}, null")
+                slow_decoded = gen.decode(slow_ptr)
+                slow_out = gen.operation(
+                    f"select i1 {slow_null}, i64 -1, i64 {slow_decoded}"
+                )
+            else:
+                slow_out = slow_ptr
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+            gen.lines.append(done_lbl + ":")
+            phi_ty = "i64" if signed_res else "ptr"
+            return gen.operation(
+                f"phi {phi_ty} [{fast_out}, %{read_end}], [{slow_out}, %{slow_end}]"
+            )
         if function == "mule_text_codepoint" and len(vop.args) == 2:
             index_type = vop.args[1].tn.type or UNKNOWN
             if index_type.is_fixnum:
-                index = (
+                sequence = values[0]
+                raw = (
                     values[1] if vop.args[1].tn.sc is SIGNED else gen.decode(values[1])
                 )
-                helper = (
-                    "@mule.fast.text.codepoint.at"
-                    if index_type.minimum is not None and index_type.minimum >= 0
-                    else "@mule_text_codepoint_at"
+                signed_res = bool(vop.results and vop.results[0].tn.sc is SIGNED)
+                proven_text = (
+                    arg_type.fits_text(arg_type) and not arg_type.may_be_unbound
                 )
-                return gen.operation(f"call ptr {helper}(ptr {values[0]}, i64 {index})")
+                non_negative = (
+                    index_type.minimum is not None and index_type.minimum >= 0
+                )
+                if (
+                    proven_text
+                    and non_negative
+                    and vop.node in gen.context.in_bounds_nodes
+                ):
+                    res_type = (
+                        (vop.results[0].tn.type or UNKNOWN) if vop.results else UNKNOWN
+                    )
+                    exact_cp = res_type.exact_integer()
+                    if exact_cp is not None:
+                        code = str(exact_cp)
+                        gen.nonnull_values.add(code)
+                        if signed_res:
+                            return code
+                        encoded = gen.encode(code)
+                        gen.immortal_values.add(encoded)
+                        return encoded
+                    repr_addr = gen.operation(
+                        f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_KIND_TAG_OFFSET}"
+                    )
+                    repr_val = gen.operation(
+                        f"load i8, ptr {repr_addr}, !invariant.load !{{}}"
+                    )
+                    inline_base = gen.operation(
+                        f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_INLINE_WORDS_OFFSET}"
+                    )
+                    heap_base_addr = gen.operation(
+                        f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_HEAP_DATA_OFFSET}"
+                    )
+                    heap_base = gen.operation(
+                        f"load ptr, ptr {heap_base_addr}, !invariant.load !{{}}"
+                    )
+                    is_inline = gen.operation(f"icmp eq i8 {repr_val}, 0")
+                    base = gen.operation(
+                        f"select i1 {is_inline}, ptr {inline_base}, ptr {heap_base}"
+                    )
+                    is_latin1 = gen.operation(f"icmp ult i8 {repr_val}, 2")
+                    latin1_lbl = gen.fresh("text.latin1")[1:]
+                    wide_lbl = gen.fresh("text.wide")[1:]
+                    ucs2_lbl = gen.fresh("text.ucs2")[1:]
+                    ucs4_lbl = gen.fresh("text.ucs4")[1:]
+                    done_lbl = gen.fresh("text.done")[1:]
+                    gen.line(
+                        f"br i1 {is_latin1}, label %{latin1_lbl}, label %{wide_lbl}, "
+                        f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                    )
+                    gen.lines.append(latin1_lbl + ":")
+                    slot = gen.operation(
+                        f"getelementptr inbounds i8, ptr {base}, i64 {raw}"
+                    )
+                    byte = gen.operation(f"load i8, ptr {slot}, !invariant.load !{{}}")
+                    latin1_code = gen.operation(f"zext i8 {byte} to i64")
+                    latin1_end = gen.current_block()
+                    gen.line(f"br label %{done_lbl}")
+                    gen.lines.append(wide_lbl + ":")
+                    is_ucs2 = gen.operation(f"icmp eq i8 {repr_val}, 2")
+                    gen.line(f"br i1 {is_ucs2}, label %{ucs2_lbl}, label %{ucs4_lbl}")
+                    gen.lines.append(ucs2_lbl + ":")
+                    u16_slot = gen.operation(
+                        f"getelementptr inbounds i16, ptr {heap_base}, i64 {raw}"
+                    )
+                    u16_val = gen.operation(
+                        f"load i16, ptr {u16_slot}, !invariant.load !{{}}"
+                    )
+                    u16_code = gen.operation(f"zext i16 {u16_val} to i64")
+                    ucs2_end = gen.current_block()
+                    gen.line(f"br label %{done_lbl}")
+                    gen.lines.append(ucs4_lbl + ":")
+                    u32_slot = gen.operation(
+                        f"getelementptr inbounds i32, ptr {heap_base}, i64 {raw}"
+                    )
+                    u32_val = gen.operation(
+                        f"load i32, ptr {u32_slot}, !invariant.load !{{}}"
+                    )
+                    u32_code = gen.operation(f"zext i32 {u32_val} to i64")
+                    ucs4_end = gen.current_block()
+                    gen.line(f"br label %{done_lbl}")
+                    gen.lines.append(done_lbl + ":")
+                    code = gen.operation(
+                        f"phi i64 [{latin1_code}, %{latin1_end}], [{u16_code}, %{ucs2_end}], [{u32_code}, %{ucs4_end}]"
+                    )
+                    gen.nonnull_values.add(code)
+                    if signed_res:
+                        return code
+                    encoded = gen.encode(code)
+                    gen.immortal_values.add(encoded)
+                    return encoded
+                read_lbl = gen.fresh("text.read")[1:]
+                latin1_lbl = gen.fresh("text.latin1")[1:]
+                wide_lbl = gen.fresh("text.wide")[1:]
+                ucs2_lbl = gen.fresh("text.ucs2")[1:]
+                ucs4_lbl = gen.fresh("text.ucs4")[1:]
+                slow_lbl = gen.fresh("text.slow")[1:]
+                done_lbl = gen.fresh("text.done")[1:]
+                if not proven_text:
+                    bits = gen.operation(f"ptrtoint ptr {sequence} to i64")
+                    tag = gen.operation(f"and i64 {bits}, 1")
+                    is_heap = gen.operation(f"icmp eq i64 {tag}, 0")
+                    heap_lbl = gen.fresh("text.heap")[1:]
+                    gen.line(
+                        f"br i1 {is_heap}, label %{heap_lbl}, label %{slow_lbl}, "
+                        f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                    )
+                    gen.lines.append(heap_lbl + ":")
+                    kind_addr = gen.operation(
+                        f"getelementptr inbounds i8, ptr {sequence}, i64 {DATA_OFFSET}"
+                    )
+                    data_kind = gen.operation(
+                        f"load i32, ptr {kind_addr}, !invariant.load !{{}}"
+                    )
+                    is_text = gen.operation(f"icmp eq i32 {data_kind}, {TEXT_TAG}")
+                    text_lbl = gen.fresh("text.kind")[1:]
+                    gen.line(
+                        f"br i1 {is_text}, label %{text_lbl}, label %{slow_lbl}, "
+                        f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                    )
+                    gen.lines.append(text_lbl + ":")
+                repr_addr = gen.operation(
+                    f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_KIND_TAG_OFFSET}"
+                )
+                repr_val = gen.operation(
+                    f"load i8, ptr {repr_addr}, !invariant.load !{{}}"
+                )
+                is_inline = gen.operation(f"icmp eq i8 {repr_val}, 0")
+                inline_len_addr = gen.operation(
+                    f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_INLINE_LEN_OFFSET}"
+                )
+                inline_len8 = gen.operation(
+                    f"load i8, ptr {inline_len_addr}, !invariant.load !{{}}"
+                )
+                inline_len = gen.operation(f"zext i8 {inline_len8} to i64")
+                heap_len_addr = gen.operation(
+                    f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_HEAP_LEN_OFFSET}"
+                )
+                heap_len = gen.operation(
+                    f"load i64, ptr {heap_len_addr}, !invariant.load !{{}}"
+                )
+                length = gen.operation(
+                    f"select i1 {is_inline}, i64 {inline_len}, i64 {heap_len}"
+                )
+                inside = gen.operation(f"icmp ult i64 {raw}, {length}")
+                gen.line(
+                    f"br i1 {inside}, label %{read_lbl}, label %{slow_lbl}, "
+                    f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                )
+                gen.lines.append(read_lbl + ":")
+                inline_base = gen.operation(
+                    f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_INLINE_WORDS_OFFSET}"
+                )
+                heap_base_addr = gen.operation(
+                    f"getelementptr inbounds i8, ptr {sequence}, i64 {TEXT_HEAP_DATA_OFFSET}"
+                )
+                heap_base = gen.operation(
+                    f"load ptr, ptr {heap_base_addr}, !invariant.load !{{}}"
+                )
+                base = gen.operation(
+                    f"select i1 {is_inline}, ptr {inline_base}, ptr {heap_base}"
+                )
+                is_latin1 = gen.operation(f"icmp ult i8 {repr_val}, 2")
+                gen.line(
+                    f"br i1 {is_latin1}, label %{latin1_lbl}, label %{wide_lbl}, "
+                    f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
+                )
+                gen.lines.append(latin1_lbl + ":")
+                slot = gen.operation(
+                    f"getelementptr inbounds i8, ptr {base}, i64 {raw}"
+                )
+                byte = gen.operation(f"load i8, ptr {slot}, !invariant.load !{{}}")
+                latin1_code = gen.operation(f"zext i8 {byte} to i64")
+                latin1_out = latin1_code if signed_res else gen.encode(latin1_code)
+                latin1_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(wide_lbl + ":")
+                is_ucs2 = gen.operation(f"icmp eq i8 {repr_val}, 2")
+                gen.line(f"br i1 {is_ucs2}, label %{ucs2_lbl}, label %{ucs4_lbl}")
+                gen.lines.append(ucs2_lbl + ":")
+                u16_slot = gen.operation(
+                    f"getelementptr inbounds i16, ptr {heap_base}, i64 {raw}"
+                )
+                u16_val = gen.operation(
+                    f"load i16, ptr {u16_slot}, !invariant.load !{{}}"
+                )
+                u16_code = gen.operation(f"zext i16 {u16_val} to i64")
+                u16_out = u16_code if signed_res else gen.encode(u16_code)
+                ucs2_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(ucs4_lbl + ":")
+                u32_slot = gen.operation(
+                    f"getelementptr inbounds i32, ptr {heap_base}, i64 {raw}"
+                )
+                u32_val = gen.operation(
+                    f"load i32, ptr {u32_slot}, !invariant.load !{{}}"
+                )
+                u32_code = gen.operation(f"zext i32 {u32_val} to i64")
+                u32_out = u32_code if signed_res else gen.encode(u32_code)
+                ucs4_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(slow_lbl + ":")
+                slow_ptr = gen.operation(
+                    f"call ptr @mule_text_codepoint_at(ptr {sequence}, i64 {raw})"
+                )
+                if signed_res:
+                    slow_null = gen.operation(f"icmp eq ptr {slow_ptr}, null")
+                    slow_decoded = gen.decode(slow_ptr)
+                    slow_out = gen.operation(
+                        f"select i1 {slow_null}, i64 -1, i64 {slow_decoded}"
+                    )
+                else:
+                    slow_out = slow_ptr
+                slow_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
+                gen.lines.append(done_lbl + ":")
+                phi_ty = "i64" if signed_res else "ptr"
+                return gen.operation(
+                    f"phi {phi_ty} [{latin1_out}, %{latin1_end}], [{u16_out}, %{ucs2_end}], [{u32_out}, %{ucs4_end}], [{slow_out}, %{slow_end}]"
+                )
         if function == "mule_read_byte" and len(vop.args) == 2:
             index_type = vop.args[1].tn.type or UNKNOWN
             if index_type.is_fixnum:
@@ -5153,6 +5503,8 @@ TEXT_TAG = 4
 TEXT_KIND_TAG_OFFSET = 24
 TEXT_INLINE_LEN_OFFSET = 25
 TEXT_INLINE_WORDS_OFFSET = 32
+TEXT_HEAP_DATA_OFFSET = 40
+TEXT_HEAP_LEN_OFFSET = 48
 LIST_TAG = 13
 ARGS_TAG = 9
 # The authoritative repr(C) ValueBuffer header follows the Data discriminator.
