@@ -12,7 +12,7 @@ object:
   %kind.addr = getelementptr i8, ptr %value, i64 16
   %kind = load i32, ptr %kind.addr
   %is.tuple = icmp eq i32 %kind, 9
-  br i1 %is.tuple, label %check, label %no, !prof !{!"branch_weights", i32 2000, i32 1}
+  br i1 %is.tuple, label %check, label %no
 check:
   %class.addr = getelementptr i8, ptr %value, i64 48
   %class = load ptr, ptr %class.addr

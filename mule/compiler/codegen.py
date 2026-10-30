@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import TYPE_CHECKING
@@ -1971,7 +1972,7 @@ class ModuleGenerator:
             + f"define internal ptr {symbol}(ptr %value, ptr %count) {{\n"
             "entry:\n"
             f"  %valid = call i1 @mule.fast.tuple.shape(ptr %value, i64 {arity})\n"
-            f"  br i1 %valid, label %tuple, label %list.check, {vops.HOT_BRANCH}\n"
+            "  br i1 %valid, label %tuple, label %list.check\n"
             "tuple:\n"
             "  call void @mule.fast.release(ptr %count)\n"
             "  ret ptr %value\n"
@@ -2401,9 +2402,7 @@ class ModuleGenerator:
                     valid = builder.operation(f"and i1 {valid}, {guard}")
                 typed = f"typed.{variant_index}.{step_idx}"
                 next_label = f"next.{variant_index}.{step_idx}"
-                builder.line(
-                    f"  br i1 {valid}, label %{typed}, label %{next_label}, {vops.HOT_BRANCH}"
-                )
+                builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
                 builder.lines.append(f"{typed}:")
                 emit_step_invoke(context, step_idx)
                 builder.lines.append(f"{next_label}:")
@@ -2657,7 +2656,9 @@ class ModuleGenerator:
                     f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.incompatible.{tag}:")
-                builder.line(f"  call void @mule.fast.release(ptr %res.{tag})")
+                builder.line(
+                    f"  call void @mule.fast.release(ptr %res.{tag}) cold noinline"
+                )
                 builder.line("  ret ptr null")
                 builder.lines.append(f"invoke.accepted.{tag}:")
             if context is not None:
@@ -2696,9 +2697,7 @@ class ModuleGenerator:
                 valid = builder.operation(f"and i1 {valid}, {guard}")
             typed = f"typed.{step_idx}"
             next_label = f"next.{step_idx}"
-            builder.line(
-                f"  br i1 {valid}, label %{typed}, label %{next_label}, {vops.HOT_BRANCH}"
-            )
+            builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
             builder.lines.append(f"{typed}:")
             emit_invoke(context, step_idx)
             builder.lines.append(f"{next_label}:")
@@ -2707,7 +2706,9 @@ class ModuleGenerator:
             builder.lines.append("failed:")
             for i in range(arity):
                 if i not in borrowed_arguments:
-                    builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+                    builder.line(
+                        f"  call void @mule.fast.release(ptr %arg.{i}) cold noinline"
+                    )
             builder.line("  ret ptr null")
         if not proven:
             builder.lines.append("fallback:")
@@ -2735,7 +2736,7 @@ class ModuleGenerator:
                 builder.lines.extend(
                     [
                         "fallback.incompatible:",
-                        "  call void @mule.fast.release(ptr %fallback.res)",
+                        "  call void @mule.fast.release(ptr %fallback.res) cold noinline",
                         "  ret ptr null",
                         "fallback.ok:",
                     ]
@@ -2923,7 +2924,9 @@ class ModuleGenerator:
                     )
                     value = builder.operation(f"load ptr, ptr {slot}")
                     builder.line(f"store ptr null, ptr {slot}")
-                    builder.line(f"call void @mule.fast.release(ptr {value})")
+                    builder.line(
+                        f"call void @mule.fast.release(ptr {value}) cold noinline"
+                    )
                 builder.line("ret ptr null")
                 builder.lines.append(f"invoke.accepted.{tag}:")
             builder.line(f"  ret ptr %res.{tag}")
@@ -2954,9 +2957,7 @@ class ModuleGenerator:
                 valid = builder.operation(f"and i1 {valid}, {guard}")
             typed = f"typed.{step_idx}"
             next_label = f"next.{step_idx}"
-            builder.line(
-                f"  br i1 {valid}, label %{typed}, label %{next_label}, {vops.HOT_BRANCH}"
-            )
+            builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
             builder.lines.append(f"{typed}:")
             emit_invoke(context, step_idx)
             builder.lines.append(f"{next_label}:")
@@ -2964,7 +2965,9 @@ class ModuleGenerator:
         if check_depth:
             builder.lines.append("failed:")
             for i in range(arity):
-                builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+                builder.line(
+                    f"  call void @mule.fast.release(ptr %arg.{i}) cold noinline"
+                )
             builder.line("  ret ptr null")
         if not proven:
             builder.lines.extend(
@@ -2986,7 +2989,9 @@ class ModuleGenerator:
                     f"br i1 {rejected}, label %fallback.incompatible, label %fallback.unpack, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append("fallback.incompatible:")
-                builder.line("call void @mule.fast.release(ptr %fallback.res)")
+                builder.line(
+                    "call void @mule.fast.release(ptr %fallback.res) cold noinline"
+                )
                 builder.line("ret ptr null")
             else:
                 builder.line("br label %fallback.unpack")
@@ -4333,11 +4338,36 @@ class _HelperBuilder:
         # The module generator, for guards that name module-level data.
         self.module = module
         self.failure_result = failure_result
+        self.in_cold_block = False
+
+    @contextmanager
+    def cold_block(self):
+        previous = self.in_cold_block
+        self.in_cold_block = True
+        try:
+            yield
+        finally:
+            self.in_cold_block = previous
 
     def line(self, text: str) -> None:
+        stripped = text.lstrip()
+        if (
+            self.in_cold_block
+            and stripped.startswith("call ")
+            and "@llvm." not in stripped
+            and not text.endswith(" cold noinline")
+        ):
+            text += " cold noinline"
         self.lines.append(text if text.startswith("  ") else "  " + text)
 
     def operation(self, text: str) -> str:
+        if (
+            self.in_cold_block
+            and text.startswith("call ")
+            and "@llvm." not in text
+            and not text.endswith(" cold noinline")
+        ):
+            text += " cold noinline"
         self.serial += 1
         value = f"%t.{self.serial}"
         self.lines.append(f"  {value} = {text}")
@@ -4459,9 +4489,7 @@ class _ArgumentGuard(ValueTypeVisitor):
         done = self.gen.fresh("guard.list.done")[1:]
         self.gen.line(f"br label %{start}")
         self.gen.lines.append(start + ":")
-        self.gen.line(
-            f"br i1 {valid}, label %{header}, label %{done}, {vops.HOT_BRANCH}"
-        )
+        self.gen.line(f"br i1 {valid}, label %{header}, label %{done}")
         self.gen.lines.append(header + ":")
         len_addr = self.gen.operation(
             f"getelementptr i64, ptr {self.value}, i64 {vops.VALUE_BUFFER_LENGTH_OFFSET // 8}"
@@ -4481,9 +4509,7 @@ class _ArgumentGuard(ValueTypeVisitor):
         item = self.gen.operation(f"load ptr, ptr {slot}")
         elem_valid = fact.element.accept(_ArgumentGuard(self.gen, item))
         elem_end = self.gen.current_block()
-        self.gen.line(
-            f"br i1 {elem_valid}, label %{step}, label %{done}, {vops.HOT_BRANCH}"
-        )
+        self.gen.line(f"br i1 {elem_valid}, label %{step}, label %{done}")
         self.gen.lines.append(step + ":")
         self.gen.lines.append(f"  %next.{step} = add i64 {idx}, 1")
         self.gen.line(f"br label %{loop}")
@@ -4527,9 +4553,7 @@ class _ArgumentGuard(ValueTypeVisitor):
         done = self.gen.fresh("guard.tuple.done")[1:]
         self.gen.line(f"br label %{start}")
         self.gen.lines.append(start + ":")
-        self.gen.line(
-            f"br i1 {valid}, label %{fields}, label %{done}, {vops.HOT_BRANCH}"
-        )
+        self.gen.line(f"br i1 {valid}, label %{fields}, label %{done}")
         self.gen.lines.append(fields + ":")
         checked = "true"
         for index, element in enumerate(fact.elements):
@@ -4850,6 +4874,7 @@ class FunctionGenerator:
         self.landings: dict[tuple[str, tuple[str, ...], bool, bool], str] = {}
         # Each landing's predecessor blocks and the source line failing there.
         self.landing_sites: dict[str, dict[str, tuple[int, str]]] = {}
+        self.block = None
         self.vop = None
         self.in_cold_block = False
         self.checking_element_contract = False
@@ -4940,6 +4965,15 @@ class FunctionGenerator:
             self.line(f"store ptr {val}, ptr {slot}")
 
     # Text helpers
+
+    @contextmanager
+    def cold_block(self):
+        previous = self.in_cold_block
+        self.in_cold_block = True
+        try:
+            yield
+        finally:
+            self.in_cold_block = previous
 
     def line(self, text: str) -> None:
         if (
@@ -6548,6 +6582,7 @@ class FunctionGenerator:
     def emit_blocks(self) -> None:
         cold_blocks = self.cold_blocks
         for block in self.component.blocks:
+            self.block = block
             self.in_cold_block = block.label in cold_blocks
             self.lines.append(block.label + ":")
             target = block.exception_target
@@ -6582,6 +6617,7 @@ class FunctionGenerator:
                     self.release(value)
             if self.live:
                 raise ValueError(f"{block!r} ends owning {list(self.live)!r}")
+        self.block = None
         self.in_cold_block = False
         if self.max_unpack_out:
             self.lines.insert(
@@ -6710,7 +6746,7 @@ class FunctionGenerator:
                 lines.extend(builder.lines)
                 lines.extend(
                     [
-                        f"  br i1 {guard_ok}, label %invoke.fixnum, label %invoke.general, {vops.HOT_BRANCH}",
+                        f"  br i1 {guard_ok}, label %invoke.fixnum, label %invoke.general",
                         "invoke.fixnum:",
                         f"  %result.fixnum = call ptr {module.specialized[lambda_, 'fixnum']}({arguments})",
                         "  ret ptr %result.fixnum",

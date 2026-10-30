@@ -285,14 +285,13 @@ def load_local(gen, vop):
                 f"br i1 {missing}, label %{absent}, label %{present}, {COLD_BRANCH}"
             )
             gen.lines.append(absent + ":")
-            gen.in_cold_block = True
-            name = gen.module.text(access.name)
-            gen.pointer_result(
-                result, f"call ptr @mule.fast.local.move(ptr null, ptr {name})"
-            )
-            gen.line(f"br label %{present}")
+            with gen.cold_block():
+                name = gen.module.text(access.name)
+                gen.pointer_result(
+                    result, f"call ptr @mule.fast.local.move(ptr null, ptr {name})"
+                )
+                gen.line(f"br label %{present}")
             gen.lines.append(present + ":")
-            gen.in_cold_block = False
         gen.store(result, value)
         return
     value = gen.load(source)
@@ -452,13 +451,12 @@ def local_cell_ref(gen, vop):
     )
     gen.line(f"br i1 {missing}, label %{absent}, label %{present}, {COLD_BRANCH}")
     gen.lines.append(absent + ":")
-    gen.in_cold_block = True
-    optional = "@mule.true" if vop.codegen_info else "@mule.false"
-    fallback = gen.sequence_call("cell_unbound", [optional])
-    absent_block = gen.current_block()
-    gen.line(f"br label %{join}")
+    with gen.cold_block():
+        optional = "@mule.true" if vop.codegen_info else "@mule.false"
+        fallback = gen.sequence_call("cell_unbound", [optional])
+        absent_block = gen.current_block()
+        gen.line(f"br label %{join}")
     gen.lines.append(present + ":")
-    gen.in_cold_block = False
     if vop.results[0].tn.sc.owned:
         value = gen.retain(value)
     present_block = gen.current_block()
@@ -609,12 +607,11 @@ class _ContractAssertion(ContractVisitor):
             f"br i1 {valid}, label %{accepted}, label %{rejected}, {HOT_BRANCH}"
         )
         self.gen.lines.append(rejected + ":")
-        self.gen.in_cold_block = True
-        expected = self.gen.module.text(f"{contract.display_name}: {contract.fact}")
-        self.gen.line(f"call i32 @mule_inferred_return_error(ptr {expected})")
-        self.gen.propagate()
+        with self.gen.cold_block():
+            expected = self.gen.module.text(f"{contract.display_name}: {contract.fact}")
+            self.gen.line(f"call i32 @mule_inferred_return_error(ptr {expected})")
+            self.gen.propagate()
         self.gen.lines.append(accepted + ":")
-        self.gen.in_cold_block = False
 
     def visit_IntegerContract(self, contract):
         fact = contract.fact
@@ -833,17 +830,16 @@ class _InferredResultPredicate(ValueTypeVisitor):
                 f"br i1 {fixnum}, label %{done_label}, label %{slow_label}, {HOT_BRANCH}"
             )
             self.gen.lines.append(slow_label + ":")
-            self.gen.in_cold_block = True
-            minimum = self.assertion.integer_bound(fact.minimum)
-            maximum = self.assertion.integer_bound(fact.maximum)
-            valid = self.gen.operation(
-                f"call i32 @mule_integer_in_bounds(ptr {self.value}, ptr {minimum}, ptr {maximum})"
-            )
-            slow_ok = self.gen.operation(f"icmp ne i32 {valid}, 0")
-            last = self.gen.current_block()
-            self.gen.line(f"br label %{done_label}")
+            with self.gen.cold_block():
+                minimum = self.assertion.integer_bound(fact.minimum)
+                maximum = self.assertion.integer_bound(fact.maximum)
+                valid = self.gen.operation(
+                    f"call i32 @mule_integer_in_bounds(ptr {self.value}, ptr {minimum}, ptr {maximum})"
+                )
+                slow_ok = self.gen.operation(f"icmp ne i32 {valid}, 0")
+                last = self.gen.current_block()
+                self.gen.line(f"br label %{done_label}")
             self.gen.lines.append(done_label + ":")
-            self.gen.in_cold_block = False
             return self.gen.operation(
                 f"phi i1 [{fast_ok}, %{source}], [{slow_ok}, %{last}]"
             )
@@ -930,7 +926,7 @@ class _InferredResultPredicate(ValueTypeVisitor):
         done = self.gen.fresh("return.list.done")[1:]
         self.gen.line(f"br label %{start}")
         self.gen.lines.append(start + ":")
-        self.gen.line(f"br i1 {valid}, label %{header}, label %{done}, {HOT_BRANCH}")
+        self.gen.line(f"br i1 {valid}, label %{header}, label %{done}")
         self.gen.lines.append(header + ":")
         len_addr = self.gen.operation(
             f"getelementptr i64, ptr {self.value}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
@@ -950,7 +946,7 @@ class _InferredResultPredicate(ValueTypeVisitor):
         item = self.gen.operation(f"load ptr, ptr {slot}")
         elem_valid = fact.element.accept(_InferredResultPredicate(self.assertion, item))
         elem_end = self.gen.current_block()
-        self.gen.line(f"br i1 {elem_valid}, label %{step}, label %{done}, {HOT_BRANCH}")
+        self.gen.line(f"br i1 {elem_valid}, label %{step}, label %{done}")
         self.gen.lines.append(step + ":")
         self.gen.lines.append(f"  %next.{step} = add i64 {idx}, 1")
         self.gen.line(f"br label %{loop}")
@@ -988,7 +984,7 @@ class _InferredResultPredicate(ValueTypeVisitor):
         source = self.gen.current_block()
         fields = self.gen.fresh("return.tuple.fields")[1:]
         done = self.gen.fresh("return.tuple.checked")[1:]
-        self.gen.line(f"br i1 {valid}, label %{fields}, label %{done}, {HOT_BRANCH}")
+        self.gen.line(f"br i1 {valid}, label %{fields}, label %{done}")
         self.gen.lines.append(fields + ":")
         predicates = []
         for index, element in enumerate(fact.elements):
@@ -1062,8 +1058,17 @@ def full_call(gen, vop):
     gen.publish(result, value)
     if site.callee_required:
         gen.release(function)
+    feeds_raise = (
+        gen.block is not None
+        and len(gen.block.vops) >= 2
+        and gen.block.vops[-2] is vop
+        and gen.block.vops[-1].info.name == "raise"
+        and gen.block.vops[-1].args[0].tn is result.tn
+        and not gen.expiring.get(vop)
+        and set(gen.live) <= {result.tn}
+    )
     if not (
-        gen.in_cold_block
+        feeds_raise
         and (gen.module.program.bootstrap or not gen.lambda_.policy.records_traceback)
     ):
         gen.check_pointer(value)
@@ -1257,12 +1262,11 @@ def _tagged_bitwise(gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reus
     gen.line(f"br label %{done}")
 
     gen.lines.append(slow + ":")
-    gen.in_cold_block = True
-    fallback = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
-    slow_success = gen.current_block()
-    gen.line(f"br label %{done}")
+    with gen.cold_block():
+        fallback = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
+        slow_success = gen.current_block()
+        gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
-    gen.in_cold_block = False
     merged = gen.operation(f"phi ptr [{value}, %{fast}], [{fallback}, %{slow_success}]")
     gen.native_result(result, merged)
     gen.refine(result.tn, merged)
@@ -1299,12 +1303,11 @@ def _tagged_add_sub(gen, result, lhs, rhs, opcode, fixnums, inplace, reuse, reus
     gen.line(f"br label %{done}")
 
     gen.lines.append(slow + ":")
-    gen.in_cold_block = True
-    fallback = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
-    slow_success = gen.current_block()
-    gen.line(f"br label %{done}")
+    with gen.cold_block():
+        fallback = _binary_fallback(gen, lhs, rhs, opcode, inplace, reuse, reuse_slot)
+        slow_success = gen.current_block()
+        gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
-    gen.in_cold_block = False
     merged = gen.operation(f"phi ptr [{value}, %{fast}], [{fallback}, %{slow_success}]")
     gen.native_result(result, merged)
     gen.refine(result.tn, merged)
@@ -2029,45 +2032,46 @@ def _define_minmax2(name, info, is_max: bool):
         )
         gen.line(f"br label %{done_lbl}")
         gen.lines.append(slow_lbl + ":")
-        gen.in_cold_block = True
-        cmp_obj = gen.operation(
-            f"call ptr @mule.fast.compare.{cmp_opcode}(ptr {rhs}, ptr {lhs})"
-        )
-        if not cmp_obj.startswith("@"):
-            bad = gen.operation(f"icmp eq ptr {cmp_obj}, null")
-            fail_lbl, ok_lbl = (
-                gen.fresh("minmax.fail")[1:],
-                gen.fresh("minmax.ok")[1:],
+        with gen.cold_block():
+            cmp_obj = gen.operation(
+                f"call ptr @mule.fast.compare.{cmp_opcode}(ptr {rhs}, ptr {lhs})"
             )
-            gen.line(f"br i1 {bad}, label %{fail_lbl}, label %{ok_lbl}, {COLD_BRANCH}")
-            gen.lines.append(fail_lbl + ":")
+            if not cmp_obj.startswith("@"):
+                bad = gen.operation(f"icmp eq ptr {cmp_obj}, null")
+                fail_lbl, ok_lbl = (
+                    gen.fresh("minmax.fail")[1:],
+                    gen.fresh("minmax.ok")[1:],
+                )
+                gen.line(
+                    f"br i1 {bad}, label %{fail_lbl}, label %{ok_lbl}, {COLD_BRANCH}"
+                )
+                gen.lines.append(fail_lbl + ":")
+                gen.release(lhs)
+                gen.release(rhs)
+                gen.line(f"br label %{gen.failure_target('error')}")
+                gen.lines.append(ok_lbl + ":")
+            truth = gen.operation(f"call i32 @mule.fast.truth(ptr {cmp_obj})")
+            gen.release(cmp_obj)
+            bad_truth = gen.operation(f"icmp slt i32 {truth}, 0")
+            tfail_lbl, tok_lbl = (
+                gen.fresh("minmax.tfail")[1:],
+                gen.fresh("minmax.tok")[1:],
+            )
+            gen.line(
+                f"br i1 {bad_truth}, label %{tfail_lbl}, label %{tok_lbl}, {COLD_BRANCH}"
+            )
+            gen.lines.append(tfail_lbl + ":")
             gen.release(lhs)
             gen.release(rhs)
             gen.line(f"br label %{gen.failure_target('error')}")
-            gen.lines.append(ok_lbl + ":")
-        truth = gen.operation(f"call i32 @mule.fast.truth(ptr {cmp_obj})")
-        gen.release(cmp_obj)
-        bad_truth = gen.operation(f"icmp slt i32 {truth}, 0")
-        tfail_lbl, tok_lbl = (
-            gen.fresh("minmax.tfail")[1:],
-            gen.fresh("minmax.tok")[1:],
-        )
-        gen.line(
-            f"br i1 {bad_truth}, label %{tfail_lbl}, label %{tok_lbl}, {COLD_BRANCH}"
-        )
-        gen.lines.append(tfail_lbl + ":")
-        gen.release(lhs)
-        gen.release(rhs)
-        gen.line(f"br label %{gen.failure_target('error')}")
-        gen.lines.append(tok_lbl + ":")
-        pick_right = gen.operation(f"icmp ne i32 {truth}, 0")
-        slow_chosen = gen.operation(f"select i1 {pick_right}, ptr {rhs}, ptr {lhs}")
-        discarded = gen.operation(f"select i1 {pick_right}, ptr {lhs}, ptr {rhs}")
-        gen.release(discarded)
-        slow_end = gen.current_block()
-        gen.line(f"br label %{done_lbl}")
+            gen.lines.append(tok_lbl + ":")
+            pick_right = gen.operation(f"icmp ne i32 {truth}, 0")
+            slow_chosen = gen.operation(f"select i1 {pick_right}, ptr {rhs}, ptr {lhs}")
+            discarded = gen.operation(f"select i1 {pick_right}, ptr {lhs}, ptr {rhs}")
+            gen.release(discarded)
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
         gen.lines.append(done_lbl + ":")
-        gen.in_cold_block = False
         merged = gen.operation(
             f"phi ptr [{fast_chosen}, %{fast_lbl}], [{slow_chosen}, %{slow_end}]"
         )
@@ -2115,16 +2119,15 @@ def _boxed_float_unary(operator, negate: bool):
             gen.lines.append(forward + ":")
             gen.line(f"br label %{joined}")
             gen.lines.append(convert + ":")
-            gen.in_cold_block = True
-            raw = gen.operation(
-                f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {taken})"
-            )
-            boxed = gen.operation(
-                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw})"
-            )
-            gen.line(f"br label %{joined}")
+            with gen.cold_block():
+                raw = gen.operation(
+                    f"call double @{FLOAT_BOX_LAYOUT.symbol('load')}(ptr {taken})"
+                )
+                boxed = gen.operation(
+                    f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw})"
+                )
+                gen.line(f"br label %{joined}")
             gen.lines.append(joined + ":")
-            gen.in_cold_block = False
             value = gen.operation(
                 f"phi ptr [{taken}, %{forward}], [{boxed}, %{convert}]"
             )
@@ -2235,13 +2238,12 @@ def _define_unary(operator, opcode):
             scalar = gen.operation(f"call ptr @mule.fixnum.unary.{opcode}(ptr {value})")
             gen.line(f"br label %{joined}")
             gen.lines.append(protocol + ":")
-            gen.in_cold_block = True
-            name = ("positive", "negative", "invert")[opcode]
-            dynamic = gen.sequence_call(name, [value])
-            protocol_end = gen.current_block()
-            gen.line(f"br label %{joined}")
+            with gen.cold_block():
+                name = ("positive", "negative", "invert")[opcode]
+                dynamic = gen.sequence_call(name, [value])
+                protocol_end = gen.current_block()
+                gen.line(f"br label %{joined}")
             gen.lines.append(joined + ":")
-            gen.in_cold_block = False
             gen.pointer_result(
                 result, f"phi ptr [{scalar}, %{fast}], [{dynamic}, %{protocol_end}]"
             )
@@ -2538,11 +2540,11 @@ def getattr_borrow(gen, vop):
     gen.lines.append(f"{hit}:")
     gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.slow}:")
-    gen.in_cold_block = True
-    slow = gen.operation(
-        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, ptr {cache})"
-    )
-    gen.line(f"br label %{site.join}")
+    with gen.cold_block():
+        slow = gen.operation(
+            f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, ptr {cache})"
+        )
+        gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.join}:")
     owner = gen.operation(f"phi ptr [null, %{hit}], [{slow}, %{site.slow}]")
     borrowed = gen.operation(f"phi ptr [{value}, %{hit}], [{slow}, %{site.slow}]")
@@ -2586,12 +2588,12 @@ def _read_physical_field(
         gen.line(f"call ptr @mule.{retain}(ptr {value})")
     gen.line(f"br label %{done}")
     gen.lines.append(missing + ":")
-    gen.in_cold_block = True
-    gen.line(
-        f"call void @mule_instance_field_missing(ptr {receiver}, "
-        f"ptr {gen.module.text(name)}, i64 {len(name.encode('utf-8'))})"
-    )
-    gen.line(f"br label %{done}")
+    with gen.cold_block():
+        gen.line(
+            f"call void @mule_instance_field_missing(ptr {receiver}, "
+            f"ptr {gen.module.text(name)}, i64 {len(name.encode('utf-8'))})"
+        )
+        gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
     # The error arm reports this load's null observation; it never rereads a
     # slot that another thread or callback could initialize in the meantime.
@@ -2701,11 +2703,11 @@ def _cached_physical_name_field(gen, receiver, plan, value=None):
         gen.line(f"call ptr @mule.fast.retain(ptr {field})")
         gen.line(f"br label %{site.join}")
         gen.lines.append(f"{site.slow}:")
-        gen.in_cold_block = True
-        slow = gen.operation(
-            f"call ptr @mule_instance_field_name_cached({arguments}, ptr {cache})"
-        )
-        gen.line(f"br label %{site.join}")
+        with gen.cold_block():
+            slow = gen.operation(
+                f"call ptr @mule_instance_field_name_cached({arguments}, ptr {cache})"
+            )
+            gen.line(f"br label %{site.join}")
         gen.lines.append(f"{site.join}:")
         return gen.operation(f"phi ptr [{field}, %{loaded}], [{slow}, %{site.slow}]")
     old = gen.operation(f"load ptr, ptr {slot}")
@@ -2752,11 +2754,10 @@ def _guarded_physical_field(gen, receiver, plan, value=None):
         fast_block = hit
     gen.line(f"br label %{done}")
     gen.lines.append(miss + ":")
-    gen.in_cold_block = True
-    slow = _physical_name_call(gen, receiver, plan, value)
-    gen.line(f"br label %{done}")
+    with gen.cold_block():
+        slow = _physical_name_call(gen, receiver, plan, value)
+        gen.line(f"br label %{done}")
     gen.lines.append(done + ":")
-    gen.in_cold_block = False
     return gen.operation(f"phi ptr [{fast}, %{fast_block}], [{slow}, %{miss}]")
 
 
@@ -2810,12 +2811,12 @@ def _read_attribute(gen, receiver, name, result_tn=None, *, slot_index=None):
     gen.line(f"call ptr @mule.fast.retain(ptr {field})")
     gen.line(f"br label %{labels.join}")
     gen.lines.append(f"{labels.slow}:")
-    gen.in_cold_block = True
-    slow = gen.operation(
-        f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
-        f"ptr {cache})"
-    )
-    gen.line(f"br label %{labels.join}")
+    with gen.cold_block():
+        slow = gen.operation(
+            f"call ptr @mule_get_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
+            f"ptr {cache})"
+        )
+        gen.line(f"br label %{labels.join}")
     gen.lines.append(f"{labels.join}:")
     return gen.operation(f"phi ptr [{field}, %{loaded}], [{slow}, %{labels.slow}]")
 
@@ -2959,11 +2960,11 @@ def value_cell_ref(gen, vop):
     value_block = gen.current_block()
     gen.line(f"br label %{join}")
     gen.lines.append(missing + ":")
-    gen.in_cold_block = True
-    optional = "@mule.true" if vop.codegen_info else "@mule.false"
-    absent = gen.sequence_call("cell_unbound", [optional])
-    absent_block = gen.current_block()
-    gen.line(f"br label %{join}")
+    with gen.cold_block():
+        optional = "@mule.true" if vop.codegen_info else "@mule.false"
+        absent = gen.sequence_call("cell_unbound", [optional])
+        absent_block = gen.current_block()
+        gen.line(f"br label %{join}")
     gen.lines.append(join + ":")
     gen.pointer_result(
         vop.results[0],
@@ -3487,34 +3488,35 @@ def range_prepare(gen, vop):
         fast_end = gen.current_block()
         gen.line(f"br label %{done_label}")
         gen.lines.append(f"{slow_label}:")
-        gen.in_cold_block = True
-        callee = gen.operation(
-            gen.module.load_global(info.callee_leaf, gen.lambda_.policy.safety)
-        )
-        call_helper = gen.module.positional_call_helper(arity, borrowed=True)
-        operands = ", ".join([f"ptr {callee}", *(f"ptr {val}" for val in arg_values)])
-        range_obj = gen.operation(f"call ptr {call_helper}({operands})")
-        gen.release(callee)
-        for val in arg_values:
-            gen.release(val)
-        gen.check_pointer(range_obj)
-        iter_helper = gen.module.iterate_helper(move=True)
-        iter_obj = gen.operation(f"call ptr {iter_helper}(ptr {range_obj})")
-        gen.check_pointer(iter_obj)
-        gen.store(iterator_out, iter_obj)
-        stored = gen.operation(
-            f"call i32 @mule_range_storage(ptr {iter_obj}, ptr %range.buffer)"
-        )
-        words = gen.operation("load [3 x i64], ptr %range.buffer")
-        gen.line(f"store [3 x i64] {words}, ptr {state}")
-        accepted = gen.operation(f"icmp ne i32 {stored}, 0")
-        slow_res = gen.operation(
-            f"select i1 {accepted}, ptr @mule.true, ptr @mule.false"
-        )
-        slow_end = gen.current_block()
-        gen.line(f"br label %{done_label}")
+        with gen.cold_block():
+            callee = gen.operation(
+                gen.module.load_global(info.callee_leaf, gen.lambda_.policy.safety)
+            )
+            call_helper = gen.module.positional_call_helper(arity, borrowed=True)
+            operands = ", ".join(
+                [f"ptr {callee}", *(f"ptr {val}" for val in arg_values)]
+            )
+            range_obj = gen.operation(f"call ptr {call_helper}({operands})")
+            gen.release(callee)
+            for val in arg_values:
+                gen.release(val)
+            gen.check_pointer(range_obj)
+            iter_helper = gen.module.iterate_helper(move=True)
+            iter_obj = gen.operation(f"call ptr {iter_helper}(ptr {range_obj})")
+            gen.check_pointer(iter_obj)
+            gen.store(iterator_out, iter_obj)
+            stored = gen.operation(
+                f"call i32 @mule_range_storage(ptr {iter_obj}, ptr %range.buffer)"
+            )
+            words = gen.operation("load [3 x i64], ptr %range.buffer")
+            gen.line(f"store [3 x i64] {words}, ptr {state}")
+            accepted = gen.operation(f"icmp ne i32 {stored}, 0")
+            slow_res = gen.operation(
+                f"select i1 {accepted}, ptr @mule.true, ptr @mule.false"
+            )
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_label}")
         gen.lines.append(f"{done_label}:")
-        gen.in_cold_block = False
         final_res = gen.operation(
             f"phi ptr [@mule.true, %{fast_end}], [{slow_res}, %{slow_end}]"
         )
@@ -3987,11 +3989,12 @@ def protocol_getitem(gen, vop):
                 fast_val = gen.retain(fast_val)
             gen.line(f"br label %{done_lbl}")
             gen.lines.append(slow_lbl + ":")
-            boxed_index = gen.encode(index) if raw_index_sc else index
-            slow_val = gen.operation(
-                f"call ptr {helper}(ptr {sequence}, ptr {boxed_index})"
-            )
-            gen.line(f"br label %{done_lbl}")
+            with gen.cold_block():
+                boxed_index = gen.encode(index) if raw_index_sc else index
+                slow_val = gen.operation(
+                    f"call ptr {helper}(ptr {sequence}, ptr {boxed_index})"
+                )
+                gen.line(f"br label %{done_lbl}")
             gen.lines.append(done_lbl + ":")
             result = gen.operation(
                 f"phi ptr [{fast_val}, %{read_lbl}], [{slow_val}, %{slow_lbl}]"
@@ -4171,13 +4174,14 @@ def protocol_setitem(gen, vop):
             write_end = gen.current_block()
             gen.line(f"br label %{done_lbl}")
             gen.lines.append(slow_lbl + ":")
-            slow_index = gen.encode(index) if vop.args[1].tn.sc is SIGNED else index
-            helper = gen.module.setitem_helper(move=move_item)
-            slow_res = gen.operation(
-                f"call ptr {helper}(ptr {sequence}, ptr {slow_index}, ptr {item})"
-            )
-            slow_end = gen.current_block()
-            gen.line(f"br label %{done_lbl}")
+            with gen.cold_block():
+                slow_index = gen.encode(index) if vop.args[1].tn.sc is SIGNED else index
+                helper = gen.module.setitem_helper(move=move_item)
+                slow_res = gen.operation(
+                    f"call ptr {helper}(ptr {sequence}, ptr {slow_index}, ptr {item})"
+                )
+                slow_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
             gen.lines.append(done_lbl + ":")
             result = gen.operation(
                 f"phi ptr [@mule.none, %{write_end}], [{slow_res}, %{slow_end}]"
@@ -4212,12 +4216,11 @@ def protocol_setitem(gen, vop):
             fast_end = gen.current_block()
             gen.line(f"br i1 {hit}, label %{done_lbl}, label %{slow_lbl}, {HOT_BRANCH}")
             gen.lines.append(slow_lbl + ":")
-            gen.in_cold_block = True
-            slow = gen.sequence_call("bytearray_setitem", [sequence, index, item])
-            slow_end = gen.current_block()
-            gen.line(f"br label %{done_lbl}")
+            with gen.cold_block():
+                slow = gen.sequence_call("bytearray_setitem", [sequence, index, item])
+                slow_end = gen.current_block()
+                gen.line(f"br label %{done_lbl}")
             gen.lines.append(done_lbl + ":")
-            gen.in_cold_block = False
             result = gen.operation(
                 f"phi ptr [@mule.none, %{fast_end}], [{slow}, %{slow_end}]"
             )
