@@ -205,33 +205,10 @@ def _is_non_identity_list_setitem(
         or seq_local.leaf in component.lambda_.vars
     ):
         return False
-    for load_vop, _ in component.reads.get(seq_local, ()):
-        if load_vop.info is not vops.LOAD_LOCAL:
-            return False
-        loaded_tn = load_vop.results[0].tn
-        for use_vop, use_ref in component.reads.get(loaded_tn, ()):
-            u_name = use_vop.info.name
-            if (
-                u_name
-                in (
-                    "protocol-getitem",
-                    "fast-len",
-                    "primitive-_storage_length",
-                    "protocol-iterate",
-                )
-                and use_ref is use_vop.args[0]
-            ):
-                continue
-            if u_name == "protocol-setitem" and use_ref is use_vop.args[0]:
-                continue
-            if (
-                u_name == "resolve-method"
-                and use_vop.codegen_info is not None
-                and use_vop.codegen_info.exact_list_append
-            ):
-                continue
-            return False
-    return True
+    escape_facts = component.context.escape_facts
+    return escape_facts is not None and not escape_facts.variable_escapes(
+        seq_local.leaf
+    )
 
 
 def _select_float_representations(component):
