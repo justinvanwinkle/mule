@@ -80,17 +80,30 @@ def _assert_text_length_return(assembly):
 
 def _inline_length_values(optimized):
     # ValueBuffer is repr(C): the data pointer is at 24, the element count at
-    # 32. Each SSA dependency must remain in this straight-line fast block.
-    return list(
-        re.finditer(
-            r"(?P<address>%[\w.]+) = getelementptr[^\n]*i8, ptr (?P<value>%[\w.]+), i64 32\n\s*"
-            r"(?P<count>%[\w.]+) = load i64, ptr (?P=address)[^\n]*\n\s*"
-            r"(?P<shifted>%[\w.]+) = shl i64 (?P=count), 1\n\s*"
+    # 32. The loaded count may cross an inlined release or phi before tagging.
+    results = []
+    for match in re.finditer(
+        r"(?P<address>%[\w.]+) = getelementptr[^\n]*i8, ptr (?P<value>%[\w.]+), i64 32\n\s*"
+        r"(?P<count>%[\w.]+) = load i64, ptr (?P=address)[^\n]*",
+        optimized,
+    ):
+        value = match["value"]
+        count = match["count"]
+        tail = optimized[match.end() :]
+        counts = {count}
+        for phi in re.finditer(r"(?P<dest>%[\w.]+) = phi i64 (?P<body>[^\n]+)", tail):
+            if any(re.search(rf"\[ {re.escape(c)},", phi["body"]) for c in counts):
+                counts.add(phi["dest"])
+        count_pat = "|".join(re.escape(c) for c in counts)
+        tag = re.search(
+            rf"(?P<shifted>%[\w.]+) = shl(?: nsw)? i64 (?:{count_pat}), 1\n\s*"
             r"(?P<tagged>%[\w.]+) = or(?: disjoint)? i64 (?P=shifted), 1\n\s*"
             r"(?P<result>%[\w.]+) = inttoptr i64 (?P=tagged) to ptr",
-            optimized,
+            tail,
         )
-    )
+        if tag is not None:
+            results.append({"value": value, "result": tag["result"]})
+    return results
 
 
 def _assert_physical_length_algorithm(case, primitive, annotation):
@@ -152,7 +165,10 @@ def test_length_runtime_record_processing_uses_physical_length(
         else "mule.fast.storage.length"
     )
     body = case.function_ir(r"mule_fn_record_size\.body$", optimized=False)
-    assert f"@{symbol}(" in body
+    if annotation in ("list", "tuple"):
+        assert re.search(r"getelementptr i64, ptr %[\w.]+, i64 4\b", body)
+    else:
+        assert f"@{symbol}(" in body
     assert "@mule_fast_len(" not in body
     optimized = case.function_ir(r"mule_fn_record_size\.body$")
     if annotation in ("list", "tuple"):
@@ -233,13 +249,21 @@ def test_length_entry_context_specializes_without_changing_open_entry(
         if primitive == "_text_length"
         else "mule.fast.storage.length"
     )
-    assert f"@{symbol}(" in specialized
+    if annotation in ("list", "tuple"):
+        assert re.search(r"getelementptr i64, ptr %[\w.]+, i64 4\b", specialized)
+    else:
+        assert f"@{symbol}(" in specialized
     assert "@mule_fast_len(" not in specialized
     assert "@mule_fast_len(" in general
     if annotation in ("list", "tuple"):
         assert _inline_length_values(case.optimized_llvm)
     else:
-        assert re.search(rf"\bcall\s+ptr\s+@{symbol}\(", case.optimized_llvm)
+        runtime_symbol = (
+            "mule_text_length" if annotation == "str" else "mule_storage_length"
+        )
+        assert re.search(
+            rf"\b(?:tail )?call\s+ptr\s+@{runtime_symbol}\(", case.optimized_llvm
+        )
     _assert_physical_length_algorithm(case, primitive, annotation)
     case.compare("caféλ😀\n4\n")
 
@@ -264,7 +288,7 @@ process(input())
 """
     case = build_case(tmp_path, source)
     body = case.function_ir(r"mule_fn_process\.body$", optimized=False)
-    assert "@mule.fast.storage.length(" in body
+    assert re.search(r"getelementptr i64, ptr %[\w.]+, i64 4\b", body)
     assert "@mule_fast_len(" not in body
     assert _inline_length_values(case.function_ir(r"mule_fn_process\.body$"))
     case.compare("owned-λ😀\n")

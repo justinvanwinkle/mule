@@ -4303,9 +4303,7 @@ class _Walk:
         if self.lambda_.policy.safety >= 3:
             return UNKNOWN
         name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
-        if self.lambda_.kind is FunctionalKind.TOPLEVEL and (
-            self.lambda_.is_protocol or name != "list"
-        ):
+        if self.lambda_.kind is FunctionalKind.TOPLEVEL and self.lambda_.is_protocol:
             return UNKNOWN
         if name is None or name in self.rebound_globals or name in self.global_targets:
             return UNKNOWN
@@ -5200,6 +5198,7 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget]
     "range": ForeignCallTarget(return_type=IteratorType(INTEGER)),
     "ord": ForeignCallTarget(return_type=IntegerType(0, 0x10FFFF)),
     "chr": ForeignCallTarget(return_type=TEXT_TYPE),
+    "input": ForeignCallTarget(return_type=TEXT_TYPE),
 }
 
 
