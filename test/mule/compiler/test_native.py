@@ -8,7 +8,7 @@ import pytest
 from mule.compiler import build, emit_llvm
 
 
-def run_native(tmp_path, source):
+def run_native(tmp_path, source, stdin=None):
     source_path = tmp_path / "program.py"
     source_path.write_text(source)
     executable = tmp_path / "program"
@@ -23,6 +23,7 @@ def run_native(tmp_path, source):
         capture_output=True,
         text=True,
         timeout=10,
+        input=stdin,
     )
 
 

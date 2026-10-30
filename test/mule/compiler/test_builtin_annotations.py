@@ -508,6 +508,38 @@ def test_container_element_contracts_guard_elements_against_bad_inputs_and_alias
     assert "TypeError" in result.stderr
 
 
+# The unannotated producer leaves each element's type unknown, so reading an
+# element back checks it against the set or frozenset class identity.
+SET_ELEMENT_CONTRACT_PROGRAM = """\
+def produce(kind, value):
+    if kind == 'frozenset':
+        return frozenset([value, value + 1])
+    return {value, value + 2}
+
+def main(kind, value):
+    sets: list[set[int]] = [set(), produce('set', value)]
+    frozen: list[frozenset[int]] = [frozenset(), produce(kind, value)]
+    first = sets[1]
+    second = frozen[1]
+    print(type(first).__name__, sorted(first))
+    print(type(second).__name__, sorted(second))
+
+main(input(), int(input()))
+"""
+
+
+def test_set_and_frozenset_element_contracts_accept_matching_classes(tmp_path):
+    result = run_native(tmp_path, SET_ELEMENT_CONTRACT_PROGRAM, stdin="frozenset\n3\n")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "set [3, 5]\nfrozenset [3, 4]\n"
+
+
+def test_frozenset_element_contract_rejects_mutable_set(tmp_path):
+    result = run_native(tmp_path, SET_ELEMENT_CONTRACT_PROGRAM, stdin="set\n3\n")
+    assert result.returncode != 0
+    assert "TypeError: expected frozenset[int]" in result.stderr
+
+
 def test_safety_zero_retains_nested_element_types_without_contract_checks(tmp_path):
     source = """\
 from mule_types import int64, optimize
