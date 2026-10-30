@@ -9,14 +9,25 @@ __speed__ = 3
 __mule_builtin_implementation__ = True
 
 
-def _abc():
-    import _collections_abc
+_ABC = None
 
-    return _collections_abc
+
+def _abc():
+    global _ABC
+    if _ABC is None:
+        import _collections_abc
+
+        _ABC = _collections_abc
+    return _ABC
 
 
 def sequence(subject):
     """The subject's items for a sequence pattern without a star capture, or None."""
+    cls = type(subject)
+    if cls is list or cls is tuple:
+        return subject
+    if subject is None or cls in _NON_SEQUENCE_TYPES:
+        return None
     if isinstance(subject, (list, tuple)):
         return subject
     if isinstance(subject, (str, bytes, bytearray)):
@@ -28,6 +39,11 @@ def sequence(subject):
 
 def sequence_list(subject):
     """The subject's items as a list for a sequence pattern with a star capture, or None."""
+    cls = type(subject)
+    if cls is list or cls is tuple:
+        return list(subject)
+    if subject is None or cls in _NON_SEQUENCE_TYPES:
+        return None
     if isinstance(subject, (list, tuple)):
         return list(subject)
     if isinstance(subject, (str, bytes, bytearray)):
@@ -37,11 +53,77 @@ def sequence_list(subject):
     return None
 
 
+def sequence_slice(values, before, after):
+    cls = type(values)
+    if cls is list:
+        stop = len(values) - after if after else len(values)
+        result = []
+        index = before
+        while index < stop:
+            result.append(values[index])
+            index += 1
+        return result
+    if cls is tuple:
+        stop = len(values) - after if after else len(values)
+        result = []
+        index = before
+        while index < stop:
+            result.append(values[index])
+            index += 1
+        return result
+    stop = len(values) - after if after else len(values)
+    result = []
+    index = before
+    while index < stop:
+        result.append(values[index])
+        index += 1
+    return result
+
+
+_NON_SEQUENCE_TYPES = (
+    dict,
+    int,
+    str,
+    float,
+    bool,
+    bytes,
+    bytearray,
+    set,
+    frozenset,
+)
+
+_NON_MAPPING_TYPES = (
+    list,
+    tuple,
+    int,
+    str,
+    float,
+    bool,
+    bytes,
+    bytearray,
+    set,
+    frozenset,
+)
+
+
 def mapping(subject):
-    return isinstance(subject, dict) or isinstance(subject, _abc().Mapping)
+    cls = type(subject)
+    if cls is dict:
+        return True
+    if subject is None or cls in _NON_MAPPING_TYPES:
+        return False
+    if isinstance(subject, dict):
+        return True
+    return isinstance(subject, _abc().Mapping)
 
 
 _MISSING = object()
+
+
+def mapping_get(subject, key):
+    if type(subject) is dict:
+        return subject.get(key, _MISSING)
+    return subject.get(key, _MISSING)
 
 
 def mapping_values(subject, keys):

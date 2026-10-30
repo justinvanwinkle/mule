@@ -633,10 +633,7 @@ class _SpecializesBody(NodeVisitor):
                     elif node.fun_info is RESOLVE_METHOD:
                         if (
                             cand_recv.is_exact_list
-                            or cand_recv.fits_dict()
-                            or cand_recv.fits_set()
                             or cand_recv.fits_text(TEXT_TYPE)
-                            or cand_recv.fits_bytes(BYTES_TYPE)
                             or cand_recv.fits_bytearray()
                             or cand_recv.is_byte_storage
                         ):
@@ -665,8 +662,6 @@ class _SpecializesBody(NodeVisitor):
                         if (
                             cand_recv.is_exact_list
                             or cand_recv.is_exact_tuple
-                            or cand_recv.fits_dict()
-                            or cand_recv.fits_set()
                             or cand_recv.fits_text(TEXT_TYPE)
                             or cand_recv.fits_bytes(BYTES_TYPE)
                             or cand_recv.fits_bytearray()
@@ -4847,6 +4842,24 @@ def analyze(
             is_observed_id = identifier == "observed" or identifier.startswith(
                 "observed."
             )
+            if (
+                identifier == "fixnum"
+                and lambda_.entry_parameter_types is None
+                and not any(
+                    (param.is_fixnum and not gen_p.is_fixnum)
+                    or (
+                        param.has_float_specialization()
+                        and not gen_p.has_float_specialization()
+                    )
+                    or getattr(param, "fixed_slots", ())
+                    != getattr(gen_p, "fixed_slots", ())
+                    for param, gen_p in zip(
+                        parameters[key], facts.parameters, strict=True
+                    )
+                )
+                and sum(len(graph.block_nodes[b]) for b in graph.blocks) > 80
+            ):
+                continue
             if (
                 identifier == "fixnum"
                 and lambda_.entry_parameter_types is None

@@ -80,7 +80,13 @@ def bind_signatures(lambdas) -> None:
     """Record the signature ``_arguments.bind`` binds each function's calls
     with. A function with one takes keyword calls."""
     for lambda_ in lambdas:
-        if lambda_.signature.kinds:
+        if (
+            any(
+                kind is not ast.ParameterKind.POSITIONAL_ONLY
+                for kind in lambda_.signature.kinds
+            )
+            or lambda_.signature.default_parameters
+        ):
             lambda_.binding = signature_literal(lambda_)
 
 

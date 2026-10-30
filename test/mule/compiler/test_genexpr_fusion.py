@@ -14,6 +14,19 @@ def ordered(n):
     return sorted((value for value in (item for item in range(n))), reverse=True)
 """
 
+NESTED_QUANTIFIER_ZIP_MAP_SOURCE = """
+def check_rows(rows: list[list[int]]) -> int:
+    total = 0
+    for row in rows:
+        if any(
+            all(a < b for a, b in zip(row, map(lambda x: x + offset, row)))
+            for offset in (1, -1)
+        ):
+            total += sum(x * 2 for x in filter(lambda v: v > 0, row))
+    return total
+print(check_rows([[1, 2, 3], [-1, 0, 4]]))
+"""
+
 NESTED_SOURCE_SCOPE_SOURCE = """
 def scoped():
     value = 10
@@ -473,3 +486,17 @@ def test_fused_genexpr_creation_and_argument_errors_precede_body_evaluation(
 ):
     source = CREATION_ARGUMENT_ORDER_TEMPLATE.replace("__EXPRESSION__", expression)
     compare(tmp_path, source)
+
+
+def test_nested_quantifier_zip_map_filter_fuses_without_generator_allocation(
+    tmp_path,
+):
+    compilation = compile_toplevel(NESTED_QUANTIFIER_ZIP_MAP_SOURCE)
+    ir1_phases(compilation)
+    check_ir1_consistency(compilation.components)
+    assert not _has_genexpr_lambda(compilation)
+    assert not any(
+        list(known_calls(function, "make_generator"))
+        for function in compilation.lambdas
+    )
+    compare(tmp_path, NESTED_QUANTIFIER_ZIP_MAP_SOURCE)

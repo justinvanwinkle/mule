@@ -2801,6 +2801,10 @@ def physical_field_write_guarded(gen, vop):
 def _read_attribute(gen, receiver, name, result_tn=None, *, slot_index=None):
     """An owned field value, with guarded physical access and dynamic lookup."""
     cache = gen.module.attribute_cache()
+    if slot_index is None:
+        return gen.operation(
+            f"call ptr @mule.attr.get(ptr {receiver}, ptr {gen.module.text(name)}, ptr {cache})"
+        )
     labels = _AttributeSite(gen, receiver, cache, ATTR_FIELD, slot_index=slot_index)
     slot = _attribute_slot(gen, receiver, labels.encoded, slot_index)
     field = gen.operation(f"load ptr, ptr {slot}")
@@ -2920,6 +2924,11 @@ def _write_attribute(
 ):
     """Assign a borrowed or moved value, completing old-value destruction before return."""
     cache = gen.module.attribute_cache()
+    if slot_index is None:
+        helper = "@mule.attr.set.move" if move_value else "@mule.attr.set"
+        return gen.operation(
+            f"call i32 {helper}(ptr {receiver}, ptr {gen.module.text(name)}, ptr {value}, ptr {cache})"
+        )
     site = _AttributeSite(gen, receiver, cache, ATTR_FIELD, slot_index=slot_index)
     slot = _attribute_slot(gen, receiver, site.encoded, slot_index)
     old = gen.operation(f"load ptr, ptr {slot}")
@@ -2930,13 +2939,14 @@ def _write_attribute(
     stored = gen.current_block()
     gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.slow}:")
-    slow = gen.operation(
-        f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
-        f"ptr {value}, ptr {cache})"
-    )
-    if move_value:
-        gen.release(value)
-    gen.line(f"br label %{site.join}")
+    with gen.cold_block():
+        slow = gen.operation(
+            f"call i32 @mule_set_attr_cached(ptr {receiver}, ptr {gen.module.text(name)}, "
+            f"ptr {value}, ptr {cache})"
+        )
+        if move_value:
+            gen.release(value)
+        gen.line(f"br label %{site.join}")
     gen.lines.append(f"{site.join}:")
     return gen.operation(f"phi i32 [0, %{stored}], [{slow}, %{site.slow}]")
 
@@ -2945,30 +2955,10 @@ def _write_attribute(
 def value_cell_ref(gen, vop):
     """SBCL's value-cell-ref, guarded for Python's mutable class attributes."""
     cell = gen.load(vop.args[0])
-    bound = _read_attribute(gen, cell, "bound")
-    gen.check_pointer(bound)
-    truth = gen.operation(f"call i32 @mule.fast.truth(ptr {bound})")
-    gen.release(bound)
-    gen.check_status(truth)
-    present = gen.operation(f"icmp ne i32 {truth}, 0")
-    loaded = gen.fresh("cell.bound")[1:]
-    missing = gen.fresh("cell.unbound")[1:]
-    join = gen.fresh("cell.join")[1:]
-    gen.line(f"br i1 {present}, label %{loaded}, label %{missing}, {HOT_BRANCH}")
-    gen.lines.append(loaded + ":")
-    value = _read_attribute(gen, cell, "value")
-    value_block = gen.current_block()
-    gen.line(f"br label %{join}")
-    gen.lines.append(missing + ":")
-    with gen.cold_block():
-        optional = "@mule.true" if vop.codegen_info else "@mule.false"
-        absent = gen.sequence_call("cell_unbound", [optional])
-        absent_block = gen.current_block()
-        gen.line(f"br label %{join}")
-    gen.lines.append(join + ":")
+    helper = gen.module.cell_ref_helper(optional=bool(vop.codegen_info))
     gen.pointer_result(
         vop.results[0],
-        f"phi ptr [{value}, %{value_block}], [{absent}, %{absent_block}]",
+        f"call ptr {helper}(ptr {cell})",
     )
 
 
@@ -2976,20 +2966,17 @@ def value_cell_ref(gen, vop):
 def value_cell_set(gen, vop):
     cell = gen.load(vop.args[0])
     value = gen.take(vop.args[1])
-    status = _write_attribute(gen, cell, "value", value)
+    helper = gen.module.cell_set_helper()
+    status = gen.operation(f"call i32 {helper}(ptr {cell}, ptr {value})")
     gen.release(value)
-    gen.check_status(status)
-    # Recheck the attribute epoch after old-value destruction: it can run Python.
-    status = _write_attribute(gen, cell, "bound", "@mule.true")
     gen.check_status(status)
 
 
 @define_vop("value-cell-clear", args=(OBJECT,), arg_escapes=(False,))
 def value_cell_clear(gen, vop):
     cell = gen.load(vop.args[0])
-    status = _write_attribute(gen, cell, "value", "@mule.none")
-    gen.check_status(status)
-    status = _write_attribute(gen, cell, "bound", "@mule.false")
+    helper = gen.module.cell_clear_helper()
+    status = gen.operation(f"call i32 {helper}(ptr {cell})")
     gen.check_status(status)
 
 
@@ -3030,29 +3017,12 @@ def resolve_method(gen, vop):
         gen.publish(bound, receiver)
         return
     cache = gen.module.attribute_cache()
-    site = _AttributeSite(gen, receiver, cache, ATTR_METHOD)
-    # A hit binds the receiver without allocating: the cached function is
-    # borrowed from the class and ``bound`` takes its own receiver reference,
-    # as the runtime's resolution does; the operand itself may be borrowed.
-    cached_address = gen.operation(f"getelementptr i64, ptr {cache}, i64 3")
-    cached = gen.operation(f"load ptr, ptr {cached_address}")
-    gen.line(f"call ptr @mule.heap.retain(ptr {cached})")
-    gen.line(f"call ptr @mule.heap.retain(ptr {receiver})")
-    gen.line(f"br label %{site.join}")
-    hit = gen.current_block()
-    gen.lines.append(f"{site.slow}:")
     out = gen.out_pointer()
-    resolved = gen.operation(
-        f"call ptr @mule_resolve_method(ptr {receiver}, ptr {gen.module.text(info.name)}, "
+    value = gen.operation(
+        f"call ptr @mule.attr.method(ptr {receiver}, ptr {gen.module.text(info.name)}, "
         f"ptr {cache}, ptr {out})"
     )
-    resolved_bound = gen.operation(f"load ptr, ptr {out}")
-    gen.line(f"br label %{site.join}")
-    gen.lines.append(f"{site.join}:")
-    value = gen.operation(f"phi ptr [{cached}, %{hit}], [{resolved}, %{site.slow}]")
-    receiver_bound = gen.operation(
-        f"phi ptr [{receiver}, %{hit}], [{resolved_bound}, %{site.slow}]"
-    )
+    receiver_bound = gen.operation(f"load ptr, ptr {out}")
     gen.publish(method, value)
     gen.publish(bound, receiver_bound)
     gen.release(receiver)

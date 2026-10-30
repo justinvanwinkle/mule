@@ -1912,6 +1912,97 @@ class ModuleGenerator:
         )
         return symbol
 
+    def cell_ref_helper(self, *, optional: bool = False) -> str:
+        key = "$cell.ref.optional" if optional else "$cell.ref"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = "@mule.cell.ref.optional" if optional else "@mule.cell.ref"
+        self.protocol_helpers[key] = symbol
+        bound_cache = self.attribute_cache()
+        value_cache = self.attribute_cache()
+        bound_name = self.text("bound")
+        value_name = self.text("value")
+        unbound = self.protocol_helper("cell_unbound", 1)
+        optional_lit = "@mule.true" if optional else "@mule.false"
+        self.auxiliary.append(
+            f"define internal ptr {symbol}(ptr %cell) {{\n"
+            "entry:\n"
+            f"  %bound = call ptr @mule.attr.get(ptr %cell, ptr {bound_name}, ptr {bound_cache})\n"
+            "  %bound.null = icmp eq ptr %bound, null\n"
+            f"  br i1 %bound.null, label %fail, label %bound.ok, {vops.COLD_BRANCH}\n"
+            "bound.ok:\n"
+            "  %truth = call i32 @mule.fast.truth(ptr %bound)\n"
+            "  call void @mule.fast.release(ptr %bound)\n"
+            "  %truth.err = icmp slt i32 %truth, 0\n"
+            f"  br i1 %truth.err, label %fail, label %truth.ok, {vops.COLD_BRANCH}\n"
+            "truth.ok:\n"
+            "  %present = icmp ne i32 %truth, 0\n"
+            f"  br i1 %present, label %cell.bound, label %cell.unbound, {vops.HOT_BRANCH}\n"
+            "cell.bound:\n"
+            f"  %val = call ptr @mule.attr.get(ptr %cell, ptr {value_name}, ptr {value_cache})\n"
+            "  ret ptr %val\n"
+            "cell.unbound:\n"
+            f"  %absent = call ptr {unbound}(ptr {optional_lit}) cold noinline\n"
+            "  ret ptr %absent\n"
+            "fail:\n"
+            "  ret ptr null\n"
+            "}"
+        )
+        return symbol
+
+    def cell_set_helper(self) -> str:
+        key = "$cell.set"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = "@mule.cell.set"
+        self.protocol_helpers[key] = symbol
+        value_cache = self.attribute_cache()
+        bound_cache = self.attribute_cache()
+        value_name = self.text("value")
+        bound_name = self.text("bound")
+        self.auxiliary.append(
+            f"define internal i32 {symbol}(ptr %cell, ptr %value) {{\n"
+            "entry:\n"
+            f"  %st1 = call i32 @mule.attr.set(ptr %cell, ptr {value_name}, ptr %value, ptr {value_cache})\n"
+            "  %err1 = icmp slt i32 %st1, 0\n"
+            f"  br i1 %err1, label %fail, label %next, {vops.COLD_BRANCH}\n"
+            "next:\n"
+            f"  %st2 = call i32 @mule.attr.set(ptr %cell, ptr {bound_name}, ptr @mule.true, ptr {bound_cache})\n"
+            "  ret i32 %st2\n"
+            "fail:\n"
+            "  ret i32 -1\n"
+            "}"
+        )
+        return symbol
+
+    def cell_clear_helper(self) -> str:
+        key = "$cell.clear"
+        existing = self.protocol_helpers.get(key)
+        if existing is not None:
+            return existing
+        symbol = "@mule.cell.clear"
+        self.protocol_helpers[key] = symbol
+        value_cache = self.attribute_cache()
+        bound_cache = self.attribute_cache()
+        value_name = self.text("value")
+        bound_name = self.text("bound")
+        self.auxiliary.append(
+            f"define internal i32 {symbol}(ptr %cell) {{\n"
+            "entry:\n"
+            f"  %st1 = call i32 @mule.attr.set(ptr %cell, ptr {value_name}, ptr @mule.none, ptr {value_cache})\n"
+            "  %err1 = icmp slt i32 %st1, 0\n"
+            f"  br i1 %err1, label %fail, label %next, {vops.COLD_BRANCH}\n"
+            "next:\n"
+            f"  %st2 = call i32 @mule.attr.set(ptr %cell, ptr {bound_name}, ptr @mule.false, ptr {bound_cache})\n"
+            "  ret i32 %st2\n"
+            "fail:\n"
+            "  ret i32 -1\n"
+            "}"
+        )
+        return symbol
+
     def unpack_slots_helper(self, arity: int) -> str:
         key = f"$unpack.slots.{arity}"
         existing = self.protocol_helpers.get(key)
@@ -5092,10 +5183,44 @@ class FunctionGenerator:
             code = self.module.code_descriptor(self.lambda_)
         else:
             code = ""
+        # Group landings that share (base, record_traceback, explicit_raise,
+        # len(owned), release_kinds) when all owned items are SSA values of the
+        # same release category (1 or 2 values). Merging them with PHI nodes
+        # collapses dozens of per-temporary release.<N> blocks into one block.
+        merged_groups: dict[
+            tuple[str, bool, bool, tuple[str, ...]],
+            list[tuple[tuple[str, tuple[str, ...], bool, bool], str]],
+        ] = {}
+        unmerged_landings: list[
+            tuple[tuple[str, tuple[str, ...], bool, bool], str]
+        ] = []
+
+        def _release_kind(val: str) -> str | None:
+            if val.startswith("@unpack.slot.") or not self.owns_reference(val):
+                return None
+            if val in self.private_values:
+                return None
+            return "heap" if val in self.heap_values else "fast"
+
+        for key, label in self.landings.items():
+            base, owned, record_traceback, explicit_raise = key
+            if record_traceback and 1 <= len(owned) <= 3:
+                kinds = tuple(_release_kind(v) for v in owned)
+                if all(k is not None for k in kinds):
+                    merged_groups.setdefault(
+                        (base, record_traceback, explicit_raise, kinds), []
+                    ).append((key, label))
+                    continue
+            unmerged_landings.append((key, label))
+
+        for group_entries in merged_groups.values():
+            if len(group_entries) == 1:
+                unmerged_landings.append(group_entries[0])
+
         owned_sets = list(
             dict.fromkeys(
                 (base, owned)
-                for base, owned, _record, _explicit in self.landings
+                for (base, owned, _record, _explicit), _label in unmerged_landings
                 if owned
             )
         )
@@ -5134,7 +5259,7 @@ class FunctionGenerator:
             owned,
             record_traceback,
             explicit_raise,
-        ), label in self.landings.items():
+        ), label in unmerged_landings:
             self.lines.append(label + ":")
             if record_traceback:
                 sites = self.landing_sites[label]
@@ -5156,6 +5281,78 @@ class FunctionGenerator:
                 self.line(f"br label %{chain_labels[base, owned]}")
             else:
                 emit_release_step(base, owned)
+
+        for (
+            base,
+            record_traceback,
+            explicit_raise,
+            kinds,
+        ), group_entries in merged_groups.items():
+            if len(group_entries) < 2:
+                continue
+            canonical_label = group_entries[0][1]
+            alias_map = {
+                old_label: canonical_label for _key, old_label in group_entries[1:]
+            }
+            if alias_map:
+                for idx, line_str in enumerate(self.lines):
+                    if "label %release." in line_str:
+                        for old_label, new_label in alias_map.items():
+                            target_tok = f"label %{old_label}"
+                            if target_tok in line_str:
+                                line_str = line_str.replace(
+                                    target_tok + ",", f"label %{new_label},"
+                                )
+                                if line_str.endswith(target_tok):
+                                    line_str = (
+                                        line_str[: -len(target_tok)]
+                                        + f"label %{new_label}"
+                                    )
+                        self.lines[idx] = line_str
+            self.lines.append(canonical_label + ":")
+            if record_traceback:
+                all_sites: list[tuple[str, tuple[int, str], tuple[str, ...]]] = []
+                for (_b, owned, _rt, _er), old_label in group_entries:
+                    for block, site in self.landing_sites[old_label].items():
+                        all_sites.append((block, site, owned))
+                incoming = ", ".join(
+                    f"[{site[0]}, %{block}]" for block, site, _owned in all_sites
+                )
+                line = f"%failed.line.{canonical_label}"
+                self.line(f"{line} = phi i32 {incoming}")
+                incoming_markers = ", ".join(
+                    f"[{site[1]}, %{block}]" for block, site, _owned in all_sites
+                )
+                marker = f"%failed.marker.{canonical_label}"
+                self.line(f"{marker} = phi ptr {incoming_markers}")
+                for pos, kind in enumerate(kinds):
+                    phi_val = f"%failed.val.{pos}.{canonical_label}"
+                    incoming_vals = ", ".join(
+                        f"[{owned[pos]}, %{block}]" for block, _site, owned in all_sites
+                    )
+                    self.line(f"{phi_val} = phi ptr {incoming_vals}")
+                self.line(
+                    f"call void @mule_traceback_here(ptr {code}, i32 {line}, "
+                    f"ptr %globals, ptr %activation, i32 {int(explicit_raise)}, ptr {marker})"
+                )
+                for pos, kind in enumerate(kinds):
+                    phi_val = f"%failed.val.{pos}.{canonical_label}"
+                    rel_fn = (
+                        "@mule.heap.release" if kind == "heap" else "@mule.fast.release"
+                    )
+                    self.line(f"call void {rel_fn}(ptr {phi_val})")
+                self.line(f"br label %{base}")
+            else:
+                for (_b, owned, _rt, _er), old_label in group_entries:
+                    self.lines.append(
+                        f"; merged landing {old_label}"
+                        if old_label == canonical_label
+                        else f"{old_label}:"
+                    )
+                    for value in owned:
+                        self.release(value)
+                    self.line(f"br label %{base}")
+
         for (base, prefix), label in chain_labels.items():
             self.lines.append(label + ":")
             emit_release_step(base, prefix)
@@ -6304,10 +6501,7 @@ class FunctionGenerator:
         location = "compiler-generated"
         if source is not None and source.span is not None:
             start, end = source.span.start, source.span.end
-            location = (
-                f"{self.module.code(self.lambda_).filename}:"
-                f"{start.line}:{start.column}-{end.line}:{end.column}"
-            )
+            location = f"{start.line}:{start.column}-{end.line}:{end.column}"
         operation = None if node is None else node.accept(_PROVENANCE_OPERATION)
         origin = f"source: {location}"
         if operation is not None:
@@ -6601,7 +6795,18 @@ class FunctionGenerator:
             for vop in block.vops:
                 self.vop = vop
                 origin = self.operation_comment(vop)
-                if origin != previous_origin:
+                if origin != previous_origin and vop.info.name not in (
+                    "load-local",
+                    "move",
+                    "jump",
+                    "branch",
+                    "constant",
+                    "discard",
+                    "move-argument",
+                    "insert-safepoint",
+                    "return-value",
+                    "unbind-local",
+                ):
                     self.line(origin)
                     previous_origin = origin
                 self.unpacked_remaining_slots = (

@@ -12,7 +12,9 @@ It does not replace repository instructions or authorize architectural departure
 
 ## Start with the requested program and outcome
 
-Read `AGENTS.md`, `spec/index.md`, and the relevant implemented contract.
+Read `AGENTS.md`, `spec/index.md`, and the relevant implemented contract when
+starting an investigation or design change; for direct questions or settled
+subtasks, read only the specific lines needed.
 Use the active worktree's files, not an assumed checkout or an old report.
 Distinguish a runtime slowdown, cold build delay, semantic failure, and requested
 code-generation comparison. Do not replace one with another.
@@ -21,9 +23,10 @@ Preserve the original source, input, output, settings, and objective.
 Do not substitute numeric kernels, annotations, source rewrites, or a later
 compatibility blocker for ordinary-program efficiency.
 
-Read [the procedure](references/procedure.md) before an investigation.
-Use [the stage trace](references/stage-trace.md) for concrete inspection APIs.
-Consult [the cases](references/case-studies.md) for relevant failure patterns.
+Read [the procedure](references/procedure.md) before a full performance or
+compiler investigation. Use [the stage trace](references/stage-trace.md) and
+[the cases](references/case-studies.md) on demand when needed for concrete
+inspection APIs or failure patterns.
 Paths beginning `mule/`, `spec/`, `test/`, or `perf/` refer to the repository root.
 
 ## Use references to answer concrete questions
