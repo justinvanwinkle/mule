@@ -669,14 +669,15 @@ suite failure or performance measurement.
      - `IntegerType.narrow_equality` narrows both endpoints when an interval is
        compared with `!=` against a singleton endpoint (`[0, n]` with `!= n` ->
        `[0, n - 1]`).
-     - `_Propagation` in `constraint.py` maintains a relational difference-bound
-       domain (`x - y <= c`, following `equality-constraints.lisp`) across linear
-       updates (`x = x + d`, `x = y + d`), initialization (`i = c` relative to
-       bounded integer locals), and ordered comparisons (`<`, `<=`, `>`, `>=`,
-       `==`, `!=` on `u + c0` vs `v + c1`), propagating relational bounds into
-       variable intervals, `u - v` subtractions (`n - i >= 1` inside
-       `while i < n:`), comparison folding, and loop-exit equality (`i == n`
-       after `while i < n: i += 1`).
+     - `_Propagation` in `constraint.py` maintains a sparse relational
+       difference-bound domain (`x - y <= c`, following
+       `equality-constraints.lisp`) across linear updates (`x = x + d`,
+       `x = y + d`) and ordered comparisons (`<`, `<=`, `>`, `>=`, `==`, `!=`
+       on `u + c0` vs `v + c1`), consulting incoming interval bounds on demand
+       only for active relational pairs at control-flow joins (`_state_diff_bound`)
+       and propagating relational bounds into variable intervals, `u - v`
+       subtractions (`n - i >= 1` inside `while i < n:`), comparison folding,
+       and loop-exit equality (`i == n` after `while i < n: i += 1`).
      - Sequence indexing and storage primitives (`%getitem`, `%setitem`,
        `_storage_read`, `_storage_write`, `_text_codepoint`, `_text_character`,
        `_text_slice`, `_native_read_byte`) call `visitor.prove_argument_type`
