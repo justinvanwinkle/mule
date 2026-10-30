@@ -519,7 +519,13 @@ class Converter:
         if identity is None:
             if self.prefix == "mule_sequences_" and node.name == "bytearray":
                 identity = "mule_sequences_bytearray"
-            elif self.namespace == "$mule.dict" and node.name in ("set", "frozenset"):
+            elif (
+                self.primitives
+                and self.namespace == "_dict"
+                and node.name in ("set", "frozenset")
+            ):
+                # The compiled `_dict` protocol module defines the builtin
+                # set classes; SetType contracts guard on these identities.
                 identity = f"mule_dict_{node.name}"
             else:
                 identity = f"{self.prefix}mule_cls_{self.class_definitions}"
