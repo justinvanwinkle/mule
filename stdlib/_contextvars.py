@@ -4,6 +4,11 @@ Mule runs one thread per process for now, so the current context is a
 module global; ``Context.run`` swaps it for the duration of the call.
 """
 
+from mule_types import final
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
 
 class _Missing:
     def __repr__(self):
@@ -140,5 +145,6 @@ class Context:
 _current = Context()
 
 
+@final
 def copy_context():
     return _current.copy()

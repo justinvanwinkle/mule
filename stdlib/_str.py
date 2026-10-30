@@ -37,6 +37,7 @@ from _unicode_data import (
     title_full,
     upper_full,
 )
+from mule_types import final as _final, optimize
 
 __speed__ = 3
 __mule_builtin_implementation__ = True
@@ -47,16 +48,21 @@ __mule_builtin_implementation__ = True
 _HEX_DIGITS = "0123456789abcdef"
 
 
+@_final
+@optimize(safety=0)
 def _index(value):
     return _index_integer(value)
 
 
+@_final
 def _require_text(value, message):
     if not _text_storage(value):
         kind = "None" if value is None else _type_name(value)
         raise TypeError(f"{message}, not {kind}")
 
 
+@_final
+@optimize(safety=0)
 def _start_bound(length, start):
     """Clamp optional ``start`` like slice indices, as CPython's
     ``ADJUST_INDICES`` does; ``start`` may still exceed ``length``."""
@@ -77,6 +83,8 @@ def _start_bound(length, start):
     return start
 
 
+@_final
+@optimize(safety=0)
 def _end_bound(length, end):
     """Clamp optional ``end`` like slice indices."""
     if end is None:
@@ -96,6 +104,8 @@ def _end_bound(length, end):
     return end
 
 
+@_final
+@optimize(safety=0)
 def _matches_at(text, sub, position, size):
     index = 0
     while index < size:

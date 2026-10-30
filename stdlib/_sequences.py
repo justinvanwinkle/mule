@@ -78,6 +78,7 @@ from _mule_native import math_fabs
 from _mule_native import set_instance_field
 from _mule_native import type_of
 from _slice import is_slice, positions, slice
+from mule_types import final, optimize as _optimize
 
 __speed__ = 3
 __mule_builtin_implementation__ = True
@@ -697,6 +698,8 @@ def abs(value, /):
     return method()
 
 
+@final
+@_optimize(safety=0)
 def integer_index(value):
     if _type_of(value) is int:
         return _integer_storage(value)

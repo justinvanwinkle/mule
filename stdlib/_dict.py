@@ -28,6 +28,7 @@ from _mule_native import is_class
 from _mule_native import is_subclass
 from _mule_native import math_number_kind
 from _mule_native import storage_hash
+from mule_types import final, optimize
 
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
@@ -58,11 +59,15 @@ _DELETED = _Deleted()
 _MISSING = _Missing()
 
 
+@final
+@optimize(safety=0)
 def _signed(value):
     value = _integer_storage(value) & _WORD
     return value - (1 << 64) if value >= 1 << 63 else value
 
 
+@final
+@optimize(safety=0)
 def _lanes_to_signed_hash(acc_hi, acc_lo):
     acc_hi = _integer_storage(acc_hi) & 0xFFFFFFFF
     acc_lo = _integer_storage(acc_lo) & 0xFFFFFFFF
@@ -73,6 +78,8 @@ def _lanes_to_signed_hash(acc_hi, acc_lo):
     return _signed((acc_hi << 32) | acc_lo)
 
 
+@final
+@optimize(safety=0)
 def _lanes_to_table_hash(acc_hi, acc_lo):
     acc_hi = _integer_storage(acc_hi) & 0xFFFFFFFF
     acc_lo = _integer_storage(acc_lo) & 0xFFFFFFFF
@@ -86,6 +93,7 @@ def _lanes_to_table_hash(acc_hi, acc_lo):
     return folded ^ 0x3FFFFFFFFFFFFFFE
 
 
+@final
 def _tuple_hash(value):
     count = _storage_length(value)
     acc_hi = 0x27D4EB2F

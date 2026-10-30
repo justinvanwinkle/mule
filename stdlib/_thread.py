@@ -7,47 +7,57 @@ rules, and the main thread's identity is constant. Starting another thread
 raises RuntimeError, because generated programs do not create OS threads yet.
 """
 
+__speed__ = 3
 __mule_builtin_implementation__ = True
 
 from _mule_native import thread_ident
 from _mule_native import thread_native_id
 from _mule_native import main_thread_ident
+from mule_types import final
 
 error = RuntimeError
 TIMEOUT_MAX = 9223372036.0
 _MAIN_THREAD = main_thread_ident()
 
 
+@final
 def get_ident():
     return thread_ident()
 
 
+@final
 def get_native_id():
     return thread_native_id()
 
 
+@final
 def _get_main_thread_ident():
     return _MAIN_THREAD
 
 
+@final
 def _is_main_interpreter():
     return True
 
 
+@final
 def daemon_threads_allowed():
     return True
 
 
+@final
 def _count():
     return 0
 
 
+@final
 def stack_size(size=0, /):
     if size != 0 and size < 32768:
         raise ValueError("size not valid: 32768 bytes is the minimum")
     return 0
 
 
+@final
 def _would_block(blocking, timeout):
     if not blocking and timeout != -1:
         raise ValueError("can't specify a timeout for a non-blocking call")
@@ -99,6 +109,7 @@ class LockType:
 lock = LockType
 
 
+@final
 def allocate_lock():
     return LockType()
 
@@ -172,10 +183,12 @@ class _ThreadHandle:
         pass
 
 
+@final
 def _make_thread_handle(ident):
     return _ThreadHandle()
 
 
+@final
 def start_new_thread(function, args, kwargs=None):
     raise RuntimeError("starting threads is not supported yet")
 
@@ -183,18 +196,22 @@ def start_new_thread(function, args, kwargs=None):
 start_new = start_new_thread
 
 
+@final
 def start_joinable_thread(function, handle=None, daemon=True):
     raise RuntimeError("starting threads is not supported yet")
 
 
+@final
 def _shutdown():
     pass
 
 
+@final
 def interrupt_main(signum=2, /):
     raise RuntimeError("interrupt_main is not supported yet")
 
 
+@final
 def exit():
     raise SystemExit
 

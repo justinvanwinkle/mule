@@ -1,5 +1,7 @@
 """Compiled print conversion, stream selection and ending rules."""
 
+from mule_types import final
+
 __speed__ = 3
 __mule_builtin_implementation__ = True
 
@@ -9,6 +11,7 @@ __mule_builtin_implementation__ = True
 import sys
 
 
+@final
 def print(*objects, sep=" ", end="\n", file=None, flush=False):
     flush = True if flush else False
     if file is None:
