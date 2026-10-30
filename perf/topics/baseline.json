@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "description": "Stored CPython 3.15t baselines for perf/topics benchmarks so Mule runs do not need to re-run CPython.",
+  "topics": {
+    "string/operations": {
+      "path": "perf/topics/string/operations.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(37332600, 621350, 14170650, 348300, 7872000, 53702400, 407232000, 5107200, 593325, 42525, 10301175, 117450)",
+      "quick_cpython_s": {
+        "http_inspect": 1.062846,
+        "log_scan": 1.035944,
+        "token_classify": 1.226863
+      },
+      "default_cpython_s": {
+        "http_inspect": 10.62846,
+        "log_scan": 10.35944,
+        "token_classify": 12.26863
+      }
+    },
+    "string/allocations": {
+      "path": "perf/topics/string/allocations.py",
+      "default_size": 1500,
+      "quick_size": 150,
+      "quick_result": "(337207500, 3508750, 582506400, 5040000, 77717000, 3822600)",
+      "quick_cpython_s": {
+        "html_render": 0.991171,
+        "sql_builder": 0.986285,
+        "url_rewrite": 0.993428
+      },
+      "default_cpython_s": {
+        "html_render": 9.91171,
+        "sql_builder": 9.86285,
+        "url_rewrite": 9.93428
+      }
+    },
+    "string/codecs_and_unicode": {
+      "path": "perf/topics/string/codecs_and_unicode.py",
+      "default_size": 1200,
+      "quick_size": 120,
+      "quick_result": "(229172000, 4140000, 218822000, 51878400, 10523100, 43862700, 4208760, 1670220, 537822180)",
+      "quick_cpython_s": {
+        "ascii_codec": 1.006527,
+        "utf8_codec": 1.023869,
+        "mixed_unicode": 1.003821
+      },
+      "default_cpython_s": {
+        "ascii_codec": 10.06527,
+        "utf8_codec": 10.23869,
+        "mixed_unicode": 10.03821
+      }
+    },
+    "string/text_analytics": {
+      "path": "perf/topics/string/text_analytics.py",
+      "default_size": 1000,
+      "quick_size": 100,
+      "quick_result": "(2095275, 5410925, 13086125, 74, 650000, 1499088500, 108777500)",
+      "quick_cpython_s": {
+        "doc_indexing": 0.981927,
+        "config_parser": 0.985013
+      },
+      "default_cpython_s": {
+        "doc_indexing": 9.81927,
+        "config_parser": 9.85013
+      }
+    },
+    "string/large_text_and_templates": {
+      "path": "perf/topics/string/large_text_and_templates.py",
+      "default_size": 1000,
+      "quick_size": 20,
+      "quick_result": "(242500, 1940485, 23009855, 41352070, 15282000, 29700, 0, 141219200, 318400, 16668800)",
+      "quick_cpython_s": {
+        "large_string_split": 0.201874,
+        "mixed_template_format": 0.200744,
+        "large_file_read_and_scan": 0.191942
+      },
+      "default_cpython_s": {
+        "large_string_split": 10.0937,
+        "mixed_template_format": 10.0372,
+        "large_file_read_and_scan": 9.5971
+      }
+    },
+    "regex/compilation_and_routing": {
+      "path": "perf/topics/regex/compilation_and_routing.py",
+      "default_size": 400,
+      "quick_size": 40,
+      "quick_result": "(2840, 31240, 488400, 162800, 8079755860)",
+      "quick_cpython_s": {
+        "compile_large_regexes": 1.004605,
+        "url_and_log_routing": 1.219779
+      },
+      "default_cpython_s": {
+        "compile_large_regexes": 10.04605,
+        "url_and_log_routing": 12.19779
+      }
+    },
+    "regex/backtracking_and_callbacks": {
+      "path": "perf/topics/regex/backtracking_and_callbacks.py",
+      "default_size": 300,
+      "quick_size": 30,
+      "quick_result": "(25500, 72250, 40998160, 858900, 613500, 31468460)",
+      "quick_cpython_s": {
+        "pathological_backtracking": 1.029555,
+        "sub_with_python_callbacks": 1.028348
+      },
+      "default_cpython_s": {
+        "pathological_backtracking": 10.29555,
+        "sub_with_python_callbacks": 10.28348
+      }
+    },
+    "io/streams_and_files": {
+      "path": "perf/topics/io/streams_and_files.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(196941030, 430791660, 28131317760, 1420770, 137557940, 33099300, 259944620, 506775100)",
+      "quick_cpython_s": {
+        "large_file_streaming": 1.034344,
+        "memory_stream_multiplex": 0.971586
+      },
+      "default_cpython_s": {
+        "large_file_streaming": 10.34344,
+        "memory_stream_multiplex": 9.71586
+      }
+    },
+    "io/binary_and_structured": {
+      "path": "perf/topics/io/binary_and_structured.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(570000, 570000, 630714630150, 2178619611900, 277500, 4130262825, 322608550, 7395081775)",
+      "quick_cpython_s": {
+        "binary_framing_and_hashing": 0.995386,
+        "json_and_csv_ingestion": 0.984707
+      },
+      "default_cpython_s": {
+        "binary_framing_and_hashing": 9.95386,
+        "json_and_csv_ingestion": 9.84707
+      }
+    },
+    "codegen/ir_and_template_emission": {
+      "path": "perf/topics/codegen/ir_and_template_emission.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(118139620, 1972000, 464000, 3480, 1858900, 23780000, 74937358360, 3480)",
+      "quick_cpython_s": {
+        "llvm_style_ir_emitter": 0.874213,
+        "source_code_transpiler": 1.082804
+      },
+      "default_cpython_s": {
+        "llvm_style_ir_emitter": 8.74213,
+        "source_code_transpiler": 10.82804
+      }
+    },
+    "dispatch/visitors_and_lattice": {
+      "path": "perf/topics/dispatch/visitors_and_lattice.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(533000, 82000, 2829000, 190512297, 3888, 1083816, 70200, 57693816)",
+      "quick_cpython_s": {
+        "ast_visitor_rewriter": 0.952542,
+        "type_lattice_operations": 1.072814
+      },
+      "default_cpython_s": {
+        "ast_visitor_rewriter": 9.52542,
+        "type_lattice_operations": 10.72814
+      }
+    },
+    "dispatch/telemetry_and_middleware": {
+      "path": "perf/topics/dispatch/telemetry_and_middleware.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(2133056229, 730000, 11406, 133438978, 234338327, 1471665, 270042, 1115178937)",
+      "quick_cpython_s": {
+        "telemetry_monkey_patching": 0.972498,
+        "middleware_and_exceptions": 0.4682
+      },
+      "default_cpython_s": {
+        "telemetry_monkey_patching": 9.72498,
+        "middleware_and_exceptions": 4.682
+      }
+    },
+    "dataflow/ssa_and_worklist": {
+      "path": "perf/topics/dataflow/ssa_and_worklist.py",
+      "default_size": 2000,
+      "quick_size": 200,
+      "quick_result": "(252000, 21000, 42000, 148357382, 344400, 295200, 393600, 36703200)",
+      "quick_cpython_s": {
+        "worklist_type_propagation": 0.865163,
+        "def_use_block_rewriting": 0.988773
+      },
+      "default_cpython_s": {
+        "worklist_type_propagation": 8.65163,
+        "def_use_block_rewriting": 9.88773
+      }
+    },
+    "dataflow/liveness_and_coloring": {
+      "path": "perf/topics/dataflow/liveness_and_coloring.py",
+      "default_size": 2000,
+      "quick_size": 50,
+      "quick_result": "(24600, 46615032, 24443052, 2296, 756, 72090, 2754, 9337302)",
+      "quick_cpython_s": {
+        "bigint_bitset_liveness": 0.224893,
+        "interference_graph_coloring": 0.232789
+      },
+      "default_cpython_s": {
+        "bigint_bitset_liveness": 8.99572,
+        "interference_graph_coloring": 9.31156
+      }
+    },
+    "objects/orm_and_descriptors": {
+      "path": "perf/topics/objects/orm_and_descriptors.py",
+      "default_size": 600,
+      "quick_size": 60,
+      "quick_result": "(192800, 165257, 1079316, 4523524471, 106718464, 457200, 467900025, 71437)",
+      "quick_cpython_s": {
+        "model_hydration_and_validation": 0.989162,
+        "immutable_record_cloning": 0.961458
+      },
+      "default_cpython_s": {
+        "model_hydration_and_validation": 9.89162,
+        "immutable_record_cloning": 9.61458
+      }
+    },
+    "objects/cycles_and_lifetimes": {
+      "path": "perf/topics/objects/cycles_and_lifetimes.py",
+      "default_size": 500,
+      "quick_size": 50,
+      "quick_result": "(8138161315, 120540, 602700, 76852598, 205785060000, 121972500, 109647676, 216659)",
+      "quick_cpython_s": {
+        "cyclic_graph_churn": 1.146875,
+        "heterogeneous_slot_mutation": 1.002145
+      },
+      "default_cpython_s": {
+        "cyclic_graph_churn": 11.46875,
+        "heterogeneous_slot_mutation": 10.02145
+      }
+    },
+    "collections/polymorphic_maps": {
+      "path": "perf/topics/collections/polymorphic_maps.py",
+      "default_size": 500,
+      "quick_size": 150,
+      "quick_result": "(1766685920, 248093660, 8429300, 1173280876, 1380088320, 624000, 1872000, 1871970)",
+      "quick_cpython_s": {
+        "mixed_key_dict_churn": 1.948556,
+        "composite_key_lru_cache": 2.879237
+      },
+      "default_cpython_s": {
+        "mixed_key_dict_churn": 9.74278,
+        "composite_key_lru_cache": 9.59746
+      }
+    },
+    "collections/sets_and_relations": {
+      "path": "perf/topics/collections/sets_and_relations.py",
+      "default_size": 400,
+      "quick_size": 120,
+      "quick_result": "(10614555, 0, 6483960, 11353332, 2922449, 2922449, 81736570, 13032)",
+      "quick_cpython_s": {
+        "set_algebra_closure": 1.051772,
+        "inverted_relation_index": 1.000168
+      },
+      "default_cpython_s": {
+        "set_algebra_closure": 10.51772,
+        "inverted_relation_index": 10.00168
+      }
+    },
+    "iteration/quantifiers_and_generators": {
+      "path": "perf/topics/iteration/quantifiers_and_generators.py",
+      "default_size": 200,
+      "quick_size": 50,
+      "quick_result": "(179520, 473110, 598400, 230118460, 147781754, 143562900, 62395300, 54129200)",
+      "quick_cpython_s": {
+        "nested_any_all_quantifiers": 2.294682,
+        "coroutine_stream_pipeline": 1.665248
+      },
+      "default_cpython_s": {
+        "nested_any_all_quantifiers": 9.17873,
+        "coroutine_stream_pipeline": 6.66099
+      }
+    },
+    "iteration/unpacking_and_matching": {
+      "path": "perf/topics/iteration/unpacking_and_matching.py",
+      "default_size": 240,
+      "quick_size": 50,
+      "quick_result": "(511040352, 9159000, 5609000, 1704000, 241281000, 6013108847, 183692000, 5530111500)",
+      "quick_cpython_s": {
+        "structural_pattern_matching": 2.086275,
+        "nested_unpacking_and_comprehensions": 2.048463
+      },
+      "default_cpython_s": {
+        "structural_pattern_matching": 10.01412,
+        "nested_unpacking_and_comprehensions": 9.83262
+      }
+    },
+    "calls/kwargs_and_wrappers": {
+      "path": "perf/topics/calls/kwargs_and_wrappers.py",
+      "default_size": 200,
+      "quick_size": 5,
+      "quick_result": "(28738100, 30073100, 27331900, 33731000, 3765675, 2764150, 775850, 1806875)",
+      "quick_cpython_s": {
+        "kwargs_and_default_dispatch": 0.246113,
+        "closure_combinators": 0.232744
+      },
+      "default_cpython_s": {
+        "kwargs_and_default_dispatch": 9.84452,
+        "closure_combinators": 9.30976
+      }
+    },
+    "calls/numeric_and_object_boundaries": {
+      "path": "perf/topics/calls/numeric_and_object_boundaries.py",
+      "default_size": 200,
+      "quick_size": 5,
+      "quick_result": "(1172429701, 53035435125, 2303213600, 67928800, 15703928661905, 29402461544307, 316875000, 1221614388)",
+      "quick_cpython_s": {
+        "bigint_and_float_tower": 0.250259,
+        "dynamic_callable_objects": 0.176091
+      },
+      "default_cpython_s": {
+        "bigint_and_float_tower": 10.01036,
+        "dynamic_callable_objects": 7.04364
+      }
+    }
+  }
+}
