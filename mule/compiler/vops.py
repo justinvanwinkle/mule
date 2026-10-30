@@ -3660,17 +3660,7 @@ _SUSPENSION_PROTOCOLS = frozenset(
     {"yield_from", "await_value", "async_generator_yield"}
 )
 
-_BORROWED_PROTOCOL_NAMES = frozenset(
-    {
-        "set_add",
-        "set_discard",
-        "set_remove",
-        "set_and",
-        "set_or",
-        "set_sub",
-        "set_xor",
-    }
-)
+_BORROWED_PROTOCOL_NAMES: frozenset[str] = frozenset()
 
 
 def _define_protocol(name, info):

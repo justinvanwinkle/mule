@@ -590,17 +590,7 @@ class Program:
 # protocol globals namespace, so their cells are keyed by it.
 PROTOCOL_NAMESPACE = "$mule.protocols"
 
-_BORROWED_SEQUENCE_PROTOCOLS = frozenset(
-    {
-        "set_add",
-        "set_discard",
-        "set_remove",
-        "set_and",
-        "set_or",
-        "set_sub",
-        "set_xor",
-    }
-)
+_BORROWED_SEQUENCE_PROTOCOLS: frozenset[str] = frozenset()
 
 
 def runtime_namespace(namespace: str) -> str:

@@ -568,27 +568,6 @@ class _UseClassifier(NodeVisitor):
             self.solver.allocation_only_escape(self.source)
             return
         if (
-            info
-            in (
-                fndb.PROTOCOLS["set_discard"],
-                fndb.PROTOCOLS["set_remove"],
-            )
-            and len(node.args) == 2
-            and not self.solver.lvar_type(node.args[1]).may_run_user_code
-            and self.solver.lvar_type(node.args[0]).accept(_SAFE_DICT_KEY_TYPE)
-        ):
-            self.solver.allocation_only_escape(self.source)
-            return
-        if (
-            index == 0
-            and info is fndb.PROTOCOLS["set_add"]
-            and len(node.args) == 2
-            and not self.solver.lvar_type(node.args[1]).may_run_user_code
-            and self.solver.lvar_type(node.args[0]).accept(_SAFE_DICT_KEY_TYPE)
-        ):
-            self.solver.allocation_only_escape(self.source)
-            return
-        if (
             info is fndb.MATH_SQRT
             and len(node.args) == 1
             and not self.solver.lvar_type(node.args[0]).may_run_user_code

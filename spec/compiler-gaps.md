@@ -1237,27 +1237,18 @@ describe the Python mutation and ownership adaptations to SBCL.
        whose every assignment preserves the same container element contract
        retain their element contract across reassignments (`current = current | s`
        / `current = current & s`).
-  2. **IR1 `@deftransform`s for `set`, `frozenset`, and `dict` operations
-     (`mule/compiler/containtran.py`, `seqtran.py`, `fndb.py`, `codegen.py`,
-     `vops.py`, `ir2tran.py`, `escape.py`)**:
-     - Added known sequence-protocol intrinsics and IR1 transforms for:
-       - `set()` / `set` literal `{}` -> `empty_set`
-       - `s.add(x)`, `s.discard(x)`, `s.remove(x)` on mutable `SetType` ->
-         `set_add`, `set_discard`, `set_remove`
-       - `s & other`, `s | other`, `s - other`, `s ^ other` on `SetType` ->
-         `set_and`, `set_or`, `set_sub`, `set_xor`.
-  3. **Fast `_Table` set helpers and pre-sized known-hash binary set operations
-     (`stdlib/_dict.py`, `stdlib/_sequences.py`)**:
+  2. **Fast `_Table` set helpers and pre-sized known-hash binary set operations
+     (`stdlib/_dict.py`)**:
      - Eliminated the `try ... except TypeError:` handler frame from the hot path
        of `_set_lookup` and `_set_remove` in `stdlib/_dict.py` (probing directly
        when `_storage_hash(key)` is non-`None` and only converting `set -> frozenset`
        when `_is_mutable_set(key)` is true).
-     - Added `_set_insert` and `_set_remove_entry` (and updated `_table_resize`
-       and `set_add`) so sets never append `None` into `_values`.
+     - Added `_set_insert` and `_set_remove_entry` (and updated `_table_resize`)
+       so sets never append `None` into `_values`.
      - Replaced `_table_live(self)` intermediate list allocations across
        `stdlib/_dict.py` with direct indexed `_storage_read` loops over `_keys`.
-     - Added `_empty_set_sized(minimum)` and specialized `set_and`, `set_or`,
-       `set_sub`, and `set_xor` in `stdlib/_sequences.py` to pre-size the output
+     - Added `_empty_set_sized(cls, minimum)` and implemented `_SetBase.__and__`,
+       `__or__`, `__sub__`, and `__xor__` in `stdlib/_dict.py` to pre-size the output
        `_indices` table once and probe/insert using the already-stored fixnum hash
        `_storage_read(_instance_field(..., "_hashes"), index)` without
        re-hashing keys or intermediate table resizes.

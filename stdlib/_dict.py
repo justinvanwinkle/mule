@@ -1167,6 +1167,9 @@ class _SetBase(_Table):
     def _same_kind(self):
         return class_of(self)()
 
+    def _same_kind_class(self):
+        return frozenset if _is_frozenset(self) else set
+
     def __contains__(self, item):
         _require_any_set(self)
         return _set_lookup(self, item) >= 0
@@ -1232,25 +1235,234 @@ class _SetBase(_Table):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self.union(other)
+        result = _empty_set_sized(
+            self._same_kind_class(),
+            _instance_field(self, "_used") + _instance_field(other, "_used"),
+        )
+        res_indices = _instance_field(result, "_indices")
+        res_hashes = _instance_field(result, "_hashes")
+        res_keys = _instance_field(result, "_keys")
+        res_mask = (_storage_length(res_indices) - 1) & _MASK_LIMIT
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                code = _storage_read(_instance_field(self, "_hashes"), index)
+                res_perturb = code & _PERTURB_MASK
+                res_slot = res_perturb & res_mask
+                while _storage_read(res_indices, res_slot) is not _EMPTY:
+                    res_perturb >>= 5
+                    res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                _storage_write(res_hashes, _storage_length(res_keys), code)
+                _storage_append(res_keys, key)
+            index += 1
+        right_count = _storage_length(_instance_field(other, "_keys"))
+        right_index = 0
+        while right_index < right_count:
+            key = _storage_read(_instance_field(other, "_keys"), right_index)
+            if key is not _DELETED:
+                code = _storage_read(_instance_field(other, "_hashes"), right_index)
+                res_perturb = code & _PERTURB_MASK
+                res_slot = res_perturb & res_mask
+                while True:
+                    entry = _storage_read(res_indices, res_slot)
+                    if entry >= 0:
+                        if _storage_read(res_hashes, entry) == code:
+                            existing = _storage_read(res_keys, entry)
+                            if existing is key or existing == key:
+                                break
+                    elif entry is _EMPTY:
+                        _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                        _storage_write(res_hashes, _storage_length(res_keys), code)
+                        _storage_append(res_keys, key)
+                        break
+                    res_perturb >>= 5
+                    res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+            right_index += 1
+        used = _storage_length(res_keys)
+        _set_instance_field(result, "_used", used)
+        del used
+        return result
 
     def __and__(self, other):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self.intersection(other)
+        left_used = _instance_field(self, "_used")
+        right_used = _instance_field(other, "_used")
+        result = _empty_set_sized(
+            self._same_kind_class(),
+            left_used if left_used < right_used else right_used,
+        )
+        res_indices = _instance_field(result, "_indices")
+        res_hashes = _instance_field(result, "_hashes")
+        res_keys = _instance_field(result, "_keys")
+        res_mask = (_storage_length(res_indices) - 1) & _MASK_LIMIT
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                code = _storage_read(_instance_field(self, "_hashes"), index)
+                mask = (
+                    _storage_length(_instance_field(other, "_indices")) - 1
+                ) & _MASK_LIMIT
+                perturb = code & _PERTURB_MASK
+                slot = perturb & mask
+                while True:
+                    entry = _storage_read(_instance_field(other, "_indices"), slot)
+                    if entry >= 0:
+                        if _storage_read(_instance_field(other, "_hashes"), entry) == code:
+                            existing = _storage_read(_instance_field(other, "_keys"), entry)
+                            if existing is key or existing == key:
+                                res_perturb = code & _PERTURB_MASK
+                                res_slot = res_perturb & res_mask
+                                while _storage_read(res_indices, res_slot) is not _EMPTY:
+                                    res_perturb >>= 5
+                                    res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                                _storage_write(
+                                    res_indices, res_slot, _storage_length(res_keys)
+                                )
+                                _storage_write(res_hashes, _storage_length(res_keys), code)
+                                _storage_append(res_keys, key)
+                                break
+                    elif entry is _EMPTY:
+                        break
+                    perturb >>= 5
+                    slot = (slot * 5 + perturb + 1) & mask
+            index += 1
+        used = _storage_length(res_keys)
+        _set_instance_field(result, "_used", used)
+        del used
+        return result
 
     def __sub__(self, other):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self.difference(other)
+        result = _empty_set_sized(
+            self._same_kind_class(), _instance_field(self, "_used")
+        )
+        res_indices = _instance_field(result, "_indices")
+        res_hashes = _instance_field(result, "_hashes")
+        res_keys = _instance_field(result, "_keys")
+        res_mask = (_storage_length(res_indices) - 1) & _MASK_LIMIT
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                code = _storage_read(_instance_field(self, "_hashes"), index)
+                mask = (
+                    _storage_length(_instance_field(other, "_indices")) - 1
+                ) & _MASK_LIMIT
+                perturb = code & _PERTURB_MASK
+                slot = perturb & mask
+                while True:
+                    entry = _storage_read(_instance_field(other, "_indices"), slot)
+                    if entry >= 0:
+                        if _storage_read(_instance_field(other, "_hashes"), entry) == code:
+                            existing = _storage_read(_instance_field(other, "_keys"), entry)
+                            if existing is key or existing == key:
+                                break
+                    elif entry is _EMPTY:
+                        res_perturb = code & _PERTURB_MASK
+                        res_slot = res_perturb & res_mask
+                        while _storage_read(res_indices, res_slot) is not _EMPTY:
+                            res_perturb >>= 5
+                            res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                        _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                        _storage_write(res_hashes, _storage_length(res_keys), code)
+                        _storage_append(res_keys, key)
+                        break
+                    perturb >>= 5
+                    slot = (slot * 5 + perturb + 1) & mask
+            index += 1
+        used = _storage_length(res_keys)
+        _set_instance_field(result, "_used", used)
+        del used
+        return result
 
     def __xor__(self, other):
         _require_any_set(self)
         if not _is_set(other):
             return NotImplemented
-        return self.symmetric_difference(other)
+        result = _empty_set_sized(
+            self._same_kind_class(),
+            _instance_field(self, "_used") + _instance_field(other, "_used"),
+        )
+        res_indices = _instance_field(result, "_indices")
+        res_hashes = _instance_field(result, "_hashes")
+        res_keys = _instance_field(result, "_keys")
+        res_mask = (_storage_length(res_indices) - 1) & _MASK_LIMIT
+        count = _storage_length(_instance_field(self, "_keys"))
+        index = 0
+        while index < count:
+            key = _storage_read(_instance_field(self, "_keys"), index)
+            if key is not _DELETED:
+                code = _storage_read(_instance_field(self, "_hashes"), index)
+                mask = (
+                    _storage_length(_instance_field(other, "_indices")) - 1
+                ) & _MASK_LIMIT
+                perturb = code & _PERTURB_MASK
+                slot = perturb & mask
+                while True:
+                    entry = _storage_read(_instance_field(other, "_indices"), slot)
+                    if entry >= 0:
+                        if _storage_read(_instance_field(other, "_hashes"), entry) == code:
+                            existing = _storage_read(_instance_field(other, "_keys"), entry)
+                            if existing is key or existing == key:
+                                break
+                    elif entry is _EMPTY:
+                        res_perturb = code & _PERTURB_MASK
+                        res_slot = res_perturb & res_mask
+                        while _storage_read(res_indices, res_slot) is not _EMPTY:
+                            res_perturb >>= 5
+                            res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                        _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                        _storage_write(res_hashes, _storage_length(res_keys), code)
+                        _storage_append(res_keys, key)
+                        break
+                    perturb >>= 5
+                    slot = (slot * 5 + perturb + 1) & mask
+            index += 1
+        right_count = _storage_length(_instance_field(other, "_keys"))
+        right_index = 0
+        while right_index < right_count:
+            key = _storage_read(_instance_field(other, "_keys"), right_index)
+            if key is not _DELETED:
+                code = _storage_read(_instance_field(other, "_hashes"), right_index)
+                mask = (
+                    _storage_length(_instance_field(self, "_indices")) - 1
+                ) & _MASK_LIMIT
+                perturb = code & _PERTURB_MASK
+                slot = perturb & mask
+                while True:
+                    entry = _storage_read(_instance_field(self, "_indices"), slot)
+                    if entry >= 0:
+                        if _storage_read(_instance_field(self, "_hashes"), entry) == code:
+                            existing = _storage_read(_instance_field(self, "_keys"), entry)
+                            if existing is key or existing == key:
+                                break
+                    elif entry is _EMPTY:
+                        res_perturb = code & _PERTURB_MASK
+                        res_slot = res_perturb & res_mask
+                        while _storage_read(res_indices, res_slot) is not _EMPTY:
+                            res_perturb >>= 5
+                            res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
+                        _storage_write(res_indices, res_slot, _storage_length(res_keys))
+                        _storage_write(res_hashes, _storage_length(res_keys), code)
+                        _storage_append(res_keys, key)
+                        break
+                    perturb >>= 5
+                    slot = (slot * 5 + perturb + 1) & mask
+            right_index += 1
+        used = _storage_length(res_keys)
+        _set_instance_field(result, "_used", used)
+        del used
+        return result
 
     def issubset(self, other):
         _require_any_set(self)
@@ -1650,11 +1862,11 @@ def _empty_table(cls):
     return result
 
 
-def _empty_set_sized(minimum):
+def _empty_set_sized(cls, minimum):
     size = _MINIMUM_SIZE
     while size * 2 < minimum * 3:
         size *= 2
-    result = _allocate_instance(set)
+    result = _allocate_instance(cls)
     new_indices = _empty_indices(size)
     _set_instance_field(result, "_indices", new_indices)
     del new_indices

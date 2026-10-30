@@ -19,7 +19,6 @@ from .ctype import (
     BYTEARRAY_TYPE,
     BYTES_TYPE,
     EMPTY_LIST_TYPE,
-    EMPTY_SET_TYPE,
     FLOAT,
     FUNCTION_TYPE,
     INTEGER,
@@ -27,7 +26,6 @@ from .ctype import (
     NONE_TYPE,
     PYTHON_INTEGER,
     REAL,
-    SET_TYPE,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
@@ -710,20 +708,6 @@ PROTOCOL_DERIVE_TYPES = {
         lvar_type(node.args[1])
     ),
     "setitem": lambda node: NONE_TYPE,
-    "empty_set": lambda node: EMPTY_SET_TYPE,
-    "set_add": lambda node: NONE_TYPE,
-    "set_discard": lambda node: NONE_TYPE,
-    "set_remove": lambda node: NONE_TYPE,
-    "set_and": lambda node: lvar_type(node.args[0]).binary(
-        "&", lvar_type(node.args[1])
-    ),
-    "set_or": lambda node: lvar_type(node.args[0]).binary("|", lvar_type(node.args[1])),
-    "set_sub": lambda node: lvar_type(node.args[0]).binary(
-        "-", lvar_type(node.args[1])
-    ),
-    "set_xor": lambda node: lvar_type(node.args[0]).binary(
-        "^", lvar_type(node.args[1])
-    ),
     "unpack": derive_unpack,
 }
 
@@ -736,26 +720,11 @@ NON_INTEGER_FIRST_PROTOCOLS = frozenset(
         "iterate",
         "next_item",
         "unpack",
-        "set_add",
-        "set_discard",
-        "set_remove",
-        "set_and",
-        "set_or",
-        "set_sub",
-        "set_xor",
     }
 )
 INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
 
-PROTOCOL_ARGUMENT_TYPES = {
-    "set_add": (SET_TYPE, UNKNOWN),
-    "set_discard": (SET_TYPE, UNKNOWN),
-    "set_remove": (SET_TYPE, UNKNOWN),
-    "set_and": (SET_TYPE, SET_TYPE),
-    "set_or": (SET_TYPE, SET_TYPE),
-    "set_sub": (SET_TYPE, SET_TYPE),
-    "set_xor": (SET_TYPE, SET_TYPE),
-}
+PROTOCOL_ARGUMENT_TYPES: dict[str, tuple] = {}
 
 
 def flushable_list_fill(node) -> bool:
@@ -776,7 +745,6 @@ def flushable_make_slice(node) -> bool:
 PROTOCOL_FLUSHABLE_TESTS = {
     "_list_fill": flushable_list_fill,
     "make_slice": flushable_make_slice,
-    "empty_set": lambda node: not node.args,
 }
 
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
@@ -796,14 +764,6 @@ PROTOCOLS = {
     )
     for name in (
         "_list_fill",
-        "empty_set",
-        "set_add",
-        "set_discard",
-        "set_remove",
-        "set_and",
-        "set_or",
-        "set_sub",
-        "set_xor",
         "iterate",
         "next_item",
         "getitem",

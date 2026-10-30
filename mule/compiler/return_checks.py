@@ -724,7 +724,7 @@ class _AssertDeclaredFieldStores(NodeVisitor):
                         node, node.args[2], cls_name, contract.name, val_contract
                     )
             return
-        if info.name in ("_storage_append", "%set_add") and len(node.args) == 2:
+        if info.name == "_storage_append" and len(node.args) == 2:
             found = self._lookup_container_field(node.args[0])
             if found is not None:
                 cls_name, contract = found

@@ -2943,49 +2943,6 @@ def _propagate_build_set(visitor: _Propagation, node: Combination):
     return _fact(set_type)
 
 
-@defpropagate("%empty_set")
-def _propagate_empty_set(visitor: _Propagation, node: Combination):
-    return EMPTY_SET_FACT
-
-
-@defpropagate("%set_add")
-def _propagate_set_add(visitor: _Propagation, node: Combination):
-    args = node.args
-    if len(args) != 2:
-        return None
-    recv_type = visitor.type_of(args[0])
-    elem_type = visitor.type_of(args[1])
-    if recv_type is BOTTOM or elem_type is BOTTOM:
-        return NO_FACT
-    if elem_type.may_run_user_code:
-        visitor.invalidate()
-    return NONE_FACT
-
-
-@defpropagate("%set_discard")
-@defpropagate("%set_remove")
-def _propagate_set_discard_or_remove(visitor: _Propagation, node: Combination):
-    args = node.args
-    if len(args) != 2:
-        return None
-    recv_type = visitor.type_of(args[0])
-    elem_type = visitor.type_of(args[1])
-    if recv_type is BOTTOM or elem_type is BOTTOM:
-        return NO_FACT
-    if elem_type.may_run_user_code:
-        visitor.invalidate()
-    return NONE_FACT
-
-
-for _set_op_name, _set_op_enum in (
-    ("%set_and", ast.BinaryOperator.BIT_AND),
-    ("%set_or", ast.BinaryOperator.BIT_OR),
-    ("%set_sub", ast.BinaryOperator.SUBTRACT),
-    ("%set_xor", ast.BinaryOperator.BIT_XOR),
-):
-    defpropagate(_set_op_name)(_make_binary_propagator(_set_op_enum))
-
-
 @defpropagate("%range_prepare")
 def _propagate_range_prepare(visitor: _Propagation, node: Combination):
     state = linked(node.info, node, "info")
