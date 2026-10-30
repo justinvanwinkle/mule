@@ -519,6 +519,24 @@ unsafe extern "C" fn text_from_codepoints(_: Value, args: Value) -> Value {
     }
 }
 
+unsafe extern "C" fn text_decode_bytes(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([data, codec]) = operands::<2>(args) else {
+            return null_mut();
+        };
+        object::mule_text_decode_bytes(data, codec)
+    }
+}
+
+unsafe extern "C" fn text_encode_bytes(_: Value, args: Value) -> Value {
+    unsafe {
+        let Some([text, codec]) = operands::<2>(args) else {
+            return null_mut();
+        };
+        object::mule_text_encode_bytes(text, codec)
+    }
+}
+
 unsafe extern "C" fn bytes_from_values(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value]) = operands(args) else {
@@ -1723,7 +1741,7 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
         if !bound {
             return null_mut();
         }
-        let exports: [(&str, Native); 18] = [
+        let exports: [(&str, Native); 20] = [
             ("read_pointer", read_pointer),
             ("read_c_string", read_c_string),
             ("byte_length", byte_length),
@@ -1731,6 +1749,8 @@ pub unsafe extern "C" fn mule_native_module_init(globals: Value) -> Value {
             ("read_u64_le", read_u64_le),
             ("byte_copy", byte_copy),
             ("text_from_codepoints", text_from_codepoints),
+            ("text_decode_bytes", text_decode_bytes),
+            ("text_encode_bytes", text_encode_bytes),
             ("bytes_from_values", bytes_from_values),
             ("call_with", crate::arguments::call_with),
             ("default_construct", crate::arguments::default_construct),

@@ -4167,6 +4167,116 @@ pub unsafe extern "C" fn mule_text_codepoint_getitem(value: Value, index: Value)
         string_index_error()
     }
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_decode_bytes(data: Value, codec: Value) -> Value {
+    unsafe {
+        if !is_fixnum(codec) {
+            error("TypeError", "text_decode_bytes codec must be an integer");
+            return std::ptr::null_mut();
+        }
+        let codec = fixnum(codec);
+        if data.is_null() || is_fixnum(data) {
+            error("TypeError", "byte storage requires bytes");
+            return std::ptr::null_mut();
+        }
+        let Data::Bytes(bytes, ..) = &(*data).data else {
+            error("TypeError", "byte storage requires bytes");
+            return std::ptr::null_mut();
+        };
+        if bytes.is_empty() {
+            return empty_text();
+        }
+        match codec {
+            0 => {
+                if !bytes.is_ascii() {
+                    return none_value();
+                }
+                latin1_slice_value(bytes)
+            }
+            1 => latin1_slice_value(bytes),
+            2 | 3 => {
+                if bytes.is_ascii() {
+                    return latin1_slice_value(bytes);
+                }
+                match Text::decode_utf8_bytes(bytes, codec == 3) {
+                    Ok(Some(text)) => {
+                        if text.len() == 1 {
+                            if let Some(code) = text.get(0) {
+                                if code <= 0xff {
+                                    return latin1_character(code as u8);
+                                }
+                            }
+                        }
+                        new_untracked_value(Data::Text(
+                            text,
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                        ))
+                    }
+                    Ok(None) => none_value(),
+                    Err(_) => {
+                        error("MemoryError", "text storage allocation failed");
+                        std::ptr::null_mut()
+                    }
+                }
+            }
+            _ => none_value(),
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_encode_bytes(value: Value, codec: Value) -> Value {
+    unsafe {
+        if !is_fixnum(codec) {
+            error("TypeError", "text_encode_bytes codec must be an integer");
+            return std::ptr::null_mut();
+        }
+        let codec = fixnum(codec);
+        let Some(text) = text_storage(value) else {
+            return std::ptr::null_mut();
+        };
+        let bytes = match codec {
+            0 => {
+                if let Some(slice) = text.as_latin1() {
+                    if !slice.is_ascii() {
+                        return none_value();
+                    }
+                    let mut out = Vec::new();
+                    if out.try_reserve_exact(slice.len()).is_err() {
+                        error("MemoryError", "byte storage allocation failed");
+                        return std::ptr::null_mut();
+                    }
+                    out.extend_from_slice(slice);
+                    out
+                } else {
+                    return none_value();
+                }
+            }
+            1 => {
+                if let Some(slice) = text.as_latin1() {
+                    let mut out = Vec::new();
+                    if out.try_reserve_exact(slice.len()).is_err() {
+                        error("MemoryError", "byte storage allocation failed");
+                        return std::ptr::null_mut();
+                    }
+                    out.extend_from_slice(slice);
+                    out
+                } else {
+                    return none_value();
+                }
+            }
+            2 => match text.to_utf8() {
+                Ok(out) => out,
+                Err(_) => return none_value(),
+            },
+            3 => text.to_wtf8(),
+            _ => return none_value(),
+        };
+        new_untracked_value(Data::Bytes(bytes, std::ptr::null_mut(), std::ptr::null_mut()))
+    }
+}
+
 /// The value of global `name` in `globals`, falling back to the builtins,
 /// owned; NULL with `NameError` when neither binds it.
 pub unsafe fn load_global(globals: Value, name: &str) -> Value {

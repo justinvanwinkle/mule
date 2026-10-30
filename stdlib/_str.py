@@ -11,6 +11,8 @@ from _mule_native import bytes_from_values
 from _mule_native import byte_length
 from _mule_native import byte_copy
 from _mule_native import read_byte
+from _mule_native import text_decode_bytes
+from _mule_native import text_encode_bytes
 from _attributes import getattr
 from _descriptors import staticmethod
 from _object import _index_integer
@@ -380,6 +382,12 @@ def _split_arguments(sep, maxsplit):
 def _codec_name(encoding):
     """Normalize an encoding name to one of the built-in codecs."""
     _require_text(encoding, "str() argument 'encoding' must be str")
+    if encoding == "utf-8" or encoding == "utf8" or encoding == "UTF-8":
+        return "utf-8"
+    if encoding == "ascii" or encoding == "ASCII" or encoding == "us-ascii":
+        return "ascii"
+    if encoding == "latin-1" or encoding == "latin1" or encoding == "iso-8859-1" or encoding == "LATIN-1":
+        return "latin-1"
     codes = []
     index = 0
     size = _text_length(encoding)
@@ -461,11 +469,17 @@ def encode(text, encoding, errors):
     if codec in ("unicode-escape", "raw-unicode-escape"):
         return _unicode_escape_encode(text, codec == "raw-unicode-escape")
     if codec == "utf-8":
+        fast_codec = 3 if errors == "surrogatepass" else 2
         limit = 0x10FFFF
     elif codec == "latin-1":
+        fast_codec = 1
         limit = 0xFF
     else:
+        fast_codec = 0
         limit = 0x7F
+    fast = text_encode_bytes(text, fast_codec)
+    if fast is not None:
+        return fast
     values = []
     index = 0
     size = _text_length(text)
@@ -603,12 +617,17 @@ def decode(data, encoding, errors):
         return _decode_text(data, encoding, errors, supplied)
     if codec in ("unicode-escape", "raw-unicode-escape"):
         return _unicode_escape_decode(data, errors, True, codec == "raw-unicode-escape")[0]
+    surrogates = errors == "surrogatepass"
+    is_utf8 = codec == "utf-8"
+    is_latin1 = codec == "latin-1"
+    if is_latin1:
+        return text_decode_bytes(data, 1)
+    fast = text_decode_bytes(data, (3 if surrogates else 2) if is_utf8 else 0)
+    if fast is not None:
+        return fast
     codes = []
     size = byte_length(data)
     _storage_reserve(codes, size)
-    is_utf8 = codec == "utf-8"
-    is_latin1 = codec == "latin-1"
-    surrogates = errors == "surrogatepass"
     index = 0
     while index < size:
         byte = read_byte(data, index)
