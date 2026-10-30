@@ -601,8 +601,6 @@ _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
         "set_or",
         "set_sub",
         "set_xor",
-        "bytearray_getitem",
-        "bytearray_setitem",
         "bytearray_append",
     }
 )

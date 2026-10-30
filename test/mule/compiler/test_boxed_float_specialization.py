@@ -368,7 +368,7 @@ def binary_search_intervals(merged: list[tuple[int, int, int]], n: int) -> int:
 print(binary_search_intervals([(0, 2, 1), (4, 6, 2), (8, 10, 3), (12, 14, 4)], 16))
 """
     llvm = emit_llvm(source)
-    body = llvm.split('define internal ptr @"mule_fn_binary_search_intervals.spec.1"')[
+    body = llvm.split('define internal ptr @"mule_fn_binary_search_intervals.spec.0"')[
         1
     ].split("\n}")[0]
     assert "getelementptr ptr, ptr " in body

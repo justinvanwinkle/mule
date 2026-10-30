@@ -3671,8 +3671,6 @@ _BORROWED_PROTOCOL_NAMES = frozenset(
         "set_or",
         "set_sub",
         "set_xor",
-        "bytearray_getitem",
-        "bytearray_setitem",
         "bytearray_append",
     }
 )
@@ -3743,44 +3741,28 @@ def structural_unpack(gen, vop):
     gen.pointer_result(vop.results[0], f"call ptr {helper}(ptr {value}, ptr {count})")
 
 
-def _exact_dict_call(gen, vop, name):
-    """Call the ``_sequences`` entry for an operand proven to be an exact
-    ``dict``. Both the VOPs and the compiled ``dict_getitem`` /
-    ``dict_setitem`` entries borrow their operands."""
-    operands = [gen.take(ref) for ref in vop.args]
-    result = gen.sequence_call(name, operands)
-    for operand in operands:
-        gen.release(operand)
-    gen.publish(vop.results[0], result)
-    gen.check_pointer(result)
-    gen.refine(vop.results[0].tn, result)
-
-
 @define_vop("protocol-getitem", translate=fndb.PROTOCOLS["getitem"], results=(OBJECT,))
 def protocol_getitem(gen, vop):
     seq_type = vop.args[0].tn.type or UNKNOWN
     idx_type = vop.args[1].tn.type or UNKNOWN
-    if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
-        if idx_type.is_fixnum:
-            sequence = gen.take(vop.args[0])
-            raw_index = vop.args[1].tn.sc is SIGNED
-            index = (
-                gen.encode(gen.take(vop.args[1]))
-                if raw_index
-                else gen.take(vop.args[1])
-            )
-            result = gen.operation(
-                f"call ptr @mule_bytearray_getitem_fast(ptr {sequence}, ptr {index})"
-            )
-            gen.immortal_values.add(result)
-            gen.release(sequence)
-            if not raw_index:
-                gen.release(index)
-            gen.publish(vop.results[0], result)
-            gen.check_pointer(result)
-            gen.refine(vop.results[0].tn, result)
-            return
-        _exact_dict_call(gen, vop, "bytearray_getitem")
+    if seq_type.fits_bytearray() and idx_type.is_fixnum:
+        sequence = gen.take(vop.args[0])
+        raw_index = vop.args[1].tn.sc is SIGNED
+        index = (
+            gen.encode(gen.take(vop.args[1]))
+            if raw_index
+            else gen.take(vop.args[1])
+        )
+        result = gen.operation(
+            f"call ptr @mule_bytearray_getitem_fast(ptr {sequence}, ptr {index})"
+        )
+        gen.immortal_values.add(result)
+        gen.release(sequence)
+        if not raw_index:
+            gen.release(index)
+        gen.publish(vop.results[0], result)
+        gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
         return
     if seq_type.fits_bytes(seq_type) and idx_type.is_fixnum:
         sequence = gen.take(vop.args[0])
@@ -4086,39 +4068,41 @@ def protocol_setitem(gen, vop):
             gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
         return
-    if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
-        if idx_type.is_fixnum:
-            sequence = gen.take(vop.args[0])
-            index = gen.take(vop.args[1])
-            item = gen.take(vop.args[2])
-            status = gen.operation(
-                f"call i32 @mule_bytearray_setitem_fast(ptr {sequence}, ptr {index}, ptr {item})"
+    if seq_type.fits_bytearray() and idx_type.is_fixnum:
+        sequence = gen.take(vop.args[0])
+        index = gen.take(vop.args[1])
+        item = gen.take(vop.args[2])
+        move_item = gen.owns_reference(item) and item != sequence and item != index
+        status = gen.operation(
+            f"call i32 @mule_bytearray_setitem_fast(ptr {sequence}, ptr {index}, ptr {item})"
+        )
+        hit = gen.operation(f"icmp ne i32 {status}, 0")
+        done_lbl, slow_lbl = (
+            gen.fresh("bytearray.set.done")[1:],
+            gen.fresh("bytearray.set.slow")[1:],
+        )
+        fast_end = gen.current_block()
+        gen.line(f"br i1 {hit}, label %{done_lbl}, label %{slow_lbl}, {HOT_BRANCH}")
+        gen.lines.append(slow_lbl + ":")
+        with gen.cold_block():
+            helper = gen.module.setitem_helper(move=move_item)
+            slow = gen.operation(
+                f"call ptr {helper}(ptr {sequence}, ptr {index}, ptr {item})"
             )
-            hit = gen.operation(f"icmp ne i32 {status}, 0")
-            done_lbl, slow_lbl = (
-                gen.fresh("bytearray.set.done")[1:],
-                gen.fresh("bytearray.set.slow")[1:],
-            )
-            fast_end = gen.current_block()
-            gen.line(f"br i1 {hit}, label %{done_lbl}, label %{slow_lbl}, {HOT_BRANCH}")
-            gen.lines.append(slow_lbl + ":")
-            with gen.cold_block():
-                slow = gen.sequence_call("bytearray_setitem", [sequence, index, item])
-                slow_end = gen.current_block()
-                gen.line(f"br label %{done_lbl}")
-            gen.lines.append(done_lbl + ":")
-            result = gen.operation(
-                f"phi ptr [@mule.none, %{fast_end}], [{slow}, %{slow_end}]"
-            )
-            gen.immortal_values.add(result)
-            gen.release(sequence)
-            gen.release(index)
+            slow_end = gen.current_block()
+            gen.line(f"br label %{done_lbl}")
+        gen.lines.append(done_lbl + ":")
+        result = gen.operation(
+            f"phi ptr [@mule.none, %{fast_end}], [{slow}, %{slow_end}]"
+        )
+        gen.immortal_values.add(result)
+        gen.release(sequence)
+        gen.release(index)
+        if not move_item:
             gen.release(item)
-            gen.publish(vop.results[0], result)
-            gen.check_pointer(result)
-            gen.refine(vop.results[0].tn, result)
-            return
-        _exact_dict_call(gen, vop, "bytearray_setitem")
+        gen.publish(vop.results[0], result)
+        gen.check_pointer(result)
+        gen.refine(vop.results[0].tn, result)
         return
     sequence = gen.take(vop.args[0])
     index = gen.take(vop.args[1])

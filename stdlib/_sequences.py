@@ -1093,31 +1093,6 @@ def set_xor(left, right):
     return result
 
 
-def bytearray_getitem(array, index):
-    values = array.values
-    index = integer_index(index)
-    length = _byte_storage_length(values)
-    if index < 0:
-        index += length
-    if index < 0 or index >= length:
-        raise IndexError("sequence index out of range")
-    return _byte_storage_read(values, index)
-
-
-def bytearray_setitem(array, index, item):
-    values = array.values
-    index = integer_index(index)
-    length = _byte_storage_length(values)
-    if index < 0:
-        index += length
-    if index < 0 or index >= length:
-        raise IndexError("sequence index out of range")
-    item = integer_index(item)
-    if item < 0 or item > 255:
-        raise ValueError("byte must be in range(0, 256)")
-    _byte_storage_write(values, index, item)
-
-
 def bytearray_append(array, value):
     value = integer_index(value)
     if value < 0 or value > 255:

@@ -30,7 +30,7 @@ from threading import local
 
 from mule import ast
 
-from . import ir1opt, loop
+from . import byteops, ir1opt, loop
 from .annotation_types import AnnotationLedger
 from .constraint import (
     BOOTSTRAP_BUILTIN_TARGETS,
@@ -167,6 +167,7 @@ _SPECIALIZABLE_CONTAINER_OPS = frozenset(
         DELITEM,
         RESOLVE_METHOD,
         ITERATE,
+        byteops.ITERATE,
         COMPARE[ast.ComparisonOperator.IN],
         COMPARE[ast.ComparisonOperator.NOT_IN],
         BINARY[ast.BinaryOperator.BIT_AND],
@@ -655,6 +656,7 @@ class _SpecializesBody(NodeVisitor):
                         SETITEM,
                         DELITEM,
                         ITERATE,
+                        byteops.ITERATE,
                         COMPARE[ast.ComparisonOperator.IN],
                         COMPARE[ast.ComparisonOperator.NOT_IN],
                     ):
@@ -4844,6 +4846,7 @@ def analyze(
                 and lambda_.entry_parameter_types is None
                 and not any(
                     (param.is_fixnum and not gen_p.is_fixnum)
+                    or (param.is_exact_list and not gen_p.is_exact_list)
                     or (
                         param.has_float_specialization()
                         and not gen_p.has_float_specialization()
