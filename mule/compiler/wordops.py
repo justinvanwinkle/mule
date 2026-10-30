@@ -17,6 +17,7 @@ from .ctype import WORD_VECTOR_TYPE
 from .fndb import defknown
 from .vmdef import define_vop
 from .vop import DESCRIPTOR, IMMEDIATE, NULL, REFERENCE, SIGNED, WORD_VECTOR_T
+from .vops import COLD_BRANCH, HOT_BRANCH
 
 RAW_WORDS_TAG = 28
 RAW_WORDS_DATA_OFFSET = 24
@@ -36,7 +37,7 @@ entry:
   %bytes = shl nuw i64 %words, 3
   %data = call noalias ptr @malloc(i64 %bytes)
   %failed = icmp eq ptr %data, null
-  br i1 %failed, label %exhausted, label %allocated
+  br i1 %failed, label %exhausted, label %allocated, {COLD_BRANCH}
 exhausted:
   call void @abort() cold
   unreachable
@@ -71,7 +72,7 @@ entry:
   %lowtag = and i64 %bits, 1
   %immediate = icmp ne i64 %lowtag, 0
   %invalid = or i1 %null, %immediate
-  br i1 %invalid, label %no, label %heap
+  br i1 %invalid, label %no, label %heap, {COLD_BRANCH}
 heap:
   %kind.addr = getelementptr i8, ptr %value, i64 16
   %kind = load i32, ptr %kind.addr
@@ -112,9 +113,9 @@ def helpers() -> str:
 def _type_error_unless(gen, condition, label):
     bad = gen.fresh(f"{label}.bad")[1:]
     good = gen.fresh(f"{label}.ok")[1:]
-    gen.line(f"br i1 {condition}, label %{good}, label %{bad}")
+    gen.line(f"br i1 {condition}, label %{good}, label %{bad}, {HOT_BRANCH}")
     gen.lines.append(bad + ":")
-    gen.line("call i32 @mule_native_type_error()")
+    gen.line("call i32 @mule_native_type_error() cold noinline")
     gen.propagate()
     gen.lines.append(good + ":")
 

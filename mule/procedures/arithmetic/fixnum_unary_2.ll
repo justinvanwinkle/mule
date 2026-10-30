@@ -10,6 +10,6 @@ entry:
   %value = inttoptr i64 %tagged to ptr
   ret ptr %value
 slow:
-  %fallback = call ptr @mule_unary(i32 2, ptr %operand)
+  %fallback = call ptr @mule_unary(i32 2, ptr %operand) cold
   ret ptr %fallback
 }

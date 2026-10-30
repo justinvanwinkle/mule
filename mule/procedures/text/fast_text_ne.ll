@@ -12,7 +12,7 @@ check.header:
   %or.h = or i16 %lh, %rh
   %kinds = and i16 %or.h, 255
   %both.inline = icmp eq i16 %kinds, 0
-  br i1 %both.inline, label %inline.header, label %slow
+  br i1 %both.inline, label %inline.header, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 inline.header:
   %same.header = icmp eq i16 %lh, %rh
   br i1 %same.header, label %inline.w0, label %unequal
@@ -45,7 +45,7 @@ equal:
 unequal:
   ret ptr @mule.true
 slow:
-  %matched = call i32 @mule_text_eq(ptr %lhs, ptr %rhs)
+  %matched = call i32 @mule_text_eq(ptr %lhs, ptr %rhs) cold
   %cond = icmp eq i32 %matched, 0
   %slow.res = select i1 %cond, ptr @mule.true, ptr @mule.false
   ret ptr %slow.res

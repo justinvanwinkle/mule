@@ -7,12 +7,12 @@ entry:
   %tags = and i64 %left.bits, %right.bits
   %tag = and i64 %tags, 1
   %integers = icmp ne i64 %tag, 0
-  br i1 %integers, label %fixnums, label %slow
+  br i1 %integers, label %fixnums, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 fixnums:
   %compared = icmp ne i64 %left.bits, %right.bits
   %value = select i1 %compared, ptr @mule.true, ptr @mule.false
   ret ptr %value
 slow:
-  %fallback = call ptr @mule_compare(i32 1, ptr %left, ptr %right)
+  %fallback = call ptr @mule_compare(i32 1, ptr %left, ptr %right) cold
   ret ptr %fallback
 }

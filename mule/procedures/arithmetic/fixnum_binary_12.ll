@@ -14,6 +14,6 @@ encode:
   %value = inttoptr i64 %tagged to ptr
   ret ptr %value
 slow:
-  %fallback = call ptr @mule_binary_reuse(i32 12, ptr %left, ptr %right, i32 %inplace, ptr null)
+  %fallback = call ptr @mule_binary_reuse(i32 12, ptr %left, ptr %right, i32 %inplace, ptr null) cold
   ret ptr %fallback
 }

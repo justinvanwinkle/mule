@@ -6,6 +6,6 @@ entry:
   %decoded = ashr i64 %bits, 1
   ret ptr %operand
 slow:
-  %fallback = call ptr @mule_unary(i32 0, ptr %operand)
+  %fallback = call ptr @mule_unary(i32 0, ptr %operand) cold
   ret ptr %fallback
 }
