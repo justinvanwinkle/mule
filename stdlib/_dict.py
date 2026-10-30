@@ -1281,7 +1281,7 @@ class _SetBase(_Table):
                     res_perturb >>= 5
                     res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
             right_index += 1
-        used = _storage_length(res_keys)
+        used = _storage_length(res_keys) & _MASK_LIMIT
         _set_instance_field(result, "_used", used)
         del used
         return result
@@ -1333,7 +1333,7 @@ class _SetBase(_Table):
                     perturb >>= 5
                     slot = (slot * 5 + perturb + 1) & mask
             index += 1
-        used = _storage_length(res_keys)
+        used = _storage_length(res_keys) & _MASK_LIMIT
         _set_instance_field(result, "_used", used)
         del used
         return result
@@ -1380,7 +1380,7 @@ class _SetBase(_Table):
                     perturb >>= 5
                     slot = (slot * 5 + perturb + 1) & mask
             index += 1
-        used = _storage_length(res_keys)
+        used = _storage_length(res_keys) & _MASK_LIMIT
         _set_instance_field(result, "_used", used)
         del used
         return result
@@ -1459,7 +1459,7 @@ class _SetBase(_Table):
                     perturb >>= 5
                     slot = (slot * 5 + perturb + 1) & mask
             right_index += 1
-        used = _storage_length(res_keys)
+        used = _storage_length(res_keys) & _MASK_LIMIT
         _set_instance_field(result, "_used", used)
         del used
         return result
