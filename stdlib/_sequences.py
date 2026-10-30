@@ -1093,15 +1093,6 @@ def set_xor(left, right):
     return result
 
 
-def bytearray_append(array, value):
-    value = integer_index(value)
-    if value < 0 or value > 255:
-        raise ValueError("byte must be in range(0, 256)")
-    if _byte_storage_exports(array.values):
-        raise BufferError("Existing exports of data: object cannot be re-sized")
-    _byte_storage_append(array.values, value)
-
-
 def _getitem_general(value, index):
     method = _getitem_method(value)
     if method is None:

@@ -646,11 +646,11 @@ pub unsafe extern "C" fn mule_bytearray_setitem_fast(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_bytearray_append_fast(array: Value, item: Value) -> Value {
     unsafe {
-        let function = object::lookup(mule_protocol_globals(), "bytearray_append");
-        if function.is_null() {
+        let method = binding(array, "append");
+        if method.is_null() {
             return null_mut();
         }
-        object::call(function, &[array, item])
+        object::call(method, &[array, item])
     }
 }
 

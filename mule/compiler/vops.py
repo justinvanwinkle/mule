@@ -3671,7 +3671,6 @@ _BORROWED_PROTOCOL_NAMES = frozenset(
         "set_or",
         "set_sub",
         "set_xor",
-        "bytearray_append",
     }
 )
 
