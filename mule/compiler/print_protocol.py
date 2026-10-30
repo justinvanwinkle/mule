@@ -1,20 +1,23 @@
 """Compile print's ending and conversion rules over physical stdout writes."""
 
-from pathlib import Path
-
 from .inputs import read_source
-from .modules import ModuleCompiler
+from .modules import STDLIB, ModuleCompiler
 from .protocols import PRIMITIVES, add_lambdas, compile_protocol
 
 
 def prepare(program):
     """Compile the print protocol. Builtins remain available through the
     namespace even without a direct load, so it is always compiled."""
-    path = Path(__file__).resolve().parents[2] / "stdlib/_print.py"
-    imports = ModuleCompiler(str(path), prefix="mule_print_", primitives=PRIMITIVES)
+    path = STDLIB / "_print.py"
+    imports = ModuleCompiler(
+        path.name,
+        prefix="mule_print_",
+        primitives=PRIMITIVES,
+        roots=(STDLIB / "bootstrap", STDLIB),
+    )
     compilation = compile_protocol(
         read_source(path),
-        str(path),
+        path.name,
         prefix="mule_print_",
         namespace="$mule.print",
         imports=imports,

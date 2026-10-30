@@ -1,10 +1,8 @@
 """Compile Python formatting rules and bind their physical primitives."""
 
-from pathlib import Path
-
 from .inputs import read_source
 from .ir1util import known_calls, made_lambda
-from .modules import ModuleCompiler
+from .modules import STDLIB, ModuleCompiler
 from .node import linked
 from .protocols import PRIMITIVES, add_lambdas, compile_protocol
 
@@ -23,11 +21,16 @@ ROLES = (
 def prepare(program):
     """Compile the formatting protocol. Its functions are named by role so
     templates can call them directly (``mule_format_<role>``)."""
-    path = Path(__file__).resolve().parents[2] / "stdlib/_format.py"
-    imports = ModuleCompiler(str(path), prefix="mule_format_", primitives=PRIMITIVES)
+    path = STDLIB / "_format.py"
+    imports = ModuleCompiler(
+        path.name,
+        prefix="mule_format_",
+        primitives=PRIMITIVES,
+        roots=(STDLIB / "bootstrap", STDLIB),
+    )
     compilation = compile_protocol(
         read_source(path),
-        str(path),
+        path.name,
         prefix="mule_format_",
         namespace="$mule.format",
         imports=imports,

@@ -70,7 +70,48 @@ fn registered_search_path() -> Vec<String> {
 pub unsafe extern "C" fn mule_set_image_search_path(paths: *const *const c_char, count: i64) {
     crate::capi::ensure_linked();
     unsafe {
-        let stored = (0..count as usize).filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned)).collect();
+        let mut stored: Vec<String> = (0..count as usize)
+            .filter_map(|index| object::name_from_c(*paths.add(index)).map(str::to_owned))
+            .collect();
+        let active_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                let is_step_cache = exe
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|n| n == "steps");
+                if is_step_cache {
+                    None
+                } else {
+                    exe.parent().map(Path::to_path_buf)
+                }
+            })
+            .or_else(|| {
+                let argv0 = std::env::args_os().next()?;
+                if argv0 == "-c" || argv0 == "-" {
+                    return None;
+                }
+                let path = PathBuf::from(argv0);
+                let resolved = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir().ok()?.join(path)
+                };
+                resolved.parent().map(Path::to_path_buf)
+            });
+        if let Some(dir) = active_dir {
+            if dir.is_dir() {
+                let dir_str = dir.to_string_lossy().into_owned();
+                if stored.first() != Some(&dir_str) {
+                    if stored.first().is_some_and(|first| !Path::new(first).is_dir()) {
+                        stored[0] = dir_str;
+                    } else if !stored.contains(&dir_str) {
+                        stored.insert(0, dir_str);
+                    }
+                }
+            }
+        }
         let mut img = image().lock().expect("compiled image registry poisoned");
         img.search_path = stored;
         img.missing_cache.clear();
@@ -157,24 +198,14 @@ fn fasl_cache_path(
     module_name: &str,
     source_path: &Path,
 ) -> Option<PathBuf> {
-    use std::os::unix::fs::MetadataExt;
     if compiler_hash.is_empty() {
         return None;
     }
-    let resolved = source_path.canonicalize().ok()?;
-    let meta = std::fs::metadata(&resolved).ok()?;
-    let mtime_ns = (meta.mtime() as i128) * 1_000_000_000 + (meta.mtime_nsec() as i128);
-    let ctime_ns = (meta.ctime() as i128) * 1_000_000_000 + (meta.ctime_nsec() as i128);
-    let payload = format!(
-        "{compiler_hash}\0{optimize}\0{module_name}\0{}\0{}:{}:{}:{mtime_ns}:{ctime_ns}",
-        resolved.to_string_lossy(),
-        meta.dev(),
-        meta.ino(),
-        meta.size(),
-    );
+    let source_bytes = std::fs::read(source_path).ok()?;
+    let header = format!("{compiler_hash}\0{optimize}\0{module_name}\0");
     let mut h: u128 = 0x6c62272e07bb014262b821756295c58d;
     const PRIME: u128 = 0x0000000001000000000000000000013b;
-    for &b in payload.as_bytes() {
+    for &b in header.as_bytes().iter().chain(source_bytes.iter()) {
         h = (h ^ (b as u128)).wrapping_mul(PRIME);
     }
     let cache_base = std::env::var_os("XDG_CACHE_HOME")

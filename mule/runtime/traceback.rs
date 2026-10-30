@@ -72,8 +72,41 @@ impl CodeInfo {
         Self::text(self.qualname)
     }
 
-    pub fn filename(&self) -> &'static str {
-        Self::text(self.filename)
+    pub fn filename(&self) -> String {
+        let raw = Self::text(self.filename);
+        let Some(file_name) = std::path::Path::new(raw).file_name() else {
+            return raw.to_owned();
+        };
+        if let Ok(exe) = std::env::current_exe() {
+            let is_step_cache = exe
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "steps");
+            if !is_step_cache {
+                if let Some(dir) = exe.parent() {
+                    let candidate = dir.join(file_name);
+                    if candidate.is_file() {
+                        return candidate.to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
+        if let Some(argv0) = std::env::args_os().next() {
+            if argv0 != "-c" && argv0 != "-" {
+                let p = std::path::PathBuf::from(argv0);
+                if p.file_name() == Some(file_name) && p.is_file() {
+                    return p.to_string_lossy().into_owned();
+                }
+                if let Some(dir) = p.parent() {
+                    let candidate = dir.join(file_name);
+                    if candidate.is_file() {
+                        return candidate.to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
+        raw.to_owned()
     }
 }
 
@@ -368,10 +401,11 @@ pub unsafe fn field(value: Value, index: i64) -> Value {
             }
             (Data::Frame { code, .. }, 0) => {
                 let code = &**code;
+                let fname = code.filename();
                 let values = [
                     text(code.name()),
                     text(code.qualname()),
-                    text(code.filename()),
+                    text(&fname),
                     object::small(i64::from(code.firstlineno)),
                 ];
                 let tuple = object::mule_sequence_tuple(values.len() as isize, values.as_ptr());
@@ -406,8 +440,9 @@ pub fn print_pending(output: &mut impl Write) {
     let mut entry = head;
     while let Some(Data::Traceback { code, line, next, marker, .. }) = (!entry.is_null()).then(|| unsafe { &(*entry).data }) {
         let code = unsafe { &**code };
-        let _ = writeln!(output, "  File \"{}\", line {line}, in {}", code.filename(), code.name());
-        if let Some(source) = source_line(code.filename(), *line) {
+        let fname = code.filename();
+        let _ = writeln!(output, "  File \"{fname}\", line {line}, in {}", code.name());
+        if let Some(source) = source_line(&fname, *line) {
             let _ = writeln!(output, "    {source}");
             if show_ranges && !marker.is_null() {
                 let _ = writeln!(output, "    {}", CodeInfo::text(*marker));

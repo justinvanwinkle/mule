@@ -1,13 +1,11 @@
 """Compile sequence/exception language rules and bind physical storage operations."""
 
-from pathlib import Path
-
 from .ctype import UNKNOWN, ValueType
 from .fndb import PROTOCOLS
 from .inputs import _recording, read_source
 from .ir1util import known_calls, made_lambda
 from .main import compile_toplevel, ir1_phases
-from .modules import ModuleCompiler
+from .modules import STDLIB, ModuleCompiler
 from .node import (
     ClassConstructorTarget,
     ForeignCallTarget,
@@ -120,11 +118,16 @@ def prepare(program):
     the protocol module's entry lambda, its exported functions by name, and
     the modules it imported, by name."""
     global _CACHED_STDLIB_TYPES, _CACHED_STDLIB_TARGETS
-    path = Path(__file__).resolve().parents[2] / "stdlib/_sequences.py"
-    imports = ModuleCompiler(str(path), prefix="mule_sequences_", primitives=PRIMITIVES)
+    path = STDLIB / "_sequences.py"
+    imports = ModuleCompiler(
+        path.name,
+        prefix="mule_sequences_",
+        primitives=PRIMITIVES,
+        roots=(STDLIB / "bootstrap", STDLIB),
+    )
     compilation = compile_toplevel(
         read_source(path),
-        str(path),
+        path.name,
         imports=imports,
         prefix="mule_sequences_",
         namespace="$mule.sequences",

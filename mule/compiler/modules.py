@@ -700,9 +700,14 @@ class ModuleCompiler:
         pending_compilations: list[tuple[CompiledModule, Compilation]] = []
         while self.pending:
             descriptor = self.pending.popleft()
+            filename = (
+                descriptor.path.name
+                if self.primitives is not None and descriptor.path is not None
+                else str(descriptor.path)
+            )
             compilation = compile_toplevel(
                 descriptor.source(),
-                str(descriptor.path),
+                filename,
                 imports=self,
                 prefix=descriptor.prefix,
                 namespace=descriptor.name,

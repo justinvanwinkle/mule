@@ -7,11 +7,11 @@ functions. Only primitive operations have backend templates.
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .inputs import read_source
 from .ir1util import class_method_definitions, known_calls
+from .modules import STDLIB
 from .node import Lambda, linked
 from .protocols import add_lambdas, compile_protocol
 
@@ -66,7 +66,7 @@ def prepare(program):
     layouts = layouts_of(program.lambdas)
     if not layouts:
         return layouts
-    path = Path(__file__).parents[2] / "stdlib/_native_class.py"
+    path = STDLIB / "_native_class.py"
     template = read_source(path)
     for layout in layouts.values():
         parameters = ", ".join(
@@ -77,7 +77,7 @@ def prepare(program):
         )
         compilation = compile_protocol(
             source,
-            str(path),
+            path.name,
             namespace=f"$mule.native.{layout.index}",
             primitive_data={"_initialize": layout},
         )

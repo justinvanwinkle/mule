@@ -44,7 +44,7 @@ from .codegen import ForeignFunction, Program, generate
 from .ctype import UNKNOWN, ValueType, value_type_from_dict
 from .dfo import find_dfo
 from .escape import EscapeFacts, analyze_escapes
-from .inputs import file_digest, read_source, recording, replay_recorded
+from .inputs import file_digest, file_state, read_source, recording, replay_recorded
 from .ir1opt import constant_literal, ir1_optimize_until_done
 from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
@@ -147,7 +147,7 @@ class BuiltinsInterface:
                 "modules": {
                     name: {
                         **asdict(module),
-                        "path": None if module.path is None else str(module.path),
+                        "path": None if module.path is None else module.path.name,
                     }
                     for name, module in self.modules.items()
                 },
@@ -185,7 +185,13 @@ class BuiltinsInterface:
         modules = {
             name: CompiledModule(
                 entry["name"],
-                None if entry["path"] is None else Path(entry["path"]),
+                None
+                if entry["path"] is None
+                else (
+                    (STDLIB / "bootstrap" / entry["path"])
+                    if (STDLIB / "bootstrap" / entry["path"]).is_file()
+                    else (STDLIB / entry["path"])
+                ),
                 entry["entry"],
                 native=entry["native"],
                 missing=entry["missing"],
@@ -1129,14 +1135,10 @@ def fasl_cache_path(
 ) -> Path | None:
     """The deterministic cache path of a single-module FASL shared object."""
     try:
-        resolved = source_path.resolve()
-        st = resolved.stat()
+        source_bytes = source_path.read_bytes()
     except OSError:
         return None
-    payload = (
-        f"{compiler_hash}\0{optimize}\0{module_name}\0{resolved}\0"
-        f"{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}:{st.st_ctime_ns}"
-    ).encode()
+    payload = f"{compiler_hash}\0{optimize}\0{module_name}\0".encode() + source_bytes
     h = 0x6C62272E07BB014262B821756295C58D
     prime = 0x0000000001000000000000000000013B
     mask = (1 << 128) - 1
@@ -1468,16 +1470,18 @@ class Build:
                 (directory / "unit.ll").write_text(generate(unit))
                 (directory / "interface.json").write_text(interface.to_json())
 
+        sources = sorted([*STDLIB.glob("_*.py"), *(STDLIB / "bootstrap").glob("*.py")])
         step = self.graph.step(
             "builtins",
             lambda: Step(
                 self.graph,
                 "builtins",
-                inputs=[],
-                settings={"step": "builtins", "stdlib": str(STDLIB.resolve())},
+                inputs=[self.graph.file(path) for path in sources],
+                settings={"step": "builtins"},
                 outputs=("unit.ll", "interface.json"),
                 action=action,
                 discover=lambda step: self.prepare_import_graph(),
+                validate=lambda entry: True,
             ),
         )
         return step
@@ -1608,7 +1612,7 @@ class Build:
         the link."""
         builtins = self.builtins()
         path = descriptor.path
-        name = f"module {descriptor.name} {path}"
+        name = f"module {descriptor.name}"
 
         def resolver():
             return import_resolver(
@@ -1669,8 +1673,6 @@ class Build:
                 (directory / "unit.ll").write_text(generate(program))
                 write_imports(directory / "imports.json", imported)
 
-        # Import resolution is validated separately, but the source filename
-        # is embedded in traceback metadata and must be part of the key.
         step = self.graph.step(
             name,
             lambda: Step(
@@ -1685,8 +1687,6 @@ class Build:
                 settings={
                     "step": "module",
                     "name": descriptor.name,
-                    "filename": str(path),
-                    "namespace_paths": descriptor.namespace_paths,
                 },
                 outputs=("unit.ll", "imports.json"),
                 action=action,
@@ -1797,7 +1797,6 @@ class Build:
                 inputs=[source_node, builtins],
                 settings={
                     "step": "main",
-                    "filename": filename,
                     "package": package,
                 },
                 outputs=("unit.ll", "imports.json"),
@@ -1965,7 +1964,7 @@ def write_imports(path: Path, modules: list[CompiledModule]) -> None:
                     module.name,
                     module.native,
                     module.missing,
-                    module.namespace_paths,
+                    [file_state(p) for p in module.namespace_paths],
                     None
                     if module.path is None or not module.path.is_file()
                     else file_digest(module.path),
@@ -1978,7 +1977,7 @@ def write_imports(path: Path, modules: list[CompiledModule]) -> None:
 
 def resolve_recorded(
     resolver: ModuleCompiler, path: Path
-) -> list[tuple[CompiledModule, bool, bool, tuple[str, ...], str | None]]:
+) -> list[tuple[CompiledModule, bool, bool, tuple[str | None, ...], str | None]]:
     """Resolve the recorded imports again, in their recorded order; return
     each current resolution with its recorded native, missing, locations, and digest."""
     entries = []
@@ -2001,7 +2000,7 @@ def resolves_as_recorded(resolver: ModuleCompiler, path: Path) -> bool:
     return all(
         module.native == native
         and module.missing == missing
-        and module.namespace_paths == locations
+        and tuple(file_state(p) for p in module.namespace_paths) == locations
         and (
             None
             if module.path is None or not module.path.is_file()

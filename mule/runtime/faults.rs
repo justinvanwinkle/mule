@@ -14,6 +14,7 @@ static FD: AtomicI32 = AtomicI32::new(2);
 static C_STACK: AtomicBool = AtomicBool::new(false);
 static HEADER: AtomicPtr<Header> = AtomicPtr::new(null_mut());
 static HEADER_ROOT: Mutex<Option<Box<Header>>> = Mutex::new(None);
+static EXE_DIR: Mutex<Option<String>> = Mutex::new(None);
 const SIGNALS: [i32; 5] = [11, 8, 6, 7, 4];
 static PREVIOUS: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
 
@@ -43,11 +44,35 @@ unsafe fn output(fd: i32, bytes: &[u8]) {
 unsafe fn dump(fd: i32, header: &[u8]) {
     unsafe {
         output(fd, header);
+        let exe_dir = EXE_DIR.try_lock().ok().and_then(|guard| guard.clone());
         let mut node = crate::traceback::active_head();
         let mut count = 0;
         while !node.is_null() && count < 100 {
             let label = (*(*node).code).fault_label;
-            if !label.is_null() { output(fd, CStr::from_ptr(label).to_bytes()); }
+            if !label.is_null() {
+                let bytes = CStr::from_ptr(label).to_bytes();
+                let mut written = false;
+                if let Some(dir) = exe_dir.as_deref() {
+                    if let Ok(line_str) = std::str::from_utf8(bytes) {
+                        if let Some(rest) = line_str.strip_prefix("  File \"") {
+                            if let Some((old_path, tail)) = rest.split_once("\", line ") {
+                                if let Some(base) = old_path.rsplit('/').next() {
+                                    output(fd, b"  File \"");
+                                    output(fd, dir.as_bytes());
+                                    output(fd, b"/");
+                                    output(fd, base.as_bytes());
+                                    output(fd, b"\", line ");
+                                    output(fd, tail.as_bytes());
+                                    written = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !written {
+                    output(fd, bytes);
+                }
+            }
             node = (*node).parent;
             count += 1;
         }
@@ -126,6 +151,18 @@ unsafe extern "C" fn fault_enable(_: Value, args: Value) -> Value {
         let mut header = Box::new(Header { bytes: bytes.to_vec() });
         HEADER.store(&mut *header, Ordering::SeqCst);
         *HEADER_ROOT.lock().unwrap() = Some(header);
+        if let Ok(exe) = std::env::current_exe() {
+            let is_step_cache = exe
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "steps");
+            if !is_step_cache {
+                if let Some(dir) = exe.parent() {
+                    *EXE_DIR.lock().unwrap() = Some(dir.to_string_lossy().into_owned());
+                }
+            }
+        }
         FD.store(fd, Ordering::Relaxed);
         C_STACK.store(c_stack, Ordering::Relaxed);
         if !ACTIVE.swap(true, Ordering::SeqCst) {
