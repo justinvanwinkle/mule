@@ -226,21 +226,25 @@ AVAILABLE = defknown(
 NEXT = defknown(
     "%byte_next",
     "unsafe",
-    derive_type=lambda node: lvar_type(node.args[0]).next_item_type(),
+    derive_type=lambda node: (
+        node.derived_type
+        if node.derived_type is not None and node.derived_type.is_fixnum
+        else lvar_type(node.args[0]).next_item_type()
+    ),
     borrowed_args=frozenset({0}),
     numeric=True,
 )
 
 
 @defpropagate("%byte_iterate")
-def _propagate_iterate(visitor, node):
+def propagate_iterate(visitor, node):
     from .constraint import _propagate_iterate as propagate_sequence
 
     return propagate_sequence(visitor, node)
 
 
 @defpropagate("%byte_available")
-def _propagate_available(visitor, node):
+def propagate_available(visitor, node):
     from .constraint import _propagate_sequence_available
 
     if visitor.type_of(node.args[0]).may_run_user_code:
@@ -249,7 +253,9 @@ def _propagate_available(visitor, node):
 
 
 @defpropagate("%byte_next")
-def _propagate_next(visitor, node):
+def propagate_next(visitor, node):
+    if node.derived_type is not None and node.derived_type.is_fixnum:
+        return node.derived_type
     from .constraint import _propagate_next_item
 
     return _propagate_next_item(visitor, node)
@@ -481,12 +487,12 @@ def _available_immutable_text(gen, vop):
     _publish_available(gen, vop, index, length)
 
 
-def _next_immutable_text(gen, vop):
+def next_immutable_text(gen, vop):
     sequence = gen.take(vop.args[0])
     index_address, index = _cursor_index(gen, vop)
     following = gen.operation(f"add nuw i64 {index}, 1")
     gen.line(f"store i64 {following}, ptr {index_address}")
-    if vop.codegen_info is True:
+    if (vop.results[0].tn.type or UNKNOWN).is_fixnum:
         state = vop.args[-1].tn.slot
         length_address = gen.operation(f"getelementptr i64, ptr {state}, i64 1")
         length_flags = gen.operation(f"load i64, ptr {length_address}")
@@ -573,7 +579,7 @@ for _family, _family_name, _emitters, _next_result in (
     (
         IMMUTABLE_TEXT_CURSOR,
         "immutable-text",
-        (_iterate_immutable_text, _available_immutable_text, _next_immutable_text),
+        (_iterate_immutable_text, _available_immutable_text, next_immutable_text),
         WORD,
     ),
     (

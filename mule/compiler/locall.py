@@ -5116,7 +5116,7 @@ class _ReoptimizeNarrowedKnownCalls(NodeVisitor):
             or (info.optimizer is not None and info is not GETITEM)
         ):
             return
-        checked_args = _checked_transform_args(info, node)
+        checked_args = checked_transform_args(info, node)
         if any(
             (new_type := _recompute_lvar_type(arg)) != self.old_lvar_types.get(arg)
             and new_type is not UNKNOWN
@@ -5148,9 +5148,11 @@ class _ResolveMethodReceiverLvar(NodeVisitor):
 _RESOLVE_METHOD_RECEIVER_LVAR = _ResolveMethodReceiverLvar()
 
 
-def _checked_transform_args(info, node: Combination):
+def checked_transform_args(info, node: Combination):
     if info is RANGE_PREPARE and node.info is not None and not node.info.direct:
         return (*node.args, *node.info.arguments)
+    if info.name == "%byte_next" and node.info is not None:
+        return (*node.args, node.info.source)
     if info is CALL_RESOLVED and node.args and len(node.args[0].uses) == 1:
         return (
             *node.args[0].uses[0].accept(_RESOLVE_METHOD_RECEIVER_LVAR),
@@ -5259,7 +5261,7 @@ class _NodeHasContextTransform(NodeVisitor):
             )
         ):
             return False
-        checked_args = _checked_transform_args(info, node)
+        checked_args = checked_transform_args(info, node)
         for arg in checked_args:
             if not arg.uses:
                 continue
@@ -5276,7 +5278,7 @@ class _NodeHasContextTransform(NodeVisitor):
         return False
 
 
-class _CollectNodeTypesAndTargets(NodeVisitor):
+class CollectNodeTypesAndTargets(NodeVisitor, LeafVisitor):
     def __init__(
         self,
         base_types: dict[object, ValueType],
@@ -5286,8 +5288,29 @@ class _CollectNodeTypesAndTargets(NodeVisitor):
         self.targets = dict(base_targets)
 
     def visit_ValuedNode(self, node):
-        if node not in self.types and node.derived_type is not None:
+        if node.derived_type is not None and (
+            node not in self.types
+            or (node.derived_type.is_fixnum and not self.types[node].is_fixnum)
+        ):
             self.types[node] = node.derived_type
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
+        return (
+            not leaf.indirect
+            and bool(leaf.sets)
+            and all(
+                s.value is not None
+                and (_lvar_current_type(s.value) or UNKNOWN).is_fixnum
+                for s in leaf.sets
+            )
+        )
+
+    def visit_Set(self, node: Set):
+        if node.value is not None and node.var.accept(self):
+            self.types[node] = _lvar_current_type(node.value) or UNKNOWN
 
     def visit_Combination(self, node: Combination):
         self.visit_ValuedNode(node)
@@ -5346,7 +5369,7 @@ def specialized_ir1_context(lambda_: Lambda, context: EntryContext):
                 join_blocks_if_possible(cloned_component)
                 find_dfo(cloned_component)
                 loop.analyze(cloned_component)
-            collector = _CollectNodeTypesAndTargets(cloned_types, cloned_targets)
+            collector = CollectNodeTypesAndTargets(cloned_types, cloned_targets)
             for block in cloned_component.blocks():
                 for node in block.nodes():
                     node.accept(collector)

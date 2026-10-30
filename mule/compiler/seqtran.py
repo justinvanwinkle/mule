@@ -2349,6 +2349,319 @@ def _transform_range_prepare(node: Combination) -> bool:
     return True
 
 
+CODEPOINT_TYPE = IntegerType(0, 0x10FFFF)
+CODEPOINT_COMPARE_NAMES = (
+    "%compare_equal",
+    "%compare_not_equal",
+    "%compare_less",
+    "%compare_less_equal",
+    "%compare_greater",
+    "%compare_greater_equal",
+)
+
+
+class SingleCharCodepoint(ast.Visitor):
+    """Extract the Unicode codepoint of a 1-character ``ast.TextLiteral``."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> int | None:
+        return ord(node.value) if len(node.value) == 1 else None
+
+
+SINGLE_CHAR_CODEPOINT = SingleCharCodepoint()
+
+
+class CodepointConstantRef(NodeVisitor):
+    """Match a single-use constant ``Ref`` holding a 1-character ``ast.TextLiteral``."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref) -> tuple[Ref, int] | None:
+        if node.prev is None or node.lvar is None or len(node.lvar.uses) != 1:
+            return None
+        literal = constant_literal(node.lvar)
+        if literal is None:
+            return None
+        code = literal.accept(SINGLE_CHAR_CODEPOINT)
+        if code is None:
+            return None
+        return node, code
+
+
+CODEPOINT_CONSTANT_REF = CodepointConstantRef()
+
+
+def match_codepoint_comparison(
+    node: Combination, char_lvar: Lvar
+) -> tuple[Combination, Ref, int] | None:
+    if (
+        node.kind is not CallKind.KNOWN
+        or node.fun_info is None
+        or node.fun_info.name not in CODEPOINT_COMPARE_NAMES
+        or len(node.args) != 2
+    ):
+        return None
+    if node.args[0] is char_lvar and node.args[1] is not char_lvar:
+        other_lvar = node.args[1]
+    elif node.args[1] is char_lvar and node.args[0] is not char_lvar:
+        other_lvar = node.args[0]
+    else:
+        return None
+    if len(other_lvar.uses) != 1:
+        return None
+    const_match = other_lvar.uses[0].accept(CODEPOINT_CONSTANT_REF)
+    if const_match is None:
+        return None
+    const_ref, code = const_match
+    return node, const_ref, code
+
+
+def store_dominates_ref(home_lambda: Lambda, store: Set, ref: Ref) -> bool:
+    store_block = store.block
+    ref_block = ref.block
+    if store_block is None or ref_block is None:
+        return False
+    if store_block is ref_block:
+        for node in store_block.nodes():
+            if node is store:
+                return True
+            if node is ref:
+                return False
+        return False
+    if home_lambda.bind is None or home_lambda.bind.block is None:
+        return False
+    entry_block = home_lambda.bind.block
+    if store_block is entry_block:
+        return True
+    visited = {entry_block, store_block}
+    worklist = [entry_block]
+    while worklist:
+        cur = worklist.pop()
+        for succ in cur.succ:
+            if succ is ref_block:
+                return False
+            if succ not in visited:
+                visited.add(succ)
+                worklist.append(succ)
+    return True
+
+
+class CodepointConsumerCheck(NodeVisitor, LeafVisitor):
+    """Verify that a character producer's value is only consumed by 1-character
+    literal comparisons (directly or through local single-source variables)."""
+
+    def __init__(self, home_lambda: Lambda):
+        self.home_lambda = home_lambda
+        self.active_lvar: Lvar | None = None
+        self.visited_vars: set[LambdaVar] = set()
+        self.comparisons: list[tuple[Combination, Ref, int]] = []
+
+    def check_lvar(self, lvar: Lvar) -> bool:
+        if lvar.dest is None:
+            return False
+        prev_lvar = self.active_lvar
+        self.active_lvar = lvar
+        ok = lvar.dest.accept(self)
+        self.active_lvar = prev_lvar
+        return ok
+
+    def visit_Node(self, node) -> bool:
+        return False
+
+    def visit_Combination(self, node: Combination) -> bool:
+        if self.active_lvar is None:
+            return False
+        matched = match_codepoint_comparison(node, self.active_lvar)
+        if matched is None:
+            return False
+        self.comparisons.append(matched)
+        return True
+
+    def visit_Set(self, node: Set) -> bool:
+        if node.value is not self.active_lvar:
+            return False
+        return node.var.accept(self)
+
+    def visit_Leaf(self, leaf) -> bool:
+        return False
+
+    def visit_LambdaVar(self, leaf: LambdaVar) -> bool:
+        if leaf in self.visited_vars:
+            return True
+        if (
+            leaf.indirect
+            or leaf.home is not self.home_lambda
+            or leaf.home.coroutine_body
+            or leaf in leaf.home.vars
+            or len(leaf.sets) != 1
+            or not leaf.refs
+        ):
+            return False
+        store = leaf.sets[0]
+        self.visited_vars.add(leaf)
+        has_active_ref = False
+        for ref in leaf.refs:
+            if ref.prev is None:
+                continue
+            if ref.lvar is None:
+                if leaf.hidden and ref.final:
+                    continue
+                return False
+            if ref.allow_unbound:
+                return False
+            if (
+                ref.derived_type is None or ref.derived_type.may_be_unbound
+            ) and not store_dominates_ref(self.home_lambda, store, ref):
+                return False
+            has_active_ref = True
+            if not self.check_lvar(ref.lvar):
+                return False
+        return has_active_ref
+
+
+def is_valid_codepoint_producer(node: Combination) -> bool:
+    if (
+        node.kind is not CallKind.KNOWN
+        or node.fun_info is None
+        or node.lvar is None
+        or len(node.lvar.uses) != 1
+        or node.prev is None
+        or node.lexenv.policy.safety >= 3
+    ):
+        return False
+    home = node.home_lambda
+    if (
+        home is None
+        or home.policy.safety >= 3
+        or home.name.startswith(_PROTOCOL_PREFIXES)
+    ):
+        return False
+    name = node.fun_info.name
+    if name == "%getitem":
+        if len(node.args) != 2:
+            return False
+        seq_type = lvar_type(node.args[0])
+        idx_type = lvar_type(node.args[1])
+        return seq_type.fits_text(TEXT_TYPE) and idx_type.fits_python_integer(
+            PYTHON_INTEGER
+        )
+    if name == "%byte_next":
+        if len(node.args) != 1 or node.info is None:
+            return False
+        if node.derived_type is not None and node.derived_type.is_fixnum:
+            return False
+        return lvar_type(node.info.source).fits_text(TEXT_TYPE)
+    return False
+
+
+def rewrite_constant_ref_to_codepoint(const_ref: Ref, code: int) -> None:
+    old_leaf = const_ref.leaf
+    if const_ref in old_leaf.refs:
+        old_leaf.refs.remove(const_ref)
+    span = const_ref.source.span if const_ref.source is not None else None
+    literal = ast.IntegerLiteral(code, span=span)
+    block = const_ref.block
+    new_leaf = (
+        find_constant_leaf(block.component.constants, literal)
+        if block is not None and block.component is not None
+        else Constant(literal)
+    )
+    const_ref.leaf = new_leaf
+    new_leaf.refs.append(const_ref)
+    vtype = IntegerType(code, code)
+    const_ref.derived_type = vtype
+    if const_ref.lvar is not None:
+        const_ref.lvar.derived_type = vtype
+
+
+from .byteops import NEXT as BYTE_NEXT  # noqa: F401
+
+
+@deftransform("%getitem")
+@deftransform("%byte_next")
+def transform_text_codepoint_producer(node: Combination) -> bool:
+    if not is_valid_codepoint_producer(node):
+        return False
+    checker = CodepointConsumerCheck(node.home_lambda)
+    if not checker.check_lvar(node.lvar) or not checker.comparisons:
+        return False
+    if node.fun_info.name == "%getitem":
+        retarget_known_combination(node, KNOWN["_text_codepoint"], list(node.args))
+    node.derived_type = CODEPOINT_TYPE
+    node.lvar.derived_type = CODEPOINT_TYPE
+    reoptimize_lvar(node.lvar)
+    for var in checker.visited_vars:
+        for store in var.sets:
+            if store.value is not None:
+                store.value.derived_type = CODEPOINT_TYPE
+        for ref in var.refs:
+            if ref.prev is not None:
+                ref.derived_type = CODEPOINT_TYPE
+                if ref.lvar is not None:
+                    ref.lvar.derived_type = CODEPOINT_TYPE
+                    reoptimize_lvar(ref.lvar)
+    for comp_node, const_ref, code in checker.comparisons:
+        rewrite_constant_ref_to_codepoint(const_ref, code)
+        if comp_node.prev is not None and comp_node.block is not None:
+            comp_node.reoptimize = True
+            comp_node.block.reoptimize = True
+    return True
+
+
+class FindCodepointProducer(NodeVisitor, LeafVisitor):
+    """Trace a comparison operand back to its ``%getitem`` or ``%byte_next``
+    producer through single-assignment local variables."""
+
+    def __init__(self):
+        self.seen_vars: set[LambdaVar] = set()
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if (
+            node.kind is CallKind.KNOWN
+            and node.fun_info is not None
+            and node.fun_info.name in ("%getitem", "%byte_next")
+        ):
+            return node
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf in self.seen_vars or len(leaf.sets) != 1 or leaf.indirect:
+            return None
+        self.seen_vars.add(leaf)
+        store = leaf.sets[0]
+        if store.value is None or len(store.value.uses) != 1:
+            return None
+        return store.value.uses[0].accept(self)
+
+
+for compare_name in CODEPOINT_COMPARE_NAMES:
+
+    @deftransform(compare_name)
+    def transform_text_codepoint_compare(node: Combination) -> bool:
+        if len(node.args) != 2:
+            return False
+        for idx in (0, 1):
+            arg = node.args[idx]
+            if len(arg.uses) != 1:
+                continue
+            producer = arg.uses[0].accept(FindCodepointProducer())
+            if producer is not None and transform_text_codepoint_producer(producer):
+                return True
+        return False
+
+
 __all__ = [
     "_PREDICTABLE_RANGE_CALLEE_REF",
     "_RangeIteratorRef",

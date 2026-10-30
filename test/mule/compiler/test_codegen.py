@@ -117,7 +117,10 @@ def test_text_char_index_and_compare_fusion_emits_codepoint_getitem_and_icmp():
     body = llvm.split('define internal ptr @"mule_fn_scan.spec.0"', 1)[1].split(
         "\n}\n", 1
     )[0]
-    assert "@mule_text_codepoint_getitem(" in body
+    assert (
+        "VOP: primitive-_text_codepoint" in body
+        or "@mule_text_codepoint_getitem(" in body
+    )
     assert "icmp eq i64" in body
     assert "icmp sle i64" in body
     assert "@mule.fast.getitem(" not in body

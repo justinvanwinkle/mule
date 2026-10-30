@@ -3580,7 +3580,9 @@ def sequence_available(gen, vop):
         )
         gen.check_status(status)
         available = gen.operation(f"icmp ne i32 {status}, 0")
-        result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
+        result = gen.operation(
+            f"select i1 {available}, ptr @mule.true, ptr @mule.false"
+        )
         gen.publish(vop.results[0], result)
         gen.refine(vop.results[0].tn, result)
         return
@@ -3859,10 +3861,7 @@ def protocol_getitem(gen, vop):
             )
     else:
         in_bounds = False
-        if info is True:
-            helper = "@mule_text_codepoint_getitem"
-        else:
-            helper = gen.module.getitem_helper()
+        helper = gen.module.getitem_helper()
         boxed_index = gen.encode(index) if raw_index_sc else index
         result = gen.operation(f"call ptr {helper}(ptr {sequence}, ptr {boxed_index})")
     gen.release(sequence)
@@ -4832,6 +4831,9 @@ def text_access(function):
                 return gen.operation(
                     f"phi {phi_ty} [{latin1_out}, %{latin1_end}], [{u16_out}, %{ucs2_end}], [{u32_out}, %{ucs4_end}], [{slow_out}, %{slow_end}]"
                 )
+            return gen.operation(
+                f"call ptr @mule_text_codepoint_getitem(ptr {values[0]}, ptr {values[1]})"
+            )
         if function == "mule_read_byte" and len(vop.args) == 2:
             index_type = vop.args[1].tn.type or UNKNOWN
             if index_type.is_fixnum:
