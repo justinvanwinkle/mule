@@ -72,6 +72,26 @@ pub unsafe extern "C" fn mule_bytes_storage(value: Value, out: *mut ByteView) ->
         1
     }
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_cursor_storage(value: Value, out: *mut ByteView) -> i32 {
+    unsafe {
+        if value.is_null() || object::is_fixnum(value) || out.is_null() {
+            object::error("TypeError", "text storage is required");
+            return -1;
+        }
+        let Data::Text(text, ..) = &(*value).data else {
+            object::error("TypeError", "text storage is required");
+            return -1;
+        };
+        let (data, length) = text.raw_storage();
+        out.write(ByteView {
+            data,
+            length: length | (usize::from(text.kind() != 1) << 62),
+        });
+        1
+    }
+}
 #[inline(always)]
 fn replace_pending(new_value: Value) -> Value {
     object::set_has_pending_exception(!new_value.is_null());

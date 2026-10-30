@@ -284,6 +284,16 @@ impl Text {
     }
 
     #[inline]
+    pub fn raw_storage(&self) -> (*const u8, usize) {
+        match &self.kind {
+            Kind::InlineLatin1 { len, words } => (words.as_ptr().cast::<u8>(), usize::from(*len)),
+            Kind::Latin1(_, values) => (values.as_ptr(), values.len()),
+            Kind::Ucs2(_, values) => (values.as_ptr().cast::<u8>(), values.len()),
+            Kind::Ucs4(_, values) => (values.as_ptr().cast::<u8>(), values.len()),
+        }
+    }
+
+    #[inline]
     pub fn get(&self, index: usize) -> Option<u32> {
         match &self.kind {
             Kind::InlineLatin1 { len, words } => {

@@ -353,6 +353,15 @@ back to `master`:
   and send `exit` to the `ws` subshell so `ws` removes the clean worktree
   directory. Report when `ws` removes the worktree.
 
+Do one thing at a time. When an existing defect or failing test is present, fix
+the defect, restore correct behavior, and verify that existing tests pass
+separately before adding new behavior or optimizations.
+
+Add or modify behavior intentionally. Form a clear idea of the work to be done
+first, break it into self-contained subtasks, and complete and verify each
+subtask in order rather than reading every file up front to stamp out an entire
+feature at once.
+
 Read the relevant specification, implementation, and nearby tests before changing
 a contract. Keep changes in the active package unless the task explicitly concerns
 `old/`. Preserve unrelated worktree edits.

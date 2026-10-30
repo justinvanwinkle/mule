@@ -413,15 +413,48 @@ unsafe fn bytes_storage<'a>(value: Value) -> Option<&'a [u8]> {
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_byte_length(value: Value) -> Value {
+    unsafe {
+        let Some(bytes) = bytes_storage(value) else {
+            return null_mut();
+        };
+        numeric::integer_from_usize(bytes.len())
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_read_byte(value: Value, index: Value) -> Value {
+    unsafe {
+        let Some(bytes) = bytes_storage(value) else {
+            return null_mut();
+        };
+        let Some(index) = storage_index(index, bytes.len()) else {
+            return null_mut();
+        };
+        object::small(i64::from(bytes[index]))
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_read_byte_at(value: Value, index: i64) -> Value {
+    unsafe {
+        let Some(bytes) = bytes_storage(value) else {
+            return null_mut();
+        };
+        if index >= 0 && (index as usize) < bytes.len() {
+            return object::small(i64::from(*bytes.get_unchecked(index as usize)));
+        }
+        fail("IndexError", "byte index out of range")
+    }
+}
+
 unsafe extern "C" fn byte_length(_: Value, args: Value) -> Value {
     unsafe {
         let Some([value]) = operands(args) else {
             return null_mut();
         };
-        let Some(bytes) = bytes_storage(value) else {
-            return null_mut();
-        };
-        numeric::integer_from_usize(bytes.len())
+        mule_byte_length(value)
     }
 }
 
@@ -430,13 +463,7 @@ unsafe extern "C" fn read_byte(_: Value, args: Value) -> Value {
         let Some([value, index]) = operands(args) else {
             return null_mut();
         };
-        let Some(bytes) = bytes_storage(value) else {
-            return null_mut();
-        };
-        let Some(index) = storage_index(index, bytes.len()) else {
-            return null_mut();
-        };
-        object::small(i64::from(bytes[index]))
+        mule_read_byte(value, index)
     }
 }
 

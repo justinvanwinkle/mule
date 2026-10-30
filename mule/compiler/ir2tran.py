@@ -823,6 +823,19 @@ class _SingleCharCodepoint(ast.Visitor):
 _SINGLE_CHAR_CODEPOINT = _SingleCharCodepoint()
 
 
+class _TextLiteralValue(ast.Visitor):
+    """The string value of an ``ast.TextLiteral``, or None."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_TextLiteral(self, node: ast.TextLiteral) -> str:
+        return node.value
+
+
+_TEXT_LITERAL_VALUE = _TextLiteralValue()
+
+
 def _single_char_constant_vop(tn, reads, writes) -> tuple[VOP, int] | None:
     tn_writes = writes.get(tn)
     tn_reads = reads.get(tn)
@@ -842,6 +855,25 @@ def _single_char_constant_vop(tn, reads, writes) -> tuple[VOP, int] | None:
     return writer, code
 
 
+def _text_constant_vop(tn, reads, writes) -> tuple[VOP, str] | None:
+    tn_writes = writes.get(tn)
+    tn_reads = reads.get(tn)
+    if (
+        tn_writes is None
+        or len(tn_writes) != 1
+        or tn_reads is None
+        or len(tn_reads) != 1
+    ):
+        return None
+    writer, _ = tn_writes[0]
+    if writer.info is not vops.CONSTANT:
+        return None
+    text = writer.codegen_info.accept(_TEXT_LITERAL_VALUE)
+    if text is None:
+        return None
+    return writer, text
+
+
 def _codepoint_comparison_constant(
     reader_vop: VOP, reader_ref: TNRef, reads, writes
 ) -> tuple[VOP, int] | None:
@@ -858,6 +890,22 @@ def _codepoint_comparison_constant(
     return _single_char_constant_vop(other_ref.tn, reads, writes)
 
 
+def _codepoint_contains_constant(
+    reader_vop: VOP, reader_ref: TNRef, reads, writes
+) -> tuple[VOP, str] | None:
+    if (
+        reader_vop.info.name
+        not in ("protocol-text_contains", "protocol-text_not_contains")
+        or len(reader_vop.args) != 2
+        or reader_ref is not reader_vop.args[1]
+    ):
+        return None
+    haystack_ref = reader_vop.args[0]
+    if haystack_ref.tn is reader_ref.tn:
+        return None
+    return _text_constant_vop(haystack_ref.tn, reads, writes)
+
+
 def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
     """Fuse ``text[i]`` with 1-character literal comparisons into codepoint
     extraction and fixnum comparisons when ``text`` is proven ``str``, ``i`` is
@@ -870,18 +918,22 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
     getitem_vops: set[VOP] = set()
     for block in component.blocks:
         for vop in block.vops:
-            if vop.info.name != "protocol-getitem":
-                continue
-            seq_type = vop.args[0].tn.type or UNKNOWN
-            idx_type = vop.args[1].tn.type or UNKNOWN
-            res_tn = vop.results[0].tn
-            if (
-                seq_type.fits_text(TEXT_TYPE)
-                and idx_type.fits_python_integer(PYTHON_INTEGER)
-                and len(writes.get(res_tn, ())) == 1
-                and reads.get(res_tn)
-            ):
-                getitem_vops.add(vop)
+            name = vop.info.name
+            if name == "protocol-getitem":
+                seq_type = vop.args[0].tn.type or UNKNOWN
+                idx_type = vop.args[1].tn.type or UNKNOWN
+                res_tn = vop.results[0].tn
+                if (
+                    seq_type.fits_text(TEXT_TYPE)
+                    and idx_type.fits_python_integer(PYTHON_INTEGER)
+                    and len(writes.get(res_tn, ())) == 1
+                    and reads.get(res_tn)
+                ):
+                    getitem_vops.add(vop)
+            elif name.startswith("byte-cursor-immutable-text-%byte_next-"):
+                res_tn = vop.results[0].tn
+                if len(writes.get(res_tn, ())) == 1 and reads.get(res_tn):
+                    getitem_vops.add(vop)
     if not getitem_vops:
         return
 
@@ -903,7 +955,10 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             if reader.info is vops.MOVE and reader.results[0].tn in local_tns:
                 has_active_use = True
                 continue
-            if _codepoint_comparison_constant(reader, ref, reads, writes) is not None:
+            if (
+                _codepoint_comparison_constant(reader, ref, reads, writes) is not None
+                or _codepoint_contains_constant(reader, ref, reads, writes) is not None
+            ):
                 has_active_use = True
                 continue
             return False
@@ -952,6 +1007,8 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
                     if (
                         _codepoint_comparison_constant(consumer, cref, reads, writes)
                         is not None
+                        or _codepoint_contains_constant(consumer, cref, reads, writes)
+                        is not None
                     ):
                         has_comparison = True
                         continue
@@ -991,14 +1048,23 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
     for tn in value_tns:
         for reader, ref in reads.get(tn, ()):
             constant_match = _codepoint_comparison_constant(reader, ref, reads, writes)
-            if constant_match is None:
+            if constant_match is not None:
+                const_vop, code = constant_match
+                literal = linked(const_vop.codegen_info, const_vop, "constant literal")
+                const_vop.codegen_info = ast.IntegerLiteral(code, span=literal.span)
+                const_tn = const_vop.results[0].tn
+                const_tn.primitive_type = FIXNUM
+                const_tn.type = IntegerType(code, code)
                 continue
-            const_vop, code = constant_match
-            literal = linked(const_vop.codegen_info, const_vop, "constant literal")
-            const_vop.codegen_info = ast.IntegerLiteral(code, span=literal.span)
-            const_tn = const_vop.results[0].tn
-            const_tn.primitive_type = FIXNUM
-            const_tn.type = IntegerType(code, code)
+            contains_match = _codepoint_contains_constant(reader, ref, reads, writes)
+            if contains_match is not None:
+                const_vop, text = contains_match
+                reader.codegen_info = text
+                literal = linked(const_vop.codegen_info, const_vop, "constant literal")
+                const_vop.codegen_info = ast.IntegerLiteral(0, span=literal.span)
+                const_tn = const_vop.results[0].tn
+                const_tn.primitive_type = FIXNUM
+                const_tn.type = IntegerType(0, 0)
 
 
 def _enclosing_exception_target(block):
@@ -1065,6 +1131,37 @@ def _specialize_sequence_iterations(component: IR2Component) -> None:
     vop_blocks = {vop: block for block in component.blocks for vop in block.vops}
     pruned_handlers = False
     for block in component.blocks:
+        if (
+            block.exception_target is not None
+            and any(
+                step.info.name.startswith(
+                    (
+                        "byte-cursor-mutable-list-%byte_available-",
+                        "byte-cursor-immutable-tuple-%byte_available-",
+                        "byte-cursor-immutable-bytes-%byte_available-",
+                        "byte-cursor-immutable-text-%byte_available-",
+                        "byte-cursor-mutable-bytearray-%byte_available-",
+                    )
+                )
+                for step in block.vops
+            )
+            and all(
+                step.info.name
+                in ("insert-safepoint", "load-local", "branch")
+                or step.info.name.startswith(
+                    (
+                        "byte-cursor-mutable-list-%byte_available-",
+                        "byte-cursor-immutable-tuple-%byte_available-",
+                        "byte-cursor-immutable-bytes-%byte_available-",
+                        "byte-cursor-immutable-text-%byte_available-",
+                        "byte-cursor-mutable-bytearray-%byte_available-",
+                    )
+                )
+                for step in block.vops
+            )
+        ):
+            block.exception_target = _enclosing_exception_target(block.block)
+            pruned_handlers = True
         for vop in block.vops:
             if (
                 vop.info.name != "protocol-iterate"
@@ -1860,6 +1957,16 @@ def _safe_list_borrow_step(step: VOP, seq_local, root_local=None) -> bool:
         return info is not None and (
             info.seq_type.is_exact_list or info.seq_type.is_exact_tuple
         )
+    if name.startswith(
+        (
+            "byte-cursor-mutable-list-",
+            "byte-cursor-immutable-tuple-",
+            "byte-cursor-immutable-bytes-",
+            "byte-cursor-immutable-text-",
+            "byte-cursor-mutable-bytearray-",
+        )
+    ):
+        return True
     if name == "protocol-getitem" and len(step.args) == 2:
         seq_type = step.args[0].tn.type or UNKNOWN
         return (seq_type.is_exact_list or seq_type.is_exact_tuple) and (
@@ -2234,6 +2341,16 @@ def _safe_container_local_region_step(
         return info is not None and (
             info.seq_type.is_exact_list or info.seq_type.is_exact_tuple
         )
+    if name.startswith(
+        (
+            "byte-cursor-mutable-list-",
+            "byte-cursor-immutable-tuple-",
+            "byte-cursor-immutable-bytes-",
+            "byte-cursor-immutable-text-",
+            "byte-cursor-mutable-bytearray-",
+        )
+    ):
+        return True
     if name == "protocol-getitem" and len(step.args) == 2:
         seq_t = step.args[0].tn.type or UNKNOWN
         return (seq_t.is_exact_list or seq_t.is_exact_tuple) and (
@@ -2440,22 +2557,30 @@ def _specialize_list_getitems(component: IR2Component) -> None:
                 ):
                     continue
                 seq_type = vop.args[0].tn.type or UNKNOWN
-                idx_type = vop.args[1].tn.type or UNKNOWN
-                if not idx_type.is_fixnum:
-                    continue
-                if name == "protocol-getitem":
-                    if seq_type.is_exact_list:
-                        vop.codegen_info = "list_owned"
-                        borrow_info = "list_borrow"
-                    elif seq_type.is_exact_tuple:
-                        vop.codegen_info = "tuple_owned"
-                        borrow_info = "tuple_borrow"
+                if name.startswith(
+                    (
+                        "byte-cursor-mutable-list-%byte_next-",
+                        "byte-cursor-immutable-tuple-%byte_next-",
+                    )
+                ):
+                    borrow_info = "cursor_borrow"
+                else:
+                    idx_type = vop.args[1].tn.type or UNKNOWN
+                    if not idx_type.is_fixnum:
+                        continue
+                    if name == "protocol-getitem":
+                        if seq_type.is_exact_list:
+                            vop.codegen_info = "list_owned"
+                            borrow_info = "list_borrow"
+                        elif seq_type.is_exact_tuple:
+                            vop.codegen_info = "tuple_owned"
+                            borrow_info = "tuple_borrow"
+                        else:
+                            continue
+                    elif name == "primitive-_storage_read":
+                        borrow_info = "storage_borrow"
                     else:
                         continue
-                elif name == "primitive-_storage_read":
-                    borrow_info = "storage_borrow"
-                else:
-                    continue
                 seq_tn = vop.args[0].tn
                 seq_writes = writes.get(seq_tn)
                 if seq_writes is None or len(seq_writes) != 1:
@@ -2508,7 +2633,13 @@ def _specialize_list_getitems(component: IR2Component) -> None:
             if reader_index is None or reader_index <= index:
                 continue
             if (
-                name in ("protocol-getitem", "protocol-next_item")
+                name
+                in (
+                    "protocol-getitem",
+                    "protocol-next_item",
+                    "byte-cursor-mutable-list-%byte_next-False",
+                    "byte-cursor-immutable-tuple-%byte_next-False",
+                )
                 and reader.info.name == "structural-unpack"
                 and reader_index == index + 2
                 and _try_borrow_unpacked_getitem(
@@ -3853,9 +3984,10 @@ class _Converter(NodeVisitor):
         elif name in ("%range_prepare", "%range_available", "%range_advance"):
             self.convert_range(node)
         elif name in ("%byte_iterate", "%byte_available", "%byte_next"):
-            self.convert_template(
+            self.emit_template(
                 node,
                 [*(self.lvar_tn(arg) for arg in node.args), self.range_tn(node.info)],
+                None,
             )
         elif name == "%unpack":
             arity = self.constant_index(node.args[1])

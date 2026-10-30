@@ -152,6 +152,11 @@ class _HiddenIteratorVar(LeafVisitor):
 def _transform_byte_iteration(node):
     if node.lvar is None or len(node.args) != 1 or len(node.args[0].uses) != 1:
         return False
+    if (
+        node.lexenv.policy.safety < 3
+        and node.args[0].uses[0].accept(_ENUMERATE_CALL_CHECK) is not None
+    ):
+        return False
     home = node.home_lambda
     if home is None or home.coroutine_body or home.name.startswith(_PROTOCOL_PREFIXES):
         return False

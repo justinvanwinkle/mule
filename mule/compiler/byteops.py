@@ -5,7 +5,7 @@ The mutable payload has an authoritative repr(C) header; only cold growth calls
 the allocator. Immutable byte views retain their owner in the IR1 loop local.
 """
 
-from .ctype import BOOLEAN, BYTE_STORAGE_TYPE, NONE_TYPE, IntegerType
+from .ctype import BOOLEAN, BYTE_STORAGE_TYPE, NONE_TYPE, UNKNOWN, IntegerType
 from .fndb import _arg_type, defknown
 from .knownfun import defpropagate
 from .vmdef import define_vop
@@ -397,10 +397,20 @@ def _next_list(gen, vop):
 def _advance_object_cursor(gen, vop, sequence, data):
     index_address, index = _cursor_index(gen, vop)
     address = gen.operation(f"getelementptr ptr, ptr {data}, i64 {index}")
-    item = gen.operation(f"load ptr, ptr {address}")
+    item = gen.operation(f"load ptr, ptr {address}, !nonnull !{{}}")
     following = gen.operation(f"add nuw i64 {index}, 1")
     gen.line(f"store i64 {following}, ptr {index_address}")
-    gen.publish(vop.results[0], gen.retain(item))
+    res_tn = vop.results[0].tn
+    res_type = res_tn.type or UNKNOWN
+    unchecked_contract = gen._has_unchecked_element_contract(res_tn)
+    immortal_elem = not unchecked_contract and (
+        not res_tn.sc.owned or res_type.is_fixnum or res_type.is_immortal
+    )
+    if vop.codegen_info != "cursor_borrow" and not immortal_elem:
+        if not unchecked_contract and res_type.is_heap_object:
+            gen.heap_values.add(item)
+        item = gen.retain(item)
+    gen.publish(vop.results[0], item)
     gen.refine(vop.results[0].tn, item)
     gen.release(sequence)
 
@@ -443,6 +453,72 @@ def _advance_byte_cursor(gen, vop, sequence, index_address, index, data):
     gen.release(sequence)
 
 
+def _iterate_immutable_text(gen, vop):
+    sequence = gen.take(vop.args[0])
+    state = vop.args[-1].tn.slot
+    status = gen.operation(
+        f"call i32 @mule_text_cursor_storage(ptr {sequence}, ptr {state})"
+    )
+    gen.check_status(status)
+    index = gen.operation(f"getelementptr i64, ptr {state}, i64 2")
+    gen.line(f"store i64 0, ptr {index}")
+    if not gen.owns_reference(sequence):
+        sequence = gen.retain(sequence)
+    gen.publish(vop.results[0], sequence)
+    gen.refine(vop.results[0].tn, sequence)
+
+
+def _available_immutable_text(gen, vop):
+    gen.load(vop.args[0])
+    _, index = _cursor_index(gen, vop)
+    state = vop.args[-1].tn.slot
+    length_address = gen.operation(f"getelementptr i64, ptr {state}, i64 1")
+    length_flags = gen.operation(f"load i64, ptr {length_address}")
+    length = gen.operation(f"and i64 {length_flags}, {(1 << 62) - 1}")
+    _publish_available(gen, vop, index, length)
+
+
+def _next_immutable_text(gen, vop):
+    sequence = gen.take(vop.args[0])
+    index_address, index = _cursor_index(gen, vop)
+    following = gen.operation(f"add nuw i64 {index}, 1")
+    gen.line(f"store i64 {following}, ptr {index_address}")
+    if vop.codegen_info is True:
+        state = vop.args[-1].tn.slot
+        length_address = gen.operation(f"getelementptr i64, ptr {state}, i64 1")
+        length_flags = gen.operation(f"load i64, ptr {length_address}")
+        wide = gen.operation(f"icmp uge i64 {length_flags}, {1 << 62}")
+        latin1_lbl = gen.fresh("text.cursor.latin1")[1:]
+        wide_lbl = gen.fresh("text.cursor.wide")[1:]
+        done_lbl = gen.fresh("text.cursor.done")[1:]
+        gen.line(f"br i1 {wide}, label %{wide_lbl}, label %{latin1_lbl}")
+        gen.lines.append(latin1_lbl + ":")
+        data = gen.operation(f"load ptr, ptr {state}")
+        address = gen.operation(f"getelementptr i8, ptr {data}, i64 {index}")
+        byte = gen.operation(f"load i8, ptr {address}")
+        latin1_val = gen.operation(f"zext i8 {byte} to i64")
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(wide_lbl + ":")
+        wide_ptr = gen.operation(
+            f"call ptr @mule_text_codepoint_at(ptr {sequence}, i64 {index})"
+        )
+        wide_bits = gen.operation(f"ptrtoint ptr {wide_ptr} to i64")
+        wide_val = gen.operation(f"ashr i64 {wide_bits}, 1")
+        gen.line(f"br label %{done_lbl}")
+        gen.lines.append(done_lbl + ":")
+        value = gen.operation(
+            f"phi i64 [{latin1_val}, %{latin1_lbl}], [{wide_val}, %{wide_lbl}]"
+        )
+        _integer_result(gen, vop, value)
+        gen.release(sequence)
+        return
+    result = gen.operation(f"call ptr @mule_text_char_at(ptr {sequence}, i64 {index})")
+    gen.release(sequence)
+    gen.publish(vop.results[0], result)
+    gen.check_pointer(result)
+    gen.refine(vop.results[0].tn, result)
+
+
 def _iterate_generic(gen, vop):
     sequence = gen.take(vop.args[0])
     move = gen.owns_reference(sequence)
@@ -478,6 +554,7 @@ def _next_generic(gen, vop):
 
 IMMUTABLE_BYTES_CURSOR = object()
 MUTABLE_BYTEARRAY_CURSOR = object()
+IMMUTABLE_TEXT_CURSOR = object()
 IMMUTABLE_TUPLE_CURSOR = object()
 MUTABLE_LIST_CURSOR = object()
 GENERIC_CURSOR = object()
@@ -493,6 +570,12 @@ for _family, _family_name, _emitters, _next_result in (
         MUTABLE_BYTEARRAY_CURSOR,
         "mutable-bytearray",
         (_iterate_mutable_sequence, _available_bytearray, _next_bytearray),
+        WORD,
+    ),
+    (
+        IMMUTABLE_TEXT_CURSOR,
+        "immutable-text",
+        (_iterate_immutable_text, _available_immutable_text, _next_immutable_text),
         WORD,
     ),
     (

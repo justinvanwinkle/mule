@@ -487,6 +487,7 @@ class _CursorTemplateSelection(ValueTypeVisitor):
             CURSOR_TEMPLATES,
             GENERIC_CURSOR,
             IMMUTABLE_BYTES_CURSOR,
+            IMMUTABLE_TEXT_CURSOR,
             IMMUTABLE_TUPLE_CURSOR,
             MUTABLE_BYTEARRAY_CURSOR,
             MUTABLE_LIST_CURSOR,
@@ -494,6 +495,7 @@ class _CursorTemplateSelection(ValueTypeVisitor):
 
         self.templates = CURSOR_TEMPLATES
         self.immutable_bytes = IMMUTABLE_BYTES_CURSOR
+        self.immutable_text = IMMUTABLE_TEXT_CURSOR
         self.mutable_bytearray = MUTABLE_BYTEARRAY_CURSOR
         self.immutable_tuple = IMMUTABLE_TUPLE_CURSOR
         self.mutable_list = MUTABLE_LIST_CURSOR
@@ -503,6 +505,9 @@ class _CursorTemplateSelection(ValueTypeVisitor):
 
     def visit_BytesType(self, fact):
         return self.templates[self.immutable_bytes, self.info, self.raw]
+
+    def visit_TextType(self, fact):
+        return self.templates[self.immutable_text, self.info, self.raw]
 
     def visit_ByteArrayType(self, fact):
         return self.templates[self.mutable_bytearray, self.info, self.raw]

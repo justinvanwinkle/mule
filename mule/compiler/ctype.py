@@ -3663,6 +3663,7 @@ class IteratorType(ValueType):
 
     element: ValueType = UNKNOWN
     may_be_unbound: bool = False
+    is_stream: bool = False
 
     def runtime_class_type(self):
         return UNKNOWN if self.may_be_unbound else CLASS_ITERATOR_TYPE
@@ -3697,14 +3698,14 @@ class IteratorType(ValueType):
             return self
         return (
             ITERATOR_TYPE
-            if self.element is UNKNOWN
-            else IteratorType(self.element, False)
+            if self.element is UNKNOWN and not self.is_stream
+            else IteratorType(self.element, False, self.is_stream)
         )
 
     def with_unbound(self):
         if self.may_be_unbound:
             return self
-        return IteratorType(self.element, True)
+        return IteratorType(self.element, True, self.is_stream)
 
     def limit_container_depth(self, max_depth: int = 4):
         if self.element is BOTTOM or self.element is UNKNOWN:
@@ -3773,19 +3774,28 @@ class IteratorType(ValueType):
         if left is self:
             return self
         may_be_unbound = left.may_be_unbound or self.may_be_unbound
+        is_stream = left.is_stream and self.is_stream
         if left.element is BOTTOM:
             element = self.element
         elif self.element is BOTTOM:
             element = left.element
         else:
             element = left.element.join(self.element).limit_container_depth(3)
-        if element is UNKNOWN and not may_be_unbound:
+        if element is UNKNOWN and not may_be_unbound and not is_stream:
             return ITERATOR_TYPE
-        if element == self.element and may_be_unbound == self.may_be_unbound:
+        if (
+            element == self.element
+            and may_be_unbound == self.may_be_unbound
+            and is_stream == self.is_stream
+        ):
             return self
-        if element == left.element and may_be_unbound == left.may_be_unbound:
+        if (
+            element == left.element
+            and may_be_unbound == left.may_be_unbound
+            and is_stream == left.is_stream
+        ):
             return left
-        return IteratorType(element, may_be_unbound)
+        return IteratorType(element, may_be_unbound, is_stream)
 
     def widen(self, new, thresholds: tuple[int, ...] = ()):
         return new.widen_iterator(self, thresholds)
@@ -3795,11 +3805,16 @@ class IteratorType(ValueType):
             old.element, self.element, thresholds
         ).limit_container_depth(3)
         may_be_unbound = old.may_be_unbound or self.may_be_unbound
-        if element == self.element and may_be_unbound == self.may_be_unbound:
+        is_stream = old.is_stream and self.is_stream
+        if (
+            element == self.element
+            and may_be_unbound == self.may_be_unbound
+            and is_stream == self.is_stream
+        ):
             return self
-        if element is UNKNOWN and not may_be_unbound:
+        if element is UNKNOWN and not may_be_unbound and not is_stream:
             return ITERATOR_TYPE
-        return IteratorType(element, may_be_unbound)
+        return IteratorType(element, may_be_unbound, is_stream)
 
     def accepts(self, actual):
         return actual.fits_iterator(self)
@@ -3808,6 +3823,8 @@ class IteratorType(ValueType):
         if expected is None:
             return not self.may_be_unbound
         if self.may_be_unbound and not expected.may_be_unbound:
+            return False
+        if expected.is_stream and not self.is_stream:
             return False
         if expected.element is UNKNOWN or self.element is BOTTOM:
             return True
@@ -3822,6 +3839,25 @@ class IteratorType(ValueType):
         if self.may_be_unbound or self.element is BOTTOM:
             return UNKNOWN
         return self.element
+
+    def method_return_type(
+        self, name: str, arity: int, has_keywords: bool, storage_methods=None
+    ):
+        if (
+            self.may_be_unbound
+            or not self.is_stream
+            or has_keywords
+            or self.element is UNKNOWN
+            or self.element is BOTTOM
+        ):
+            return UNKNOWN
+        if name in ("read", "readline") and arity <= 1:
+            return self.element
+        if name == "readlines" and arity <= 1:
+            return ListType(self.element)
+        if name == "__enter__" and arity == 0:
+            return self
+        return UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)

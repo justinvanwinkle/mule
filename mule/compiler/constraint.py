@@ -3112,6 +3112,12 @@ defpropagate("%set_contains")(
 defpropagate("%set_not_contains")(
     _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
 )
+defpropagate("%text_contains")(
+    _make_table_containment_propagator(ast.ComparisonOperator.IN)
+)
+defpropagate("%text_not_contains")(
+    _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
+)
 
 
 @defpropagate("%dict_len")
@@ -3746,6 +3752,20 @@ def _propagate_setitem(visitor: _Propagation, node: Combination):
         visitor.walk.in_bounds_nodes.discard(node)
         visitor.mutate_dict(recv_var, recv_type, key_type, val_type)
     return NONE_FACT
+
+
+@defpropagate("%context_enter")
+def _propagate_context_enter(visitor: _Propagation, node: Combination):
+    args = node.args
+    if len(args) != 1:
+        return None
+    operand_type = visitor.type_of(args[0])
+    if operand_type is BOTTOM:
+        return NO_FACT
+    visitor.invalidate()
+    if operand_type.fits_iterator() and operand_type.is_stream:
+        return _fact(operand_type)
+    return UNKNOWN_FACT
 
 
 @defpropagate("%iterate")
@@ -5086,8 +5106,44 @@ def _derive_builtin_sorted(
     return LIST_TYPE
 
 
+_TEXT_STREAM_TYPE = IteratorType(TEXT_TYPE, is_stream=True)
+_BINARY_STREAM_TYPE = IteratorType(BYTES_TYPE, is_stream=True)
+
+
+def _derive_builtin_open(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if not arg_types or None in keywords:
+        return UNKNOWN
+    pos_count = len(arg_types) - len(keywords)
+    if pos_count < 1:
+        return UNKNOWN
+    if "mode" in keywords:
+        if pos_count >= 2:
+            return UNKNOWN
+        mode_type = arg_types[pos_count + keywords.index("mode")]
+    elif pos_count >= 2:
+        mode_type = arg_types[1]
+    else:
+        return _TEXT_STREAM_TYPE
+    mode_lit = mode_type.exact_text()
+    if mode_lit is None or not any(ch in mode_lit for ch in "rwxa"):
+        return UNKNOWN
+    if "b" not in mode_lit:
+        return _TEXT_STREAM_TYPE
+    if "t" not in mode_lit:
+        return _BINARY_STREAM_TYPE
+    return UNKNOWN
+
+
 BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget] = {
     **BOOTSTRAP_CLASS_TARGETS,
+    "open": ForeignCallTarget(
+        return_type=UNKNOWN,
+        derive_fn=_derive_builtin_open,
+    ),
     "len": ForeignCallTarget(
         return_type=IntegerType(0, (1 << 60) - 1),
         derive_fn=_derive_builtin_len,

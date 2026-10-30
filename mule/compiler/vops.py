@@ -3681,12 +3681,64 @@ _BORROWED_PROTOCOL_NAMES = frozenset(
 )
 
 
+def _emit_codepoint_contains(gen, code: str, haystack: str, *, negate: bool) -> str:
+    codes = sorted({ord(ch) for ch in haystack})
+    terms: list[str] = []
+    low_codes = [c for c in codes if c < 64]
+    high_codes = [c for c in codes if 64 <= c < 128]
+    other_codes = [c for c in codes if c >= 128]
+    if len(low_codes) == 1:
+        terms.append(gen.operation(f"icmp eq i64 {code}, {low_codes[0]}"))
+    elif len(low_codes) >= 2:
+        mask = sum(1 << c for c in low_codes)
+        in_range = gen.operation(f"icmp ult i64 {code}, 64")
+        bit = gen.operation(f"shl i64 1, {code}")
+        masked = gen.operation(f"and i64 {bit}, {mask}")
+        hit = gen.operation(f"icmp ne i64 {masked}, 0")
+        terms.append(gen.operation(f"select i1 {in_range}, i1 {hit}, i1 false"))
+    if len(high_codes) == 1:
+        terms.append(gen.operation(f"icmp eq i64 {code}, {high_codes[0]}"))
+    elif len(high_codes) >= 2:
+        mask = sum(1 << (c - 64) for c in high_codes)
+        shifted = gen.operation(f"sub i64 {code}, 64")
+        in_range = gen.operation(f"icmp ult i64 {shifted}, 64")
+        bit = gen.operation(f"shl i64 1, {shifted}")
+        masked = gen.operation(f"and i64 {bit}, {mask}")
+        hit = gen.operation(f"icmp ne i64 {masked}, 0")
+        terms.append(gen.operation(f"select i1 {in_range}, i1 {hit}, i1 false"))
+    for c in other_codes:
+        terms.append(gen.operation(f"icmp eq i64 {code}, {c}"))
+    if not terms:
+        matched = "true" if negate else "false"
+    else:
+        matched = terms[0]
+        for term in terms[1:]:
+            matched = gen.operation(f"or i1 {matched}, {term}")
+        if negate:
+            matched = gen.operation(f"xor i1 {matched}, true")
+    return gen.operation(f"select i1 {matched}, ptr @mule.true, ptr @mule.false")
+
+
 def _define_protocol(name, info):
     suspends = name in _SUSPENSION_PROTOCOLS
     borrowed = name in _BORROWED_PROTOCOL_NAMES
 
     @define_vop(f"protocol-{name}", translate=info, results=(OBJECT,))
     def protocol(gen, vop):
+        if (
+            name in ("text_contains", "text_not_contains")
+            and vop.codegen_info is not None
+        ):
+            gen.take(vop.args[0])
+            code = _decode_fixnum_operand(gen, vop.args[1])
+            boolean = _emit_codepoint_contains(
+                gen,
+                code,
+                vop.codegen_info,
+                negate=name == "text_not_contains",
+            )
+            gen.native_result(vop.results[0], boolean)
+            return
         arguments = [gen.take(value) for value in vop.args]
         if suspends:
             gen.sync_coroutine_locals()
@@ -4604,6 +4656,15 @@ def text_access(function):
                 )
                 return gen.operation(
                     f"call ptr @mule_text_codepoint_at(ptr {values[0]}, i64 {index})"
+                )
+        if function == "mule_read_byte" and len(vop.args) == 2:
+            index_type = vop.args[1].tn.type or UNKNOWN
+            if index_type.is_fixnum:
+                index = (
+                    values[1] if vop.args[1].tn.sc is SIGNED else gen.decode(values[1])
+                )
+                return gen.operation(
+                    f"call ptr @mule_read_byte_at(ptr {values[0]}, i64 {index})"
                 )
         operands = ", ".join(f"ptr {value}" for value in values)
         return gen.operation(f"call ptr @{function}({operands})")

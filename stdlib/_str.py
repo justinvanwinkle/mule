@@ -604,15 +604,24 @@ def decode(data, encoding, errors):
     if codec in ("unicode-escape", "raw-unicode-escape"):
         return _unicode_escape_decode(data, errors, True, codec == "raw-unicode-escape")[0]
     codes = []
-    index = 0
     size = byte_length(data)
+    _storage_reserve(codes, size)
+    is_utf8 = codec == "utf-8"
+    is_latin1 = codec == "latin-1"
+    surrogates = errors == "surrogatepass"
+    index = 0
     while index < size:
-        if codec == "utf-8":
+        byte = read_byte(data, index)
+        if byte < 0x80 or is_latin1:
+            _storage_append(codes, byte)
+            index += 1
+            continue
+        if is_utf8:
             code, length = _utf8_sequence(
-                data, index, size, errors == "surrogatepass"
+                data, index, size, surrogates
             )
             if code >= 0:
-                codes.append(code)
+                _storage_append(codes, code)
                 index += length
                 continue
             if code == -2:
@@ -625,11 +634,6 @@ def decode(data, encoding, errors):
                 if length > 1:
                     length -= 1
         else:
-            byte = read_byte(data, index)
-            if codec == "latin-1" or byte < 128:
-                codes.append(byte)
-                index += 1
-                continue
             length = 1
             reason = "ordinal not in range(128)"
         _decode_failure(codes, codec, data, index, index + length, reason, errors)

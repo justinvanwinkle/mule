@@ -198,3 +198,62 @@ class Holder:
     ]
     assert reads
     assert all(step.codegen_info == "storage_borrow" for step in reads)
+
+
+def test_list_field_mutated_via_stored_and_rebound_locals_widens_element_type():
+    compilation = compile_protocol(
+        """
+def _resize(self):
+    indices = [-1] * 8
+    new_indices = indices
+    _set_instance_field(self, '_indices', new_indices)
+    del new_indices
+    _storage_write(indices, 0, 3)
+
+class TableStored:
+    __mule_slots__ = ('_indices',)
+    def __init__(self):
+        init_indices = [-1] * 8
+        _set_instance_field(self, '_indices', init_indices)
+        del init_indices
+        _resize(self)
+    def has_entry(self, slot):
+        indices = _instance_field(self, '_indices')
+        entry = _storage_read(indices, slot & 7)
+        if entry >= 0:
+            return entry
+        return -1
+
+def _insert(self, flag, pos):
+    indices = _instance_field(self, '_indices')
+    if flag:
+        indices = _instance_field(self, '_indices')
+    _storage_write(indices, 0, pos & 0xFFFF)
+
+class TableRebound:
+    __mule_slots__ = ('_indices',)
+    def __init__(self, flag, pos):
+        init_indices = [-1] * 8
+        _set_instance_field(self, '_indices', init_indices)
+        del init_indices
+        _insert(self, flag, pos)
+    def has_entry(self, slot):
+        indices = _instance_field(self, '_indices')
+        entry = _storage_read(indices, slot & 7)
+        if entry >= 0:
+            return entry
+        return -1
+""",
+        "<physical-list-field-mutation>",
+        namespace="$mule.physical_list_field_mutation",
+    )
+    module = ModuleGenerator(Program(compilation.lambdas, None, compilation.facts))
+    for qualname in ("TableStored.has_entry", "TableRebound.has_entry"):
+        function = next(
+            function
+            for function in compilation.lambdas
+            if function.code is not None and function.code.qualname == qualname
+        )
+        _, variants = module.contexts(function)
+        component = compile_component(function, variants[0])
+        assert len(component.blocks) > 1

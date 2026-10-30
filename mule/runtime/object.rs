@@ -4063,6 +4063,28 @@ pub unsafe extern "C" fn mule_text_from_codepoints(value: Value) -> Value {
     }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mule_text_char_at(value: Value, index: i64) -> Value {
+    unsafe {
+        if value.is_null() || is_fixnum(value) {
+            return text_storage_error();
+        }
+        let Data::Text(text, ..) = &(*value).data else {
+            return text_storage_error();
+        };
+        if index >= 0 {
+            let idx = index as usize;
+            if let Some(bytes) = text.as_latin1() {
+                if idx < bytes.len() {
+                    return latin1_character(*bytes.get_unchecked(idx));
+                }
+            } else if idx < text.len() {
+                return text_slice_range(text, idx, idx + 1);
+            }
+        }
+        string_index_error()
+    }
+}
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_text_codepoint(value: Value, index: Value) -> Value {
     unsafe {
         text_position(value, index).map_or(std::ptr::null_mut(), |(text, index)| {

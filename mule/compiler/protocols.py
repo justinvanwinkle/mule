@@ -100,6 +100,8 @@ _TEXT_ACCESS = {
         "_text_slice",
         "_text_join",
         "_text_from_codepoints",
+        "_byte_length",
+        "_read_byte",
         "_storage_hash",
         "_identity_hash",
         "_type_of",
@@ -229,6 +231,8 @@ _RESULT_TYPES = {
     "_storage_length": _derive_storage_length,
     "_text_length": _derive_text_length,
     "_text_codepoint": lambda node: IntegerType(0, 0x10FFFF),
+    "_byte_length": lambda node: IntegerType(0, (1 << 48) - 1),
+    "_read_byte": lambda node: IntegerType(0, 255),
     "_integer_storage": lambda node: IntegerType(),
     "_storage_hash": lambda node: OPTIONAL_FIXNUM,
     "_identity_hash": lambda node: IntegerType(FIXNUM_MIN, FIXNUM_MAX),
@@ -253,6 +257,8 @@ _NON_INTEGER_FIRST_PRIMITIVES = frozenset(
         "_storage_insert",
         "_storage_delete",
         "_storage_tuple",
+        "_byte_length",
+        "_read_byte",
     }
 )
 
@@ -271,6 +277,8 @@ _BORROWED_PRIMITIVE_ARGS = {
     "_storage_length": frozenset({0}),
     "_text_length": frozenset({0}),
     "_text_codepoint": frozenset({0, 1}),
+    "_byte_length": frozenset({0}),
+    "_read_byte": frozenset({0, 1}),
     "_integer_storage": frozenset({0}),
     "_storage_hash": frozenset({0}),
     "_identity_hash": frozenset({0}),
@@ -320,6 +328,9 @@ NATIVE_EXPORT_PRIMITIVES = {
     ("is_instance", 2): "_is_instance",
     ("class_lookup_default", 3): "_class_lookup_default",
     ("bind_instance_attribute", 3): "_bind_instance_attribute",
+    ("byte_length", 1): "_byte_length",
+    ("read_byte", 2): "_read_byte",
+    ("text_from_codepoints", 1): "_text_from_codepoints",
 }
 for (_export, _arity), _name in NATIVE_EXPORT_PRIMITIVES.items():
     PRIMITIVES[f"_mule_native.{_export}/{_arity}"] = PRIMITIVES[_name]

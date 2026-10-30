@@ -131,6 +131,7 @@ from .node import (
     Lambda,
     LambdaVar,
     LeafVisitor,
+    Lvar,
     NodeVisitor,
     Ref,
     Set,
@@ -1815,6 +1816,41 @@ class _SanitizeInstanceFieldType(ValueTypeVisitor):
         return DictType(key, val, False, fact.proven)
 
 
+class _ReadLambdaVar(NodeVisitor, LeafVisitor):
+    """Single-assignment local variable origin of a reference."""
+
+    def __init__(self, seen=frozenset()):
+        self.seen = seen
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if leaf.indirect:
+            return None
+        definitions = [store.value for store in leaf.sets if store.value is not None]
+        if len(definitions) > 1:
+            return None
+        if (
+            leaf not in self.seen
+            and len(definitions) == 1
+            and len(definitions[0].uses) == 1
+        ):
+            origin = definitions[0].uses[0].accept(_ReadLambdaVar(self.seen | {leaf}))
+            if origin is not None:
+                return origin
+        return leaf
+
+
+_READ_LAMBDA_VAR = _ReadLambdaVar()
+
+
 class _GetattrOnInstance(NodeVisitor, LeafVisitor):
     def __init__(self, seen=frozenset()):
         self.seen = seen
@@ -1830,14 +1866,30 @@ class _GetattrOnInstance(NodeVisitor, LeafVisitor):
 
     def visit_LambdaVar(self, leaf: LambdaVar):
         definitions = [store.value for store in leaf.sets if store.value is not None]
-        if (
-            not leaf.indirect
-            and leaf not in self.seen
-            and len(definitions) == 1
-            and len(definitions[0].uses) == 1
-        ):
-            return definitions[0].uses[0].accept(_GetattrOnInstance(self.seen | {leaf}))
-        return None
+        if leaf.indirect or leaf in self.seen or not definitions:
+            return None
+        sub = _GetattrOnInstance(self.seen | {leaf})
+        if len(definitions) == 1 and len(definitions[0].uses) == 1:
+            return definitions[0].uses[0].accept(sub)
+        first_attr = None
+        first_recv_var = None
+        for defn in definitions:
+            if not defn.uses:
+                return None
+            for use in defn.uses:
+                attr = use.accept(sub)
+                if attr is None:
+                    return None
+                inst_lvar, field_name = attr
+                recv_var = inst_lvar.use().accept(_READ_LAMBDA_VAR)
+                if recv_var is None:
+                    return None
+                if first_attr is None:
+                    first_attr = attr
+                    first_recv_var = recv_var
+                elif field_name != first_attr[1] or recv_var is not first_recv_var:
+                    return None
+        return first_attr
 
     def visit_Combination(self, node: Combination):
         if node.kind is CallKind.KNOWN and node.fun_info is PHYSICAL_FIELD_REF:
@@ -1888,6 +1940,9 @@ _SANITIZE_PROTOCOL_FIELD_TYPE = _SanitizeProtocolFieldType()
 
 
 class _StorageReadFromInstanceField(NodeVisitor, LeafVisitor):
+    def __init__(self, seen=frozenset()):
+        self.seen = seen
+
     def visit_Node(self, node):
         return None
 
@@ -1898,13 +1953,20 @@ class _StorageReadFromInstanceField(NodeVisitor, LeafVisitor):
         return node.leaf.accept(self)
 
     def visit_LambdaVar(self, leaf: LambdaVar):
-        if (
-            len(leaf.sets) == 1
-            and leaf.sets[0].value is not None
-            and len(leaf.sets[0].value.uses) == 1
-        ):
-            return leaf.sets[0].value.uses[0].accept(self)
-        return None
+        definitions = [store.value for store in leaf.sets if store.value is not None]
+        if leaf.indirect or leaf in self.seen or not definitions:
+            return None
+        sub = _StorageReadFromInstanceField(self.seen | {leaf})
+        field_name = None
+        for defn in definitions:
+            if not defn.uses:
+                return None
+            for use in defn.uses:
+                name = use.accept(sub)
+                if name is None or (field_name is not None and name != field_name):
+                    return None
+                field_name = name
+        return field_name
 
     def visit_Combination(self, node: Combination):
         if (
@@ -2056,9 +2118,7 @@ class _DependsOnInstanceField(NodeVisitor, LeafVisitor):
             return False
         self.seen.add(leaf)
         definitions = [store.value for store in leaf.sets if store.value is not None]
-        if len(definitions) == 1 and len(definitions[0].uses) == 1:
-            return definitions[0].uses[0].accept(self)
-        return False
+        return any(use.accept(self) for defn in definitions for use in defn.uses)
 
     def visit_Combination(self, node: Combination):
         field = node.accept(_GETATTR_ON_INSTANCE)
@@ -2137,6 +2197,9 @@ def _update_class_field_types(
         return False
     direct_stores: dict[str, dict[str, ValueType]] = defaultdict(dict)
     unattributed_stores: dict[str, ValueType] = {}
+    stored_field_targets: dict[tuple[Lambda, LambdaVar], list[tuple[Lvar, str]]] = (
+        defaultdict(list)
+    )
     ambiguous_fields: set[str] = set()
     unknown_field_write = False
     for lam, node in setattr_sites:
@@ -2151,6 +2214,9 @@ def _update_class_field_types(
             continue
         recv_use = node.args[0].use()
         val_use = node.args[2 if physical else 1].use()
+        stored_var = val_use.accept(_READ_LAMBDA_VAR)
+        if stored_var is not None:
+            stored_field_targets[(lam, stored_var)].append((node.args[0], field_name))
         narrowed_non_self = {
             var
             for var, fix_p, gen_p in zip(
@@ -2219,57 +2285,82 @@ def _update_class_field_types(
 
     for lam, node in setitem_sites:
         attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
-        if attr is None:
+        if attr is not None:
+            targets = (attr,)
+        else:
+            target_var = node.args[0].use().accept(_READ_LAMBDA_VAR)
+            targets = (
+                tuple(stored_field_targets.get((lam, target_var), ()))
+                if target_var is not None
+                else ()
+            )
+        if not targets:
             continue
-        inst_lvar, field_name = attr
-        inst_use = inst_lvar.use()
         key_use = node.args[1].use()
         val_use = node.args[2].use()
-        for ctx_name in ("observed", "fixnum", "general"):
-            body = bodies.get((lam, ctx_name))
-            if body is None:
-                continue
-            inst_fact = body.facts.get(inst_use, NO_FACT)
-            key_fact = body.facts.get(key_use, NO_FACT)
-            val_fact = body.facts.get(val_use, NO_FACT)
-            if (
-                inst_fact.type is BOTTOM
-                or key_fact.type is BOTTOM
-                or val_fact.type is BOTTOM
-            ):
-                continue
-            for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
-                if inst_cls not in class_facts:
+        for inst_lvar, field_name in targets:
+            inst_use = inst_lvar.use()
+            for ctx_name in ("observed", "fixnum", "general"):
+                body = bodies.get((lam, ctx_name))
+                if body is None:
                     continue
-                cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
-                if cur_field.fits_dict():
-                    direct_stores[inst_cls][field_name] = cur_field.with_entry(
-                        key_fact.type, val_fact.type
-                    )
+                inst_fact = body.facts.get(inst_use, NO_FACT)
+                key_fact = body.facts.get(key_use, NO_FACT)
+                val_fact = body.facts.get(val_use, NO_FACT)
+                if (
+                    inst_fact.type is BOTTOM
+                    or key_fact.type is BOTTOM
+                    or val_fact.type is BOTTOM
+                ):
+                    continue
+                for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
+                    if inst_cls not in class_facts:
+                        continue
+                    cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
+                    if cur_field.fits_dict():
+                        direct_stores[inst_cls][field_name] = cur_field.with_entry(
+                            key_fact.type, val_fact.type
+                        )
 
     for lam, node in list_mutation_sites:
         attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
-        if attr is None:
+        if attr is not None:
+            targets = (attr,)
+        else:
+            target_var = node.args[0].use().accept(_READ_LAMBDA_VAR)
+            targets = (
+                tuple(stored_field_targets.get((lam, target_var), ()))
+                if target_var is not None
+                else ()
+            )
+        if not targets:
             continue
-        inst_lvar, field_name = attr
-        inst_use = inst_lvar.use()
         val_use = node.args[-1].use()
-        for ctx_name in ("observed", "fixnum", "general"):
-            body = bodies.get((lam, ctx_name))
-            if body is None:
-                continue
-            inst_fact = body.facts.get(inst_use, NO_FACT)
-            val_fact = body.facts.get(val_use, NO_FACT)
-            if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
-                continue
-            for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
-                if inst_cls not in class_facts:
+        for inst_lvar, field_name in targets:
+            inst_use = inst_lvar.use()
+            for ctx_name in ("observed", "fixnum", "general"):
+                body = bodies.get((lam, ctx_name))
+                if body is None:
                     continue
-                cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
-                if cur_field.fits_list():
-                    direct_stores[inst_cls][field_name] = cur_field.with_element(
-                        val_fact.type
-                    )
+                inst_fact = body.facts.get(inst_use, NO_FACT)
+                val_fact = body.facts.get(val_use, NO_FACT)
+                if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
+                    continue
+                for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
+                    if inst_cls not in class_facts:
+                        continue
+                    cur_type = class_facts[inst_cls].fields.get(field_name, BOTTOM)
+                    if (
+                        val_fact.type is UNKNOWN
+                        and cur_type is BOTTOM
+                        and val_use.accept(_DependsOnInstanceField(field_name))
+                    ):
+                        continue
+                    cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
+                    if cur_field.fits_list():
+                        direct_stores[inst_cls][field_name] = cur_field.with_element(
+                            val_fact.type
+                        )
 
     if unknown_field_write:
         ambiguous_fields.update(
@@ -5041,8 +5132,7 @@ def _would_reoptimize_for_context(lambda_: Lambda, context: EntryContext) -> boo
         and not context.id.startswith("observed.")
         and not context.id.startswith("borrow.fixnum.")
         and not (
-            context.id.startswith("borrow.observed.")
-            and context.convention is not None
+            context.id.startswith("borrow.observed.") and context.convention is not None
         )
     ):
         return False
