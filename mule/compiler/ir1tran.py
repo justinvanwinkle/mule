@@ -4472,6 +4472,23 @@ class _Statements(ast.Visitor):
         ]
 
 
+_SELF_MATCHING_BUILTINS = frozenset(
+    {
+        "bool",
+        "bytearray",
+        "bytes",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "list",
+        "set",
+        "str",
+        "tuple",
+    }
+)
+
+
 class _MatchLowering:
     """A ``match`` statement as tests and assignments over hidden variables,
     the decision sequence CPython's compiler emits. Each pattern sets a flag
@@ -4483,6 +4500,7 @@ class _MatchLowering:
         self.function = function
         self.span = span
         self.helpers = None
+        self.missing = None
 
     def temporary(self):
         return self.function.temporary().name
@@ -4504,6 +4522,13 @@ class _MatchLowering:
             [ast.CallArgument(argument, span=self.span) for argument in arguments],
             span=self.span,
         )
+
+    def missing_sentinel(self):
+        if self.helpers is None:
+            self.helpers = self.temporary()
+        if self.missing is None:
+            self.missing = self.temporary()
+        return self.name(self.missing)
 
     def compare(self, left, operator, right):
         return ast.Comparison(left, [operator], [right], span=self.span)
@@ -4544,6 +4569,14 @@ class _MatchLowering:
                 self.assign(subject, node.subject),
                 *self.cases(node.cases, 0, subject),
             ]
+        if self.missing is not None:
+            result.insert(
+                0,
+                self.assign(
+                    self.missing,
+                    ast.Attribute(self.name(self.helpers), "_MISSING", span=self.span),
+                ),
+            )
         if self.helpers is not None:
             result.insert(
                 0,
@@ -4638,8 +4671,6 @@ class _MatchLowering:
         values = self.temporary()
         elements = pattern.elements
         stars = _star_positions(elements)
-        has_named_star = any(element.accept(_HAS_NAMED_STAR) for element in elements)
-        helper_name = "sequence_list" if has_named_star else "sequence"
         if self.unshadowed_builtin("len"):
             length = ast.Call(
                 self.name("len"),
@@ -4662,7 +4693,6 @@ class _MatchLowering:
         split = _SequenceElements(self, values, elements, stars)
         patterns, positions, captures = split.patterns, split.positions, split.captures
         matched = [
-            *captures,
             self.assign(flag, self.constant(True)),
             *self.direct_items(
                 [self.index(values, position) for position in positions],
@@ -4670,9 +4700,14 @@ class _MatchLowering:
                 flag,
                 flag_is_true=True,
             ),
+            *(
+                ([self.when(flag, captures)] if patterns else captures)
+                if captures
+                else []
+            ),
         ]
         return [
-            self.assign(values, self.call(helper_name, self.name(subject))),
+            self.assign(values, self.call("sequence", self.name(subject))),
             self.assign(
                 flag,
                 self.compare(
@@ -4696,7 +4731,6 @@ class _MatchLowering:
                         entry.key,
                     )
                 seen_literals.append(literal_value)
-        values = self.temporary()
         keys = ast.Tuple([entry.key for entry in pattern.entries], span=self.span)
         rest = []
         if pattern.rest is not None:
@@ -4705,6 +4739,44 @@ class _MatchLowering:
                     pattern.rest, self.call("mapping_rest", self.name(subject), keys)
                 )
             ]
+        if len(seen_literals) == len(pattern.entries):
+            inner: list[ast.Statement] = list(rest)
+            for entry in reversed(pattern.entries):
+                val = self.temporary()
+                is_capture, capture_name = entry.pattern.accept(_CAPTURE_PATTERN_INFO)
+                if is_capture:
+                    bind = (
+                        []
+                        if capture_name is None
+                        else [self.assign(capture_name, self.name(val))]
+                    )
+                    after = [*bind, *inner]
+                else:
+                    after = [
+                        *self.pattern(entry.pattern, val, flag),
+                        *([self.when(flag, inner)] if inner else []),
+                    ]
+                inner = [
+                    self.assign(
+                        val, self.call("mapping_get", self.name(subject), entry.key)
+                    ),
+                    self.assign(
+                        flag,
+                        self.compare(
+                            self.name(val),
+                            ast.ComparisonOperator.IS_NOT,
+                            self.missing_sentinel(),
+                        ),
+                    ),
+                    *([self.when(flag, after)] if after else []),
+                ]
+            if not inner:
+                inner = [ast.Pass(span=self.span)]
+            return [
+                self.assign(flag, self.call("mapping", self.name(subject))),
+                self.when(flag, inner),
+            ]
+        values = self.temporary()
         inner = [
             self.assign(values, self.call("mapping_values", self.name(subject), keys)),
             self.assign(
@@ -4737,6 +4809,40 @@ class _MatchLowering:
 
     def class_pattern(self, pattern, subject, flag):
         cls_name = pattern.class_name.accept(_BASE_CLASS_NAME)
+        if (
+            cls_name is not None
+            and cls_name in _SELF_MATCHING_BUILTINS
+            and self.unshadowed_builtin(cls_name)
+            and self.unshadowed_builtin("isinstance")
+            and len(pattern.positional) <= 1
+            and not pattern.keywords
+        ):
+            isinstance_call = ast.Call(
+                self.name("isinstance"),
+                [
+                    ast.CallArgument(self.name(subject), span=self.span),
+                    ast.CallArgument(
+                        ast.Tuple([pattern.class_name], span=self.span),
+                        span=self.span,
+                    ),
+                ],
+                span=self.span,
+            )
+            sub_stmts = (
+                self.direct_items(
+                    [self.name(subject)],
+                    [pattern.positional[0]],
+                    flag,
+                    flag_is_true=True,
+                )
+                if len(pattern.positional) == 1
+                and pattern.positional[0].accept(_CAPTURE_PATTERN_INFO) != (True, None)
+                else []
+            )
+            return [
+                self.assign(flag, isinstance_call),
+                *([self.when(flag, sub_stmts)] if sub_stmts else []),
+            ]
         match_info = (
             self.function.converter.declared_class_match_info.get(cls_name)
             if cls_name is not None
@@ -5125,22 +5231,14 @@ class _SequenceElements(ast.Visitor):
         lowering, index = self.lowering, self.index
         span = lowering.span
         after = self.count - index - 1
-        upper = (
-            ast.Unary(
-                ast.UnaryOperator.NEGATIVE,
-                ast.IntegerLiteral(after, span=span),
-                span=span,
-            )
-            if after
-            else None
-        )
         self.captures.append(
             lowering.assign(
                 node.name,
-                ast.Subscript(
+                lowering.call(
+                    "sequence_slice",
                     lowering.name(self.values),
-                    ast.Slice(ast.IntegerLiteral(index, span=span), upper, span=span),
-                    span=span,
+                    ast.IntegerLiteral(index, span=span),
+                    ast.IntegerLiteral(after, span=span),
                 ),
             )
         )

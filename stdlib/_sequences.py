@@ -28,6 +28,7 @@ from _str import str as _make_str
 from _str import _MISSING as _CODEC_ERRORS_MISSING
 from _attributes import delattr, getattr, hasattr, setattr
 from _descriptors import classmethod, property, staticmethod, super
+from _generators import coroutine_next as _coroutine_next
 from _generators import generator as _generator
 from _generators import yield_from as _yield_from
 from _generators import aiter, anext
@@ -89,6 +90,11 @@ list = _binding_missing()
 tuple = _binding_missing()
 StorageIterator = _binding_missing()
 Enumerate = _binding_missing()
+map = _binding_missing()
+filter = _binding_missing()
+zip = _binding_missing()
+RangeIterator = _binding_missing()
+range = _binding_missing()
 
 
 class BaseException:
@@ -1364,17 +1370,180 @@ def all(iterable, /):
 
 
 def sum(iterable, /, start=0):
-    if is_instance(start, str):
-        raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
-    if is_instance(start, bytes):
-        raise TypeError("sum() can't sum bytes [use b''.join(seq) instead]")
-    if is_instance(start, bytearray):
-        raise TypeError("sum() can't sum bytearray [use b''.join(seq) instead]")
+    if _type_of(start) is not int:
+        if is_instance(start, str):
+            raise TypeError("sum() can't sum strings [use ''.join(seq) instead]")
+        if is_instance(start, bytes):
+            raise TypeError("sum() can't sum bytes [use b''.join(seq) instead]")
+        if is_instance(start, bytearray):
+            raise TypeError("sum() can't sum bytearray [use b''.join(seq) instead]")
     total = start
     comp = 0.0
     in_float = _type_of(total) is float
+    owner = _type_of(iterable)
+    if owner is list or owner is tuple:
+        length = _storage_length(iterable)
+        index = 0
+        if _type_of(total) is int:
+            while index < length:
+                item = _storage_read(iterable, index)
+                if _type_of(item) is not int:
+                    break
+                total = total + item
+                index += 1
+            if index == length:
+                return total
+        while index < length:
+            item = _storage_read(iterable, index)
+            index += 1
+            if not in_float and _type_of(total) is int and _type_of(item) is int:
+                total = total + item
+            elif (
+                not in_float
+                and (_type_of(total) is int or _type_of(total) is bool)
+                and _type_of(item) is float
+            ):
+                total = total + item
+                in_float = True
+            elif in_float and (
+                _type_of(item) is float
+                or _type_of(item) is int
+                or _type_of(item) is bool
+            ):
+                val = float(item)
+                t = total + val
+                if t - t == 0.0:
+                    a_total = -total if total < 0.0 else total
+                    a_val = -val if val < 0.0 else val
+                    if a_total >= a_val:
+                        comp += (total - t) + val
+                    else:
+                        comp += (val - t) + total
+                total = t
+            else:
+                if in_float and comp != 0.0:
+                    total = total + comp
+                    comp = 0.0
+                total = total + item
+                in_float = _type_of(total) is float
+        if in_float and comp != 0.0:
+            return total + comp
+        return total
+    if owner is set or owner is frozenset:
+        keys = _instance_field(iterable, "_keys")
+        length = _storage_length(keys)
+        index = 0
+        if _type_of(total) is int:
+            while index < length:
+                item = _storage_read(keys, index)
+                if item is _TABLE_DELETED:
+                    index += 1
+                    continue
+                if _type_of(item) is not int:
+                    break
+                total = total + item
+                index += 1
+            if index == length:
+                return total
+        while index < length:
+            item = _storage_read(keys, index)
+            index += 1
+            if item is _TABLE_DELETED:
+                continue
+            if not in_float and _type_of(total) is int and _type_of(item) is int:
+                total = total + item
+            elif (
+                not in_float
+                and (_type_of(total) is int or _type_of(total) is bool)
+                and _type_of(item) is float
+            ):
+                total = total + item
+                in_float = True
+            elif in_float and (
+                _type_of(item) is float
+                or _type_of(item) is int
+                or _type_of(item) is bool
+            ):
+                val = float(item)
+                t = total + val
+                if t - t == 0.0:
+                    a_total = -total if total < 0.0 else total
+                    a_val = -val if val < 0.0 else val
+                    if a_total >= a_val:
+                        comp += (total - t) + val
+                    else:
+                        comp += (val - t) + total
+                total = t
+            else:
+                if in_float and comp != 0.0:
+                    total = total + comp
+                    comp = 0.0
+                total = total + item
+                in_float = _type_of(total) is float
+        if in_float and comp != 0.0:
+            return total + comp
+        return total
+    if owner is _generator:
+        if _type_of(total) is int:
+            while True:
+                try:
+                    item = _coroutine_next(iterable)
+                except StopIteration:
+                    return total
+                if _type_of(item) is int:
+                    total = total + item
+                else:
+                    if (_type_of(total) is int or _type_of(total) is bool) and _type_of(
+                        item
+                    ) is float:
+                        total = total + item
+                        in_float = True
+                    else:
+                        total = total + item
+                        in_float = _type_of(total) is float
+                    break
+        while True:
+            try:
+                item = _coroutine_next(iterable)
+            except StopIteration:
+                break
+            if not in_float and _type_of(total) is int and _type_of(item) is int:
+                total = total + item
+            elif (
+                not in_float
+                and (_type_of(total) is int or _type_of(total) is bool)
+                and _type_of(item) is float
+            ):
+                total = total + item
+                in_float = True
+            elif in_float and (
+                _type_of(item) is float
+                or _type_of(item) is int
+                or _type_of(item) is bool
+            ):
+                val = float(item)
+                t = total + val
+                if t - t == 0.0:
+                    a_total = -total if total < 0.0 else total
+                    a_val = -val if val < 0.0 else val
+                    if a_total >= a_val:
+                        comp += (total - t) + val
+                    else:
+                        comp += (val - t) + total
+                total = t
+            else:
+                if in_float and comp != 0.0:
+                    total = total + comp
+                    comp = 0.0
+                total = total + item
+                in_float = _type_of(total) is float
+        if in_float and comp != 0.0:
+            return total + comp
+        return total
     for item in iterable:
-        if (
+        if not in_float and _type_of(total) is int and _type_of(item) is int:
+            total = total + item
+        elif (
             not in_float
             and (_type_of(total) is int or _type_of(total) is bool)
             and _type_of(item) is float
@@ -1407,30 +1576,32 @@ def sum(iterable, /, start=0):
 
 class zip:
     def __init__(self, *iterables, strict=False):
-        iterators = []
-        for iterable in iterables:
-            _storage_append(iterators, iterate(iterable))
-        self.iterators = iterators
+        count = _storage_length(iterables)
         self.strict = strict
+        if not strict and count == 1:
+            self.first = iterate(_storage_read(iterables, 0))
+            self.second = None
+            self.iterators = None
+            return
+        if not strict and count == 2:
+            self.first = iterate(_storage_read(iterables, 0))
+            self.second = iterate(_storage_read(iterables, 1))
+            self.iterators = None
+            return
+        self.first = None
+        self.second = None
+        iterators = []
+        index = 0
+        while index < count:
+            _storage_append(iterators, iterate(_storage_read(iterables, index)))
+            index += 1
+        self.iterators = iterators
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        iterators = self.iterators
-        if not iterators:
-            raise StopIteration
-        items = []
-        index = 0
-        while index < _storage_length(iterators):
-            try:
-                _storage_append(items, next_item(_storage_read(iterators, index)))
-            except StopIteration:
-                if self.strict:
-                    self._check_exhausted(index)
-                raise
-            index += 1
-        return _storage_tuple(items)
+        return _zip_next(self)
 
     def _check_exhausted(self, stopped):
         if stopped > 0:
@@ -1445,18 +1616,64 @@ class zip:
             raise ValueError(f"zip() argument {index + 1} is longer than argument 1")
 
 
+def _zip_next(self):
+    first = self.first
+    if first is not None:
+        second = self.second
+        if second is None:
+            return (next_item(first),)
+        return (next_item(first), next_item(second))
+    iterators = self.iterators
+    if not iterators:
+        raise StopIteration
+    items = []
+    index = 0
+    while index < _storage_length(iterators):
+        try:
+            _storage_append(items, next_item(_storage_read(iterators, index)))
+        except StopIteration:
+            if self.strict:
+                self._check_exhausted(index)
+            raise
+        index += 1
+    return _storage_tuple(items)
+
+
 class map:
     def __init__(self, function, *iterables, strict=False):
-        if not iterables:
+        count = _storage_length(iterables)
+        if count == 0:
             raise TypeError("map() must have at least two arguments.")
         self.function = function
+        if not strict and count == 1:
+            self.first = iterate(_storage_read(iterables, 0))
+            self.second = None
+            self.items = None
+            return
+        if not strict and count == 2:
+            self.first = iterate(_storage_read(iterables, 0))
+            self.second = iterate(_storage_read(iterables, 1))
+            self.items = None
+            return
+        self.first = None
+        self.second = None
         self.items = zip(*iterables, strict=strict)
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        return self.function(*next_item(self.items))
+        return _map_next(self)
+
+
+def _map_next(self):
+    first = self.first
+    if first is not None:
+        second = self.second
+        if second is None:
+            return self.function(next_item(first))
+        return self.function(next_item(first), next_item(second))
+    return self.function(*next_item(self.items))
 
 
 class filter:
@@ -1468,10 +1685,21 @@ class filter:
         return self
 
     def __next__(self):
+        return _filter_next(self)
+
+
+def _filter_next(self):
+    func = self.function
+    iterator = self.iterator
+    if func is None:
         while True:
-            item = next_item(self.iterator)
-            if item if self.function is None else self.function(item):
+            item = next_item(iterator)
+            if item:
                 return item
+    while True:
+        item = next_item(iterator)
+        if func(item):
+            return item
 
 
 class ReverseIterator:
@@ -1756,8 +1984,26 @@ def extend_arguments(positional, iterable):
             _storage_append(positional, _storage_read(iterable, index))
             index += 1
         return
+    if owner is _generator:
+        while True:
+            try:
+                value = _coroutine_next(iterable)
+            except StopIteration:
+                return
+            _storage_append(positional, value)
     iterator = iterate(iterable)
-    _length_hint(iterable)
+    if (
+        owner is not map
+        and owner is not filter
+        and owner is not zip
+        and owner is not Enumerate
+        and owner is not range
+        and owner is not RangeIterator
+        and owner is not dict
+        and owner is not set
+        and owner is not frozenset
+    ):
+        _length_hint(iterable)
     while True:
         try:
             value = next_item(iterator)
@@ -2239,6 +2485,38 @@ def _bytes_repeat(sequence, count):
     return bytes_from_values(_repeat(sequence, count))
 
 
+def _merge_sort_ident(items):
+    """Stable merge sort of ``items`` comparing elements directly with ``<``."""
+    length = _storage_length(items)
+    width = 1
+    while width < length:
+        sorted_items = []
+        low = 0
+        while low < length:
+            middle = low + width if low + width < length else length
+            high = low + 2 * width if low + 2 * width < length else length
+            left, right = low, middle
+            while left < middle and right < high:
+                left_item = _storage_read(items, left)
+                right_item = _storage_read(items, right)
+                if right_item < left_item:
+                    _storage_append(sorted_items, right_item)
+                    right += 1
+                else:
+                    _storage_append(sorted_items, left_item)
+                    left += 1
+            while left < middle:
+                _storage_append(sorted_items, _storage_read(items, left))
+                left += 1
+            while right < high:
+                _storage_append(sorted_items, _storage_read(items, right))
+                right += 1
+            low = high
+        items = sorted_items
+        width *= 2
+    return items
+
+
 def _merge_sort(items, keys):
     """Stable merge sort of ``items`` by ``keys``, comparing with ``<`` only."""
     length = _storage_length(items)
@@ -2493,7 +2771,6 @@ class ListStorage(_OrderedSequence):
         try:
             if reverse:
                 _reverse_in_place(items)
-            keys = items
             if key is not None:
                 keys = []
                 index = 0
@@ -2501,7 +2778,9 @@ class ListStorage(_OrderedSequence):
                 while index < length:
                     _storage_append(keys, key(_storage_read(items, index)))
                     index += 1
-            items = _merge_sort(items, keys)
+                items = _merge_sort(items, keys)
+            else:
+                items = _merge_sort_ident(items)
             if reverse:
                 _reverse_in_place(items)
             if _storage_length(self) != 0:
@@ -4118,6 +4397,36 @@ def next_item(value):
         index = value.index
         value.index = index + 1
         return (index, item)
+    if cls is _generator:
+        return _coroutine_next(value)
+    if cls is map:
+        first = value.first
+        if first is not None:
+            second = value.second
+            if second is None:
+                return value.function(next_item(first))
+            return value.function(next_item(first), next_item(second))
+        return value.function(*next_item(value.items))
+    if cls is filter:
+        func = value.function
+        iterator = value.iterator
+        if func is None:
+            while True:
+                item = next_item(iterator)
+                if item:
+                    return item
+        while True:
+            item = next_item(iterator)
+            if func(item):
+                return item
+    if cls is zip:
+        first = value.first
+        if first is not None:
+            second = value.second
+            if second is None:
+                return (next_item(first),)
+            return (next_item(first), next_item(second))
+        return _zip_next(value)
     method = _next_method(value)
     if method is None:
         raise TypeError("object is not an iterator")
@@ -4163,22 +4472,85 @@ def unpack(value, count):
 
 def unpack_starred(value, before, after):
     """``a, *b, c = value``: leading items, a list of the rest, trailing items."""
-    items = _make_list(value)
+    before = _integer_storage(before)
+    after = _integer_storage(after)
+    owner = _type_of(value)
+    if owner is bytearray:
+        items = value.values
+    elif owner is tuple or owner is list:
+        items = value
+    else:
+        items = _make_list(value)
     count = _storage_length(items)
     if count < before + after:
         raise ValueError(
             f"not enough values to unpack (expected at least {before + after}, got {count})"
+        )
+    stop = count - after
+    if before == 1 and after == 1:
+        return (
+            _storage_read(items, 0),
+            _byte_sublist(items, 1, stop),
+            _storage_read(items, stop),
+        )
+    if before == 1 and after == 0:
+        return (
+            _storage_read(items, 0),
+            _byte_sublist(items, 1, stop),
+        )
+    if before == 0 and after == 1:
+        return (
+            _byte_sublist(items, 0, stop),
+            _storage_read(items, stop),
+        )
+    if before == 2 and after == 0:
+        return (
+            _storage_read(items, 0),
+            _storage_read(items, 1),
+            _byte_sublist(items, 2, stop),
+        )
+    if before == 0 and after == 2:
+        return (
+            _byte_sublist(items, 0, stop),
+            _storage_read(items, stop),
+            _storage_read(items, stop + 1),
+        )
+    if before == 2 and after == 1:
+        return (
+            _storage_read(items, 0),
+            _storage_read(items, 1),
+            _byte_sublist(items, 2, stop),
+            _storage_read(items, stop),
+        )
+    if before == 1 and after == 2:
+        return (
+            _storage_read(items, 0),
+            _byte_sublist(items, 1, stop),
+            _storage_read(items, stop),
+            _storage_read(items, stop + 1),
+        )
+    if before == 3 and after == 0:
+        return (
+            _storage_read(items, 0),
+            _storage_read(items, 1),
+            _storage_read(items, 2),
+            _byte_sublist(items, 3, stop),
+        )
+    if before == 3 and after == 1:
+        return (
+            _storage_read(items, 0),
+            _storage_read(items, 1),
+            _storage_read(items, 2),
+            _byte_sublist(items, 3, stop),
+            _storage_read(items, stop),
         )
     result = []
     index = 0
     while index < before:
         _storage_append(result, _storage_read(items, index))
         index += 1
-    middle = []
-    while index < count - after:
-        _storage_append(middle, _storage_read(items, index))
-        index += 1
-    _storage_append(result, middle)
+    _storage_append(result, _byte_sublist(items, before, stop))
+    index = stop
     while index < count:
         _storage_append(result, _storage_read(items, index))
         index += 1
@@ -4420,16 +4792,18 @@ def iter(*args):
     raise TypeError("iter expected one or two arguments")
 
 
-def next(*args):
-    count = _storage_length(args)
-    if count != 1 and count != 2:
+_missing_default = _binding_missing()
+
+
+def next(iterator=_missing_default, default=_missing_default, /):
+    if iterator is _missing_default:
         raise TypeError("next expects one or two arguments")
+    if default is _missing_default:
+        return next_item(iterator)
     try:
-        return next_item(_storage_read(args, 0))
+        return next_item(iterator)
     except StopIteration:
-        if count == 2:
-            return _storage_read(args, 1)
-        raise
+        return default
 
 
 def _make_list(*args):
@@ -4447,8 +4821,11 @@ def _make_tuple(*args):
         return ()
     if _storage_length(args) == 1:
         arg = _storage_read(args, 0)
-        if _type_of(arg) is tuple:
+        owner = _type_of(arg)
+        if owner is tuple:
             return arg
+        if owner is list:
+            return _storage_tuple(arg)
     return _storage_tuple(list_from_arguments(args))
 
 
@@ -4460,9 +4837,6 @@ def list_from_arguments(args):
     if count == 1:
         extend_arguments(result, _storage_read(args, 0))
     return result
-
-
-_missing_default = _binding_missing()
 
 
 def _better(candidate_key, best_key, greatest):

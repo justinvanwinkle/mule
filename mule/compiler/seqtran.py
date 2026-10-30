@@ -152,9 +152,9 @@ class _HiddenIteratorVar(LeafVisitor):
 def _transform_byte_iteration(node):
     if node.lvar is None or len(node.args) != 1 or len(node.args[0].uses) != 1:
         return False
-    if (
-        node.lexenv.policy.safety < 3
-        and node.args[0].uses[0].accept(_ENUMERATE_CALL_CHECK) is not None
+    if node.lexenv.policy.safety < 3 and (
+        node.args[0].uses[0].accept(_ENUMERATE_CALL_CHECK) is not None
+        or node.args[0].uses[0].accept(_EnumerateHeldRef()) is not None
     ):
         return False
     home = node.home_lambda
@@ -514,6 +514,32 @@ class _EnumerateCallCheck(NodeVisitor):
 _ENUMERATE_CALL_CHECK = _EnumerateCallCheck()
 
 
+class _EnumerateHeldRef(NodeVisitor, LeafVisitor):
+    def __init__(self):
+        self._ref: Ref | None = None
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        self._ref = node
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if len(leaf.sets) != 1 or len(leaf.refs) != 1 or leaf.refs[0] is not self._ref:
+            return None
+        store = leaf.sets[0]
+        if store.prev is None or store.value is None or len(store.value.uses) != 1:
+            return None
+        enum_call = store.value.uses[0].accept(_ENUMERATE_CALL_CHECK)
+        if enum_call is None or enum_call.block is not store.block:
+            return None
+        return self._ref, leaf, store, enum_call
+
+
 class _EnumerateIterateCheck(NodeVisitor):
     def visit_Node(self, node):
         return None
@@ -526,9 +552,15 @@ class _EnumerateIterateCheck(NodeVisitor):
             and len(node.args) == 1
             and len(node.args[0].uses) == 1
         ):
-            enum_call = node.args[0].uses[0].accept(_ENUMERATE_CALL_CHECK)
+            use = node.args[0].uses[0]
+            enum_call = use.accept(_ENUMERATE_CALL_CHECK)
             if enum_call is not None and enum_call.block is node.block:
-                return node, enum_call
+                return node, enum_call, None
+            held_info = use.accept(_EnumerateHeldRef())
+            if held_info is not None:
+                held_ref, held_var, held_set, enum_call = held_info
+                if held_set.block is node.block:
+                    return node, enum_call, (held_ref, held_var, held_set)
         return None
 
 
@@ -578,10 +610,10 @@ class _EnumerateIteratorRef(NodeVisitor, LeafVisitor):
         matched = store.value.uses[0].accept(_ENUMERATE_ITERATE_CHECK)
         if matched is None:
             return None
-        iterate_call, enum_call = matched
+        iterate_call, enum_call, held_info = matched
         if store.block is not iterate_call.block:
             return None
-        return self._ref, leaf, store, iterate_call, enum_call
+        return self._ref, leaf, store, iterate_call, enum_call, held_info
 
 
 class _NextItemEnumerateProducer(NodeVisitor):
@@ -662,6 +694,7 @@ def _transform_unpack(node: Combination) -> bool:
                         iter_set,
                         iterate_call,
                         enum_call,
+                        _held_info,
                     ) = enum_setup
                     start_val = 0
                     if len(enum_call.args) == 2:
@@ -751,6 +784,7 @@ def _transform_unpack(node: Combination) -> bool:
             iter_set,
             iterate_call,
             enum_call,
+            held_info,
         ) = enum_setup
         start_val = 0
         if len(enum_call.args) == 2:
@@ -761,11 +795,22 @@ def _transform_unpack(node: Combination) -> bool:
             _delete_pure_ref(enum_call.args[1])
         seq_arg = enum_call.args[0]
         enum_call.args = []
-        seq_arg.dest = iterate_call
-        enum_res_lvar = iterate_call.args[0]
-        enum_res_lvar.dest = None
-        delete_lvar_use(enum_call)
-        iterate_call.args[0] = seq_arg
+        if held_info is not None:
+            _held_ref, _held_var, held_set = held_info
+            seq_arg.dest = held_set
+            enum_res_lvar = held_set.value
+            assert enum_res_lvar is not None
+            enum_res_lvar.dest = None
+            delete_lvar_use(enum_call)
+            held_set.value = seq_arg
+            reoptimize_lvar(iterate_call.args[0])
+        else:
+            seq_arg.dest = iterate_call
+            enum_res_lvar = iterate_call.args[0]
+            enum_res_lvar.dest = None
+            delete_lvar_use(enum_call)
+            iterate_call.args[0] = seq_arg
+            reoptimize_lvar(seq_arg)
         _flush_operand(enum_call.fun)
         unlink_node(enum_call)
 

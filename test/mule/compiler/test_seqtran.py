@@ -676,6 +676,21 @@ def test_enumerate_for_loop_open_codes_index_and_sequence_iteration():
     check_ir1_consistency(compilation.components)
 
 
+def test_enumerate_nested_unpack_for_loop_eliminates_outer_unpack():
+    compilation = compile_source(
+        "def sum_records(records: list[tuple[str, tuple[int, int]]]) -> int:\n"
+        " total = 0\n"
+        " for idx, (tag, (x, y)) in enumerate(records):\n"
+        "  total += idx + x + y\n"
+        " return total\n"
+    )
+    fn = compilation.lambdas[1]
+    assert list(known_calls(fn, "enumerate")) == []
+    assert len(list(known_calls(fn, "%unpack"))) == 2
+    assert len(list(known_calls(fn, "%unpack_ref"))) == 4
+    check_ir1_consistency(compilation.components)
+
+
 def test_ord_constant_fold_and_str_getitem_fusion(tmp_path):
     src = """def char_at(s: str, i: int) -> int:
     return ord(s[i]) + ord("A") + ord(b"!")
