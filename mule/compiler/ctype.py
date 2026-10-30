@@ -3248,6 +3248,31 @@ class DictType(ValueType):
             )
         return self
 
+    def construct_type(self, arg_types: tuple, keywords: tuple):
+        pos_count = len(arg_types) - len(keywords)
+        if pos_count > 1 or any(kw is None for kw in keywords):
+            return DICT_TYPE
+        result = EMPTY_DICT_TYPE
+        if pos_count == 1:
+            other = arg_types[0]
+            if other.fits_dict(DICT_TYPE) and not other.may_be_unbound:
+                result = result.with_entry(other.key, other.value)
+            else:
+                iter_type = other.flow_iterate_type()
+                if iter_type.fits_iterator() and iter_type.element.fits_tuple(
+                    TupleType(2)
+                ):
+                    result = result.with_entry(
+                        iter_type.element.getitem_type(IntegerType(0, 0)),
+                        iter_type.element.getitem_type(IntegerType(1, 1)),
+                    )
+                else:
+                    return DICT_TYPE
+        if keywords:
+            for val_type in arg_types[pos_count:]:
+                result = result.with_entry(TEXT_TYPE, val_type)
+        return result
+
     def dispatch_rank(self) -> int:
         return 2**64 if (self.may_be_unbound or not self.proven) else 0
 

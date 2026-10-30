@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import cache
 from pathlib import Path
 
@@ -44,7 +44,14 @@ from .codegen import ForeignFunction, Program, generate
 from .ctype import UNKNOWN, ValueType, value_type_from_dict
 from .dfo import find_dfo
 from .escape import EscapeFacts, analyze_escapes
-from .inputs import file_digest, file_state, read_source, recording, replay_recorded
+from .inputs import (
+    _recording,
+    file_digest,
+    file_state,
+    read_source,
+    recording,
+    replay_recorded,
+)
 from .ir1opt import constant_literal, ir1_optimize_until_done
 from .ir1tran_lambda import lambda_blocks
 from .ir1util import class_method_definitions, known_calls
@@ -88,13 +95,36 @@ BUILTINS_SHARDS = 16
 OBJECT_SHARD_THRESHOLD = 2 << 20
 
 
+def _decode_interface_target(
+    entry: dict, functions: dict[str, ForeignFunction]
+) -> ForeignFunction | ClassConstructorTarget | None:
+    kind = entry.get("kind")
+    if kind == "function":
+        fn_name = entry.get("name")
+        if fn_name in functions:
+            return functions[fn_name]
+        return None
+    if kind == "class":
+        new_name = entry.get("new_target")
+        init_name = entry.get("init_target")
+        return ClassConstructorTarget(
+            base_type=value_type_from_dict(entry["base_type"]),
+            cls_type=value_type_from_dict(entry["cls_type"]),
+            new_target=functions.get(new_name) if new_name else None,
+            init_target=functions.get(init_name) if init_name else None,
+            records_type_origin=entry.get("records_type_origin", False),
+            layout_type=value_type_from_dict(entry["layout_type"]),
+        )
+    return None
+
+
 @dataclass(slots=True)
 class BuiltinsInterface:
     """What units compiled against the builtins unit need from it: its
     functions by name, the methods programs may predict, the protocol entry
     points, the modules it compiled, the names its protocols install as
-    builtins, and the function each builtin name is bound to, which later
-    units predict as the target of calls through that name."""
+    builtins, and the function or class target each builtin or export name is
+    bound to."""
 
     functions: dict[str, ForeignFunction]
     methods: dict[str, list[str]]
@@ -106,8 +136,22 @@ class BuiltinsInterface:
     storage_methods: dict[tuple[str, str], ValueType]
     builtin_return_types: dict[str, ValueType]
     builtin_functions: dict[str, str]
+    exported_targets: dict[tuple[str, str], ForeignCallTarget] = field(
+        default_factory=dict
+    )
+    builtin_targets: dict[str, ForeignCallTarget] = field(default_factory=dict)
 
     def to_json(self) -> str:
+        serialized_exports = {}
+        for (mod, name), target in self.exported_targets.items():
+            entry = target.to_interface_entry()
+            if entry is not None:
+                serialized_exports[f"{mod}:{name}"] = entry
+        serialized_builtins = {}
+        for name, target in self.builtin_targets.items():
+            entry = target.to_interface_entry()
+            if entry is not None:
+                serialized_builtins[name] = entry
         return json.dumps(
             {
                 "functions": {
@@ -135,6 +179,7 @@ class BuiltinsInterface:
                     f"{mod}:{fn}": vtype.to_dict()
                     for (mod, fn), vtype in self.exported_types.items()
                 },
+                "exported_targets": serialized_exports,
                 "storage_methods": {
                     f"{cls}.{meth}": vtype.to_dict()
                     for (cls, meth), vtype in self.storage_methods.items()
@@ -144,6 +189,7 @@ class BuiltinsInterface:
                     for name, vtype in self.builtin_return_types.items()
                 },
                 "builtin_functions": self.builtin_functions,
+                "builtin_targets": serialized_builtins,
                 "modules": {
                     name: {
                         **asdict(module),
@@ -212,6 +258,33 @@ class BuiltinsInterface:
             key: value_type_from_dict(val)
             for key, val in data.get("builtin_return_types", {}).items()
         }
+        from .constraint import BOOTSTRAP_BUILTIN_TARGETS
+        from .protocols import NATIVE_MODULE_TARGETS
+
+        exported_targets: dict[tuple[str, str], ForeignCallTarget] = dict(
+            NATIVE_MODULE_TARGETS
+        )
+        for mod in modules.values():
+            if mod.prefix:
+                fn_prefix = f"{mod.prefix}mule_fn_"
+                for fn_name, fn in functions.items():
+                    if fn_name.startswith(fn_prefix):
+                        pub_name = fn_name[len(fn_prefix) :]
+                        if "." not in pub_name:
+                            exported_targets[mod.name, pub_name] = fn
+        for key, entry in data.get("exported_targets", {}).items():
+            mod_name, pub_name = key.split(":", 1)
+            decoded = _decode_interface_target(entry, functions)
+            if decoded is not None:
+                exported_targets[mod_name, pub_name] = decoded
+        builtin_targets: dict[str, ForeignCallTarget] = dict(BOOTSTRAP_BUILTIN_TARGETS)
+        for b_name, fn_name in data.get("builtin_functions", {}).items():
+            if fn_name in functions:
+                builtin_targets[b_name] = functions[fn_name]
+        for b_name, entry in data.get("builtin_targets", {}).items():
+            decoded = _decode_interface_target(entry, functions)
+            if decoded is not None:
+                builtin_targets[b_name] = decoded
         return cls(
             functions,
             data["methods"],
@@ -223,6 +296,8 @@ class BuiltinsInterface:
             storage_methods,
             builtin_return_types,
             data["builtin_functions"],
+            exported_targets,
+            builtin_targets,
         )
 
 
@@ -315,22 +390,9 @@ class ModuleInterface:
         exported_targets: dict[tuple[str, str], ForeignCallTarget] = {}
         for key, entry in data.get("exported_targets", {}).items():
             mod_name, pub_name = key.split(":", 1)
-            kind = entry.get("kind")
-            if kind == "function":
-                fn_name = entry.get("name")
-                if fn_name in functions:
-                    exported_targets[mod_name, pub_name] = functions[fn_name]
-            elif kind == "class":
-                new_name = entry.get("new_target")
-                init_name = entry.get("init_target")
-                exported_targets[mod_name, pub_name] = ClassConstructorTarget(
-                    base_type=value_type_from_dict(entry["base_type"]),
-                    cls_type=value_type_from_dict(entry["cls_type"]),
-                    new_target=functions.get(new_name) if new_name else None,
-                    init_target=functions.get(init_name) if init_name else None,
-                    records_type_origin=entry.get("records_type_origin", False),
-                    layout_type=value_type_from_dict(entry["layout_type"]),
-                )
+            decoded = _decode_interface_target(entry, functions)
+            if decoded is not None:
+                exported_targets[mod_name, pub_name] = decoded
         storage_methods = {
             tuple(key.split(".", 1)): value_type_from_dict(val)
             for key, val in data.get("storage_methods", {}).items()
@@ -506,8 +568,7 @@ def read_elf_interface(path: Path) -> tuple[ModuleInterface, str] | None:
     return _cached_elf_interface(path, file_digest(path))
 
 
-@cache
-def _cached_ll_interface(path: Path, state: str) -> tuple[ModuleInterface, str] | None:
+def _extract_ll_interface_json(path: Path) -> str | None:
     marker = ', section ".mule.interface", align 1'
     try:
         text = path.read_text()
@@ -523,7 +584,17 @@ def _cached_ll_interface(path: Path, state: str) -> tuple[ModuleInterface, str] 
         return None
     hex_str = line[c_start + 3 : -4].replace("\\", "")
     try:
-        raw = bytes.fromhex(hex_str).decode("utf-8")
+        return bytes.fromhex(hex_str).decode("utf-8")
+    except ValueError:
+        return None
+
+
+@cache
+def _cached_ll_interface(path: Path, state: str) -> tuple[ModuleInterface, str] | None:
+    raw = _extract_ll_interface_json(path)
+    if raw is None:
+        return None
+    try:
         return ModuleInterface.from_json(raw), raw
     except ValueError, KeyError, TypeError:
         return None
@@ -593,6 +664,29 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
     for targets in methods.values():
         targets.sort(key=_builtin_method_rank)
 
+    exported_targets: dict[tuple[str, str], ForeignCallTarget] = {}
+    for (mod, pub_name), target in unit.exported_targets.items():
+        fn = target.as_function()
+        if fn is not None and fn.name in functions:
+            exported_targets[mod, pub_name] = functions[fn.name]
+        elif target.to_interface_entry() is not None:
+            exported_targets[mod, pub_name] = target
+    for mod in modules.values():
+        if mod.prefix:
+            fn_prefix = f"{mod.prefix}mule_fn_"
+            for fn_name, fn in functions.items():
+                if fn_name.startswith(fn_prefix):
+                    pub_name = fn_name[len(fn_prefix) :]
+                    if "." not in pub_name:
+                        exported_targets.setdefault((mod.name, pub_name), fn)
+    builtin_targets: dict[str, ForeignCallTarget] = {}
+    for b_name, target in unit.builtin_targets.items():
+        fn = target.as_function()
+        if fn is not None and fn.name in functions:
+            builtin_targets[b_name] = functions[fn.name]
+        elif target.to_interface_entry() is not None:
+            builtin_targets[b_name] = target
+
     def name(lambda_):
         return None if lambda_ is None else lambda_.name
 
@@ -617,6 +711,8 @@ def builtins_interface(unit: Program, modules) -> BuiltinsInterface:
             for name, target in unit.builtin_targets.items()
             if (lambda_ := target.as_lambda()) is not None
         },
+        exported_targets,
+        builtin_targets,
     )
 
 
@@ -967,21 +1063,10 @@ def import_resolver(
     compiler.configure_project()
     compiler.modules.update(interface.modules)
     compiler.exported_types.update(interface.exported_types)
+    compiler.exported_targets.update(interface.exported_targets)
     compiler.storage_methods.update(interface.storage_methods)
     compiler.builtin_return_types.update(interface.builtin_return_types)
-    for name, function_name in interface.builtin_functions.items():
-        compiler.builtin_targets[name] = interface.functions[function_name]
-    from .protocols import NATIVE_MODULE_TARGETS
-
-    compiler.exported_targets.update(NATIVE_MODULE_TARGETS)
-    for mod in interface.modules.values():
-        if mod.prefix:
-            fn_prefix = f"{mod.prefix}mule_fn_"
-            for fn_name, fn in interface.functions.items():
-                if fn_name.startswith(fn_prefix):
-                    pub_name = fn_name[len(fn_prefix) :]
-                    if "." not in pub_name:
-                        compiler.exported_targets[mod.name, pub_name] = fn
+    compiler.builtin_targets.update(interface.builtin_targets)
     if module is not None:
         compiler.modules[module.name] = module
     return compiler
@@ -1467,8 +1552,8 @@ class Build:
             with phase("compile unit builtins -> %s", output):
                 unit, modules = compile_builtins()
                 interface = builtins_interface(unit, modules)
+                unit.interface_bytes = interface.to_json().encode("utf-8")
                 (directory / "unit.ll").write_text(generate(unit))
-                (directory / "interface.json").write_text(interface.to_json())
 
         sources = sorted([*STDLIB.glob("_*.py"), *(STDLIB / "bootstrap").glob("*.py")])
         step = self.graph.step(
@@ -1478,7 +1563,7 @@ class Build:
                 "builtins",
                 inputs=[self.graph.file(path) for path in sources],
                 settings={"step": "builtins"},
-                outputs=("unit.ll", "interface.json"),
+                outputs=("unit.ll",),
                 action=action,
                 discover=lambda step: self.prepare_import_graph(),
                 validate=lambda entry: True,
@@ -1491,8 +1576,8 @@ class Build:
         if builtins.output_digests is None:
             raise RuntimeError("builtins has not produced its outputs")
         return _interface(
-            builtins.path("interface.json"),
-            builtins.output_digests["interface.json"],
+            builtins.path("unit.ll"),
+            builtins.output_digests["unit.ll"],
         )
 
     def object(self, unit: Step) -> Step:
@@ -1946,12 +2031,10 @@ class Build:
 
 @cache
 def _interface(path: Path, state: str) -> BuiltinsInterface:
-    return BuiltinsInterface.from_json(path.read_text())
-
-
-def load_interface(path: Path) -> BuiltinsInterface:
-    """The builtins interface in ``path``, read once per content."""
-    return _interface(path, file_digest(path))
+    raw = _extract_ll_interface_json(path)
+    if raw is None:
+        raise RuntimeError(f"missing .mule.interface in {path}")
+    return BuiltinsInterface.from_json(raw)
 
 
 def write_imports(path: Path, modules: list[CompiledModule]) -> None:
@@ -2025,10 +2108,14 @@ def builtins_object(toolchain: Toolchain) -> Path:
 
 def cached_builtins_interface() -> BuiltinsInterface:
     """The builtins interface, from the cache when unchanged."""
-    with Graph(1) as graph:
-        build = Build(graph, Toolchain())
-        graph.run(build.builtins())
-        return build.interface()
+    token = _recording.set(None)
+    try:
+        with Graph(1) as graph:
+            build = Build(graph, Toolchain())
+            graph.run(build.builtins())
+            return build.interface()
+    finally:
+        _recording.reset(token)
 
 
 def compile_program(

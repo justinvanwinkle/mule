@@ -1210,7 +1210,7 @@ class ClassConstructorTarget:
             if self.new_target is None:
                 return arg_types[0].runtime_class_type()
         result_type = self.base_type
-        if self.new_target is not None:
+        if self.new_target is not None and self.new_target.as_lambda() is not None:
             derived = self.new_target.derive_return_type(
                 arg_types, keywords, receiver_type=self.cls_type
             )
@@ -1220,7 +1220,7 @@ class ClassConstructorTarget:
                 derived != self.layout_type or self.base_type is UNKNOWN
             ):
                 result_type = derived
-        if self.init_target is not None:
+        if self.init_target is not None and self.init_target.as_lambda() is not None:
             mutated = self.init_target.derive_self_type(
                 arg_types, keywords, receiver_type=result_type
             )

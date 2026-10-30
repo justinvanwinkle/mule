@@ -2236,20 +2236,6 @@ def _bytes_repeat(sequence, count):
     return bytes_from_values(_repeat(sequence, count))
 
 
-def _sequence_order(left, right):
-    """The pair that orders two sequences lexicographically: the first unequal
-    elements, or else the two lengths."""
-    index = 0
-    left_length, right_length = _storage_length(left), _storage_length(right)
-    while index < left_length and index < right_length:
-        a = _storage_read(left, index)
-        b = _storage_read(right, index)
-        if not (a is b or a == b):
-            return a, b
-        index += 1
-    return left_length, right_length
-
-
 def _merge_sort(items, keys):
     """Stable merge sort of ``items`` by ``keys``, comparing with ``<`` only."""
     length = _storage_length(items)
@@ -2338,26 +2324,22 @@ class _OrderedSequence:
     def __lt__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a < b
+        return sequence_lt(self, other)
 
     def __le__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a <= b
+        return sequence_le(self, other)
 
     def __gt__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a > b
+        return sequence_gt(self, other)
 
     def __ge__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a >= b
+        return sequence_ge(self, other)
 
     def __iter__(self):
         cls = TupleIterator if _tuple_storage(self) else StorageIterator
@@ -3859,7 +3841,7 @@ def sequence_equal(left, right):
         return False
     if left is right:
         return True
-    if not _tuple_storage(left) and _storage_length(left) != _storage_length(right):
+    if _storage_length(left) != _storage_length(right):
         return False
     index = 0
     while index < _storage_length(left) and index < _storage_length(right):
@@ -3869,6 +3851,62 @@ def sequence_equal(left, right):
             return False
         index += 1
     return _storage_length(left) == _storage_length(right)
+
+
+def sequence_ne(left, right):
+    return not sequence_equal(left, right)
+
+
+def sequence_lt(left, right):
+    if left is right:
+        return False
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a < b
+        index += 1
+    return _storage_length(left) < _storage_length(right)
+
+
+def sequence_le(left, right):
+    if left is right:
+        return True
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a <= b
+        index += 1
+    return _storage_length(left) <= _storage_length(right)
+
+
+def sequence_gt(left, right):
+    if left is right:
+        return False
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a > b
+        index += 1
+    return _storage_length(left) > _storage_length(right)
+
+
+def sequence_ge(left, right):
+    if left is right:
+        return True
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a >= b
+        index += 1
+    return _storage_length(left) >= _storage_length(right)
 
 
 def get_attribute(value, name):
