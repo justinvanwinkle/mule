@@ -201,3 +201,36 @@ def test_unwind_blocks_only_release_slots_occupied_in_handler_region(tmp_path):
     result = run_native(tmp_path, _UNWIND_OCCUPANCY_SOURCE)
     assert result.returncode == 0, result.stderr
     assert result.stdout == "[4, -1, 6, 6, -2, 10]\n"
+
+
+_SPECIALIZE_BODY_OMISSION_SOURCE = """\
+class Box:
+    def __init__(self, value: int):
+        self.value = value
+
+    def read_fixed(self) -> int:
+        return self.value + 1
+
+    def read_dynamic(self) -> str:
+        return getattr_passthrough(self)
+
+
+def getattr_passthrough(box: Box) -> str:
+    return str(box.dynamic_attr) if False else "ok"
+
+
+print(Box(41).read_fixed(), Box(1).read_dynamic())
+"""
+
+
+def test_unspecialized_bodies_and_annotate_thunks_omit_spec_clones(tmp_path):
+    llvm = emit_llvm(_SPECIALIZE_BODY_OMISSION_SOURCE, "spec_omission.py")
+    assert "__annotate__.spec." not in llvm
+    assert "__annotate__.body.fallback." not in llvm
+    assert '@"mule_fn_getattr_passthrough.spec.' not in llvm
+    assert '@"mule_fn_Box.read_dynamic.spec.' not in llvm
+    assert '@"mule_fn_Box.read_fixed.spec.0"' in llvm
+
+    result = run_native(tmp_path, _SPECIALIZE_BODY_OMISSION_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "42 ok\n"
