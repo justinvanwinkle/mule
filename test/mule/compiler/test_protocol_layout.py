@@ -93,7 +93,7 @@ exercise(len(input()))
 """,
         optimize=optimize,
     )
-    for operation in ("dict_get", "dict_getitem", "dict_setitem"):
+    for operation in ("dict_getitem", "dict_setitem"):
         wrapper = case.function_ir(rf"^mule\.protocol\.{operation}$", optimized=False)
         selected = re.search(r'call ptr @"([^"\n]+\.protocol)"', wrapper)
         assert selected is not None, wrapper

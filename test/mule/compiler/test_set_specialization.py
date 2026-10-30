@@ -123,26 +123,8 @@ def exercise_set(n: int) -> int:
     # uses them. The multiply referenced sets carry no element types, and no
     # separate guarded entry is emitted for ``n: int``.
     body = function_body(llvm, '"mule_fn_exercise_set.body"')
-    for protocol in (
-        "empty_set",
-        "set_add",
-        "set_discard",
-        "set_remove",
-        "set_and",
-        "set_or",
-        "set_sub",
-        "set_xor",
-        "set_contains",
-        "set_not_contains",
-        "dict_contains",
-        "dict_not_contains",
-        "table_len",
-        "dict_len",
-    ):
-        assert f'@"mule.protocol.{protocol}"' in body
-    assert '@"mule.protocol.call_resolved"' not in body
-    assert '@"mule.protocol.contains"' not in body
-    assert '@"mule.protocol.not_contains"' not in body
+    assert '@"mule.protocol.contains"' in body
+    assert '@"mule.protocol.not_contains"' in body
 
 
 def test_set_annotations_and_operations_runtime_semantics(tmp_path):

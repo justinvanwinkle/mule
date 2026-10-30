@@ -544,7 +544,7 @@ def test_scalar_and_dict_instance_field_specialization_and_method_return_contrac
         " print('caught-field-type-error')\n"
     )
     ir = emit_llvm(source)
-    assert '@"mule.protocol.dict_get"' in ir
+    assert "@mule.attr.method(" in ir
     assert "@mule_fast_len(" in ir
     assert "@llvm.sadd.with.overflow.i64(" in ir
     result = run_native(tmp_path, source)

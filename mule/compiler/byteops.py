@@ -524,11 +524,9 @@ def _next_immutable_text(gen, vop):
 
 def _iterate_generic(gen, vop):
     sequence = gen.take(vop.args[0])
-    move = gen.owns_reference(sequence)
-    helper = gen.module.iterate_helper(move=move)
-    result = gen.operation(f"call ptr {helper}(ptr {sequence})")
-    if not move:
-        gen.release(sequence)
+    if not gen.owns_reference(sequence):
+        sequence = gen.retain(sequence)
+    result = gen.sequence_call("iterate", [sequence])
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)
@@ -536,15 +534,12 @@ def _iterate_generic(gen, vop):
 
 def _available_generic(gen, vop):
     iterator = gen.load(vop.args[0])
-    helper = gen.module.next_item_helper()
-    status = gen.operation(
-        f"call i32 {helper}(ptr {iterator}, ptr {gen.out_pointer()})"
-    )
-    gen.check_status(status)
-    available = gen.operation(f"icmp ne i32 {status}, 0")
-    result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
-    gen.publish(vop.results[0], result)
-    gen.refine(vop.results[0].tn, result)
+    owned = gen.retain(iterator)
+    item = gen.sequence_call("next_item", [owned])
+    gen.line(f"store ptr {item}, ptr {gen.out_pointer()}")
+    gen.check_pointer(item)
+    gen.publish(vop.results[0], "@mule.true")
+    gen.refine(vop.results[0].tn, "@mule.true")
 
 
 def _next_generic(gen, vop):

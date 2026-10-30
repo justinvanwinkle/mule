@@ -675,14 +675,6 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
                 and ref is vop.args[1]
                 and (vop.args[1].tn.type or UNKNOWN).is_fixnum
             )
-            or (
-                not raw
-                and vop.info.name
-                in ("protocol-text_contains", "protocol-text_not_contains")
-                and vop.codegen_info is not None
-                and len(vop.args) == 2
-                and ref is vop.args[1]
-            )
         )
     ):
         return (IMMEDIATE, SIGNED)
