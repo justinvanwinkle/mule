@@ -127,20 +127,16 @@ def test_word_counting_probe_loops_do_not_query_storage_for_each_native_access(
         if re.search(r"mule_fn_count_words\.(?:body|borrow|numeric|spec)(?:\.|$)", name)
     }
     assert kernels, "The natural caller must select a compiled count_words entry"
-    initial_reachable = set().union(
-        *(_reachable_functions(kernel, initial_functions) for kernel in kernels)
-    )
-    selected_protocols = set()
-    for operation in ("dict_setitem",):
-        wrapper = f"mule.protocol.{operation}"
-        assert wrapper in initial_reachable, f"word counting must select {wrapper}"
-        selected = {
-            name
-            for name in _reachable_functions(wrapper, initial_functions)
-            if name.endswith(".protocol") and f"mule_fn_{operation}." in name
-        }
-        assert selected, f"{wrapper} must call its typed algorithm body"
-        selected_protocols.update(selected)
+    selected_protocols = {
+        name
+        for name in initial_functions
+        if name.endswith(".spec.0")
+        and any(
+            op in name
+            for op in ("mule_fn__table_lookup.", "mule_fn__table_insert.")
+        )
+    }
+    assert selected_protocols, "builtins must compile typed _table_lookup/_table_insert entries"
     main_optimized = tmp_path / "word_count.main.optimized.ll"
     builtins_optimized = tmp_path / "word_count.builtins.optimized.ll"
     optimized = tmp_path / "word_count.optimized.ll"
@@ -228,8 +224,6 @@ def _probe_storage_accesses(functions, reachable, loop_analysis):
                 for operation in (
                     "mule_fn__table_lookup",
                     "mule_fn__table_insert",
-                    "mule_fn_dict_getitem.",
-                    "mule_fn_dict_setitem.",
                 )
             )
         ):

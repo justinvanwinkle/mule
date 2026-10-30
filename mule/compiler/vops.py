@@ -3662,8 +3662,6 @@ _SUSPENSION_PROTOCOLS = frozenset(
 
 _BORROWED_PROTOCOL_NAMES = frozenset(
     {
-        "dict_getitem",
-        "dict_setitem",
         "dict_len",
         "table_len",
         "set_add",
@@ -3762,9 +3760,6 @@ def _exact_dict_call(gen, vop, name):
 def protocol_getitem(gen, vop):
     seq_type = vop.args[0].tn.type or UNKNOWN
     idx_type = vop.args[1].tn.type or UNKNOWN
-    if seq_type.fits_dict():
-        _exact_dict_call(gen, vop, "dict_getitem")
-        return
     if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
         if idx_type.is_fixnum:
             sequence = gen.take(vop.args[0])
@@ -4090,9 +4085,6 @@ def protocol_setitem(gen, vop):
         if not in_bounds:
             gen.check_pointer(result)
         gen.refine(vop.results[0].tn, result)
-        return
-    if seq_type.fits_dict():
-        _exact_dict_call(gen, vop, "dict_setitem")
         return
     if seq_type.fits_bytearray() and idx_type.fits(PYTHON_INTEGER):
         if idx_type.is_fixnum:

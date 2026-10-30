@@ -205,9 +205,9 @@ def update_word(word):
     llvm = emit_llvm(source)
     body = function_body(llvm, '"mule_fn_update_word.body"')
     assert 'call ptr @"mule.protocol.contains"' in body
-    assert 'call ptr @"mule.protocol.dict_getitem"' in body
+    assert "call ptr @mule.fast.getitem(" in body
     assert "@mule.attr.method(" in body
-    assert 'call ptr @"mule.protocol.dict_setitem"' in body
+    assert "call ptr @mule.fast.setitem" in body
     compare(
         tmp_path,
         source

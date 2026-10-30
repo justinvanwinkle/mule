@@ -47,13 +47,11 @@ from .callconv import (
     tuple_return_convention,
 )
 from .ctype import (
-    BOOLEAN_FALSE,
     BOTTOM,
     FIXNUM_MAX,
     FIXNUM_MIN,
     NONE_TYPE,
     UNKNOWN,
-    IntegerType,
     ListType,
     TextType,
     ValueType,
@@ -594,8 +592,6 @@ PROTOCOL_NAMESPACE = "$mule.protocols"
 
 _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
     {
-        "dict_getitem",
-        "dict_setitem",
         "dict_len",
         "table_len",
         "set_add",
@@ -610,25 +606,6 @@ _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
         "bytearray_append",
     }
 )
-
-_EXACT_TEXT_METHOD_DEFAULTS: dict[tuple[str, int], tuple[str, ValueType]] = {
-    ("strip", 1): ("@mule.none", NONE_TYPE),
-    ("lstrip", 1): ("@mule.none", NONE_TYPE),
-    ("rstrip", 1): ("@mule.none", NONE_TYPE),
-    ("replace", 3): ("inttoptr (i64 -1 to ptr)", IntegerType(-1, -1)),
-    ("split", 1): ("@mule.none", NONE_TYPE),
-    ("split", 2): ("inttoptr (i64 -1 to ptr)", IntegerType(-1, -1)),
-    ("rsplit", 1): ("@mule.none", NONE_TYPE),
-    ("rsplit", 2): ("inttoptr (i64 -1 to ptr)", IntegerType(-1, -1)),
-    ("count", 2): ("@mule.none", NONE_TYPE),
-    ("count", 3): ("@mule.none", NONE_TYPE),
-    ("index", 2): ("@mule.none", NONE_TYPE),
-    ("index", 3): ("@mule.none", NONE_TYPE),
-    ("rindex", 2): ("@mule.none", NONE_TYPE),
-    ("rindex", 3): ("@mule.none", NONE_TYPE),
-    ("splitlines", 1): ("@mule.false", BOOLEAN_FALSE),
-    ("expandtabs", 1): ("inttoptr (i64 17 to ptr)", IntegerType(8, 8)),
-}
 
 
 def runtime_namespace(namespace: str) -> str:
@@ -6140,79 +6117,6 @@ class FunctionGenerator:
     def argument_guard(self, value: str, expected: ValueType) -> str:
         """Check representation/range without touching or invoking an object."""
         return expected.accept(_ArgumentGuard(self, value))
-
-    def call_exact_text_method(
-        self,
-        info,
-        callable_value,
-        receiver,
-        arguments,
-        argument_refs,
-        *,
-        result_contract=None,
-    ) -> str:
-        """Call an immutable ``TextStorage`` method directly without runtime
-        method resolution or function-identity guarding."""
-        module = self.module
-        candidates = module.method_targets.get(info.name, ())
-        target = next(
-            (
-                fn
-                for fn in candidates
-                if fn.name.endswith(f":mule_fn_TextStorage.{info.name}")
-            ),
-            None,
-        )
-        if target is None:
-            self.argv(arguments)
-            buf = "%argv" if arguments else "null"
-            return self.operation(
-                f"call ptr @mule_call_resolved_owned(ptr {callable_value}, ptr {receiver}, i64 {len(arguments)}, ptr {buf})"
-            )
-        values = [receiver, *arguments]
-        supplied = [
-            info.receiver_type,
-            *((ref.tn.type or UNKNOWN) for ref in argument_refs),
-        ]
-        order = target.call_order((), len(values))
-        if order is None:
-            self.argv(arguments)
-            buf = "%argv" if arguments else "null"
-            return self.operation(
-                f"call ptr @mule_call_resolved_owned(ptr {callable_value}, ptr {receiver}, i64 {len(arguments)}, ptr {buf})"
-            )
-        full_values: list[str] = []
-        full_types: list[ValueType] = []
-        for pos, index in enumerate(order):
-            if index >= 0:
-                full_values.append(values[index])
-                full_types.append(supplied[index])
-            else:
-                default_val, default_type = _EXACT_TEXT_METHOD_DEFAULTS[
-                    (info.name, pos)
-                ]
-                if default_val.startswith("@mule."):
-                    self.immortal_values.add(default_val)
-                full_values.append(default_val)
-                full_types.append(default_type)
-        steps = entry_steps(module, target, full_types)
-        helper = module.direct_call_helper(
-            target,
-            (),
-            len(full_values),
-            steps,
-            proven=True,
-            same_namespace=True,
-            result_contract=result_contract,
-        )
-        operands = ", ".join(
-            [
-                "ptr %globals",
-                "ptr null",
-                *(f"ptr {value}" for value in full_values),
-            ]
-        )
-        return self.operation(f"call ptr {helper}({operands})")
 
     def call_resolved_target(
         self,

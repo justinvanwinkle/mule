@@ -711,7 +711,6 @@ PROTOCOL_DERIVE_TYPES = {
         lvar_type(node.args[1])
     ),
     "setitem": lambda node: NONE_TYPE,
-    "dict_setitem": lambda node: NONE_TYPE,
     "dict_len": lambda node: IntegerType(0, (1 << 60) - 1),
     "table_len": lambda node: IntegerType(0, (1 << 60) - 1),
     "empty_set": lambda node: EMPTY_SET_TYPE,
@@ -754,8 +753,6 @@ NON_INTEGER_FIRST_PROTOCOLS = frozenset(
 INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
 
 PROTOCOL_ARGUMENT_TYPES = {
-    "dict_getitem": (DICT_TYPE, UNKNOWN),
-    "dict_setitem": (DICT_TYPE, UNKNOWN, UNKNOWN),
     "dict_len": (DICT_TYPE,),
     "table_len": (SET_TYPE,),
     "set_add": (SET_TYPE, UNKNOWN),
@@ -812,8 +809,6 @@ PROTOCOLS = {
     )
     for name in (
         "_list_fill",
-        "dict_getitem",
-        "dict_setitem",
         "dict_len",
         "table_len",
         "empty_set",

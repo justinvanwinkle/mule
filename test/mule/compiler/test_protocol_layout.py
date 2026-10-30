@@ -93,23 +93,5 @@ exercise(len(input()))
 """,
         optimize=optimize,
     )
-    for operation in ("dict_getitem", "dict_setitem"):
-        wrapper = case.function_ir(rf"^mule\.protocol\.{operation}$", optimized=False)
-        selected = re.search(r'call ptr @"([^"\n]+\.protocol)"', wrapper)
-        assert selected is not None, wrapper
-        body = case.function_ir(re.escape(selected[1]) + "$", unit="builtins")
-        assert re.search(r"getelementptr i8, ptr %[-\w.]+, i64 32\b", body)
-        decoded = set(re.findall(r"(%[-\w.]+) = ashr i64 %[-\w.]+, 1\b", body))
-        comparisons = re.findall(r"icmp eq i64 (%[-\w.]+), (%[-\w.]+)", body)
-        assert any(left in decoded and right in decoded for left, right in comparisons)
-        assert not re.search(r"@mule\.fast\.storage\.(?:read|write|length)\(", body)
-        assert not re.search(r"@mule\.attr\.(?:hit|layout)\(", body)
-        assert not re.search(r"@mule_(?:set_)?instance_field(?:_name)?\(", body)
-        if operation != "dict_setitem":
-            unoptimized = case.function_ir(
-                re.escape(selected[1]) + "$", unit="builtins", optimized=False
-            )
-            assert "physical.borrowed" in unoptimized
-            assert "physical.loaded" not in unoptimized
     case.compare("abcdef\n")
     case.compare("\n")
