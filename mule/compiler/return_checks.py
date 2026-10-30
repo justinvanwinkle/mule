@@ -3,7 +3,12 @@
 from collections import defaultdict
 
 from . import fndb
-from .annotation_types import DeclaredReturnContract, InferredReturnContract
+from .annotation_types import (
+    ContractVisitor,
+    DeclaredFieldContract,
+    DeclaredReturnContract,
+    InferredReturnContract,
+)
 from .ctype import (
     BOTTOM,
     LIST_TYPE,
@@ -15,7 +20,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
-from .ir1util import insert_cast_after
+from .ir1util import insert_cast_after, insert_cast_before
 from .locall import global_bindings, made_function
 from .node import (
     CallKind,
@@ -23,8 +28,10 @@ from .node import (
     Combination,
     FunctionalKind,
     Lambda,
+    LambdaVar,
     LeafVisitor,
     NodeVisitor,
+    Ref,
 )
 
 
@@ -427,3 +434,372 @@ class _AssertResult(NodeVisitor):
         insert_cast_after(call, make_cast)
         call.block.component.reoptimize = True
         self.changed = True
+
+
+class _DeclaredFieldLookup(ValueTypeVisitor):
+    def __init__(self, class_facts, field_name: str):
+        self.class_facts = class_facts
+        self.field_name = field_name
+
+    def visit_ValueType(self, fact):
+        return None
+
+    def visit_InstanceType(self, fact):
+        if fact.may_be_unbound:
+            return None
+        identity = fact.instance_class()
+        if identity is None:
+            return None
+        facts = self.class_facts.get(identity)
+        if facts is None:
+            return None
+        contract = facts.declared_fields.get(self.field_name)
+        if contract is None:
+            return None
+        return facts.public_name, contract
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound or not fact.members:
+            return None
+        it = iter(fact.members)
+        first = next(it).accept(self)
+        if first is None:
+            return None
+        cls_name, contract = first
+        for member in it:
+            res = member.accept(self)
+            if res is None or res[1] != contract:
+                return None
+        return cls_name, contract
+
+
+class _ContainerWriteContracts(ContractVisitor):
+    """Return ``(key_contract, value_contract)`` for a container field's elements."""
+
+    def visit_Contract(self, contract):
+        return None, None
+
+    def visit_ListContract(self, contract):
+        return None, contract.element
+
+    def visit_SetContract(self, contract):
+        return None, contract.element
+
+    def visit_DictContract(self, contract):
+        return contract.key, contract.value
+
+
+_CONTAINER_WRITE_CONTRACTS = _ContainerWriteContracts()
+
+
+class _GetattrFieldOrigin(NodeVisitor, LeafVisitor):
+    """Return ``(receiver_lvar, field_name)`` when an lvar is read from an
+    instance attribute directly or via a single-assignment local variable."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Cast(self, node: Cast):
+        if node.value is not None and len(node.value.uses) == 1:
+            return node.value.uses[0].accept(self)
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_LambdaVar(self, leaf: LambdaVar):
+        if len(leaf.sets) == 1 and leaf.sets[0].value is not None:
+            val = leaf.sets[0].value
+            if len(val.uses) == 1:
+                return val.uses[0].accept(self)
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is not CallKind.KNOWN or node.fun_info is None:
+            return None
+        if (
+            node.fun_info in (fndb.GETATTR, fndb.PHYSICAL_FIELD_REF)
+            and len(node.args) == 1
+            and node.info is not None
+        ):
+            return node.args[0], node.info.name
+        if node.fun_info.name == "_get_instance_field" and len(node.args) == 2:
+            from .ir1opt import bound_constant_text
+
+            name = bound_constant_text(node.args[1])
+            if name is not None:
+                return node.args[0], name
+        return None
+
+
+_GETATTR_FIELD_ORIGIN = _GetattrFieldOrigin()
+
+
+class _HasDeclaredFieldCast(NodeVisitor):
+    def __init__(self, target_node, contract):
+        self.target_node = target_node
+        self.contract = contract
+
+    def visit_Node(self, node):
+        return False
+
+    def visit_Cast(self, node: Cast):
+        return (
+            node.declaration == ("field-store", self.target_node)
+            or node.contract == self.contract
+        )
+
+
+class _ContainerDisplay(NodeVisitor):
+    """Return ``Combination`` when a node is ``%build_list``, ``%build_set``,
+    or ``%build_dict``."""
+
+    def visit_Node(self, node):
+        return None
+
+    def visit_Cast(self, node: Cast):
+        if node.value is not None and len(node.value.uses) == 1:
+            return node.value.uses[0].accept(self)
+        return None
+
+    def visit_Combination(self, node: Combination):
+        if node.kind is CallKind.KNOWN and node.fun_info in (
+            fndb.BUILD_LIST,
+            fndb.PROTOCOLS["build_set"],
+            fndb.PROTOCOLS["build_dict"],
+        ):
+            return node
+        return None
+
+
+_CONTAINER_DISPLAY = _ContainerDisplay()
+
+
+class _AssertDeclaredFieldStores(NodeVisitor):
+    """Wrap resolved stores to declared instance fields and element writes to
+    declared container fields in policy-controlled Casts, following SBCL's
+    slot-access-transform (src/code/defstruct.lisp)."""
+
+    def __init__(self, function: Lambda, facts, class_facts):
+        self.function = function
+        self.facts = facts
+        self.class_facts = class_facts
+        self.changed = False
+
+    def lvar_type(self, lvar) -> ValueType:
+        result = BOTTOM
+        for producer in lvar.uses:
+            result = result.join(self.facts.types.get(producer, UNKNOWN))
+        return result
+
+    def _wrap_operand(
+        self, node: Combination, lvar, cls_name: str, field_name: str, contract
+    ) -> None:
+        if contract is None or lvar is None:
+            return
+        field_contract = DeclaredFieldContract(field_name, cls_name, contract)
+        if len(lvar.uses) == 1 and lvar.uses[0].accept(
+            _HasDeclaredFieldCast(node, field_contract)
+        ):
+            return
+        actual = self.lvar_type(lvar)
+        if (
+            actual is not UNKNOWN
+            and actual is not BOTTOM
+            and not actual.may_be_unbound
+            and actual.fits(field_contract.checked_type)
+            and not contract.has_element_contracts()
+        ):
+            return
+        location = (
+            node.info.location
+            if node.info is not None and hasattr(node.info, "location")
+            else (
+                self.function.converter.location(node.source)
+                if node.source is not None and hasattr(self.function, "converter")
+                else None
+            )
+        )
+        insert_cast_before(
+            node,
+            lvar,
+            lambda value, node=node, fc=field_contract, loc=location: Cast(
+                node.lexenv,
+                node.source,
+                value,
+                fc,
+                loc,
+                int(fc.requires_check(node.lexenv.policy.checks_contracts)),
+                declaration=("field-store", node),
+            ),
+        )
+        node.block.component.reoptimize = True
+        self.changed = True
+
+    def _wrap_container_display(
+        self, display: Combination, cls_name: str, field_name: str, contract
+    ) -> None:
+        key_contract, val_contract = contract.accept(_CONTAINER_WRITE_CONTRACTS)
+        if display.fun_info in (fndb.BUILD_LIST, fndb.PROTOCOLS["build_set"]):
+            if val_contract is not None:
+                for arg in list(display.args):
+                    self._wrap_operand(display, arg, cls_name, field_name, val_contract)
+        elif display.fun_info is fndb.PROTOCOLS["build_dict"]:
+            for idx, arg in enumerate(list(display.args)):
+                elem_c = key_contract if idx % 2 == 0 else val_contract
+                if elem_c is not None:
+                    self._wrap_operand(display, arg, cls_name, field_name, elem_c)
+
+    def _lookup_container_field(self, seq_lvar):
+        if len(seq_lvar.uses) != 1:
+            return None
+        origin = seq_lvar.uses[0].accept(_GETATTR_FIELD_ORIGIN)
+        if origin is None:
+            return None
+        inst_lvar, field_name = origin
+        recv_type = self.lvar_type(inst_lvar)
+        return recv_type.accept(_DeclaredFieldLookup(self.class_facts, field_name))
+
+    def visit_Combination(self, node: Combination):
+        if (
+            self.function.is_protocol
+            or node.kind is not CallKind.KNOWN
+            or node.fun_info is None
+        ):
+            return
+        info = node.fun_info
+        if (
+            info in (fndb.SETATTR, fndb.PHYSICAL_FIELD_SET)
+            and len(node.args) == 2
+            and node.info is not None
+        ):
+            recv_lvar, val_lvar = node.args
+            field_name = node.info.name
+            found = self.lvar_type(recv_lvar).accept(
+                _DeclaredFieldLookup(self.class_facts, field_name)
+            )
+            if found is not None:
+                cls_name, contract = found
+                if len(val_lvar.uses) == 1:
+                    display = val_lvar.uses[0].accept(_CONTAINER_DISPLAY)
+                    if display is not None and contract.has_element_contracts():
+                        self._wrap_container_display(
+                            display, cls_name, field_name, contract
+                        )
+                self._wrap_operand(node, val_lvar, cls_name, field_name, contract)
+            return
+        if info.name == "_set_instance_field" and len(node.args) == 3:
+            from .ir1opt import bound_constant_text
+
+            field_name = bound_constant_text(node.args[1])
+            if field_name is not None:
+                recv_lvar, _, val_lvar = node.args
+                found = self.lvar_type(recv_lvar).accept(
+                    _DeclaredFieldLookup(self.class_facts, field_name)
+                )
+                if found is not None:
+                    cls_name, contract = found
+                    if len(val_lvar.uses) == 1:
+                        display = val_lvar.uses[0].accept(_CONTAINER_DISPLAY)
+                        if display is not None and contract.has_element_contracts():
+                            self._wrap_container_display(
+                                display, cls_name, field_name, contract
+                            )
+                    self._wrap_operand(node, val_lvar, cls_name, field_name, contract)
+            return
+        if info is fndb.PROTOCOLS["setitem"] and len(node.args) == 3:
+            found = self._lookup_container_field(node.args[0])
+            if found is not None:
+                cls_name, contract = found
+                key_contract, val_contract = contract.accept(_CONTAINER_WRITE_CONTRACTS)
+                if key_contract is not None:
+                    self._wrap_operand(
+                        node, node.args[1], cls_name, contract.name, key_contract
+                    )
+                if val_contract is not None:
+                    self._wrap_operand(
+                        node, node.args[2], cls_name, contract.name, val_contract
+                    )
+            return
+        if info.name in ("_storage_append", "%set_add") and len(node.args) == 2:
+            found = self._lookup_container_field(node.args[0])
+            if found is not None:
+                cls_name, contract = found
+                _, val_contract = contract.accept(_CONTAINER_WRITE_CONTRACTS)
+                if val_contract is not None:
+                    self._wrap_operand(
+                        node, node.args[1], cls_name, contract.name, val_contract
+                    )
+            return
+        if info.name == "_storage_write" and len(node.args) == 3:
+            found = self._lookup_container_field(node.args[0])
+            if found is not None:
+                cls_name, contract = found
+                _, val_contract = contract.accept(_CONTAINER_WRITE_CONTRACTS)
+                if val_contract is not None:
+                    self._wrap_operand(
+                        node, node.args[2], cls_name, contract.name, val_contract
+                    )
+            return
+        if info is fndb.CALL_RESOLVED and node.args and len(node.args[0].uses) == 1:
+            resolved = node.args[0].uses[0].accept(_RESOLVED_METHOD_CALL)
+            if resolved is not None:
+                seq_lvar, method_name = resolved
+                if (
+                    method_name in ("append", "add")
+                    and len(node.args) == 2
+                    and not node.info.keywords
+                ):
+                    found = self._lookup_container_field(seq_lvar)
+                    if found is not None:
+                        cls_name, contract = found
+                        _, val_contract = contract.accept(_CONTAINER_WRITE_CONTRACTS)
+                        if val_contract is not None:
+                            self._wrap_operand(
+                                node,
+                                node.args[1],
+                                cls_name,
+                                contract.name,
+                                val_contract,
+                            )
+                elif (
+                    method_name == "insert"
+                    and len(node.args) == 3
+                    and not node.info.keywords
+                ):
+                    found = self._lookup_container_field(seq_lvar)
+                    if found is not None:
+                        cls_name, contract = found
+                        _, val_contract = contract.accept(_CONTAINER_WRITE_CONTRACTS)
+                        if val_contract is not None:
+                            self._wrap_operand(
+                                node,
+                                node.args[2],
+                                cls_name,
+                                contract.name,
+                                val_contract,
+                            )
+
+
+def assert_declared_field_stores(compilation) -> bool:
+    """Enforce declared class field types on resolved field and element stores."""
+    if compilation.locall_state is None or compilation.facts is None:
+        return False
+    class_facts = compilation.locall_state.get("class_facts")
+    if not class_facts or not any(cf.declared_fields for cf in class_facts.values()):
+        return False
+    changed = False
+    for function in compilation.lambdas:
+        if function.is_protocol or function not in compilation.facts:
+            continue
+        visitor = _AssertDeclaredFieldStores(
+            function, compilation.facts[function], class_facts
+        )
+        for block in list(function.component.blocks()):
+            for node in list(block.nodes()):
+                node.accept(visitor)
+        changed |= visitor.changed
+    return changed

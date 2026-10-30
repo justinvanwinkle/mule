@@ -390,6 +390,7 @@ pub unsafe extern "C" fn mule_storage_length(value: Value) -> Value {
         if !value.is_null() && !object::is_fixnum(value) {
             let length = match &(*value).data {
                 Data::List(values, ..) | Data::Args(values, ..) => values.len(),
+                Data::RawWords { length, .. } => *length,
                 Data::Bytes(values, ..) => values.len(),
                 Data::ByteStorage(values) => values.length,
                 Data::Text(..) => return object::mule_text_length(value),
@@ -430,6 +431,11 @@ pub unsafe extern "C" fn mule_storage_read(value: Value, position: Value) -> Val
                 Data::List(values, ..) | Data::Args(values, ..) => {
                     if let Some(value) = values.get(index) {
                         return object::retain(*value);
+                    }
+                }
+                Data::RawWords { data, length } => {
+                    if index < *length {
+                        return object::small(*data.add(index));
                     }
                 }
                 Data::Bytes(values, ..) => {
@@ -475,6 +481,18 @@ pub unsafe extern "C" fn mule_storage_write(
             return null_mut();
         };
         if !value.is_null() && !object::is_fixnum(value) {
+            if let Data::RawWords { data, length } = &mut (*value).data {
+                if index >= *length {
+                    object::error("IndexError", "storage index out of range");
+                    return null_mut();
+                }
+                if !object::is_fixnum(replacement) {
+                    object::error("TypeError", "fixnum word is required");
+                    return null_mut();
+                }
+                *data.add(index) = object::fixnum(replacement);
+                return object::none_value();
+            }
             if let Data::ByteStorage(values) = &mut (*value).data {
                 if index >= values.length {
                     object::error("IndexError", "storage index out of range");

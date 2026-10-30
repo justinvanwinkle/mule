@@ -43,7 +43,9 @@ def fact(compilation, lambda_, node):
     return compilation.facts[lambda_].types[node]
 
 
-def test_empty_list_append_and_for_iteration_infers_element_type():
+def test_appended_list_iteration_sees_only_the_conservative_list_type():
+    # The list has two references, so neither carries element facts (SBCL
+    # NODE-CONSERVATIVE-TYPE): an append does not make the elements known.
     compilation = lower(
         "def f(n: int):\n"
         " positive_weights = []\n"
@@ -60,8 +62,7 @@ def test_empty_list_append_and_for_iteration_infers_element_type():
         == EMPTY_LIST_TYPE
     )
     w_type = fact(compilation, fn, stored_value(fn, "cur").use())
-    assert w_type == IntegerType(1, 1)
-    assert w_type.is_fixnum is True
+    assert w_type is UNKNOWN
 
 
 def test_list_constructor_from_argument_has_unknown_length():
@@ -89,7 +90,8 @@ def test_empty_list_mutated_through_bound_method_has_unknown_length():
     assert fact(compilation, fn, stored_value(fn, "n").use()) != IntegerType(0, 0)
 
 
-def test_dict_get_setitem_and_items_iteration_infers_entry_types():
+def test_counted_dict_items_iteration_sees_only_the_conservative_dict_type():
+    # ``counts`` has several references, so none of them carries entry types.
     compilation = lower(
         "def f(words):\n"
         " counts = {}\n"
@@ -106,11 +108,13 @@ def test_dict_get_setitem_and_items_iteration_infers_entry_types():
     fn = function(compilation, 1)
     token_type = fact(compilation, fn, stored_value(fn, "seen_token").use())
     count_type = fact(compilation, fn, stored_value(fn, "seen_count").use())
-    assert token_type == TEXT_TYPE
-    assert count_type == IntegerType(1, None)
+    assert token_type is UNKNOWN
+    assert count_type is UNKNOWN
 
 
-def test_dict_keys_and_values_iteration_infers_types():
+def test_dict_keys_and_values_iteration_sees_only_the_conservative_dict_type():
+    # The display's own value has entry types; each of the three references
+    # to ``d`` sees only an exact dict.
     compilation = lower(
         "def f(k_in):\n"
         " d = {str(k_in): 42}\n"
@@ -124,8 +128,8 @@ def test_dict_keys_and_values_iteration_infers_types():
     assert fact(compilation, fn, stored_value(fn, "d").use()) == DictType(
         TEXT_TYPE, IntegerType(42, 42)
     )
-    assert fact(compilation, fn, stored_value(fn, "out_k").use()) == TEXT_TYPE
-    assert fact(compilation, fn, stored_value(fn, "out_v").use()) == IntegerType(42, 42)
+    assert fact(compilation, fn, stored_value(fn, "out_k").use()) is UNKNOWN
+    assert fact(compilation, fn, stored_value(fn, "out_v").use()) is UNKNOWN
 
 
 def test_range_prepare_and_range_advance_with_fixnum_bound():

@@ -8,11 +8,11 @@ from mule.compiler.ctype import (
     FLOAT,
     FROZENSET_TYPE,
     INTEGER,
+    LIST_TYPE,
     NONE_TYPE,
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
-    ListType,
     TupleType,
 )
 from mule.compiler.locall import collect_global_constants
@@ -341,7 +341,7 @@ def test_cross_module_imported_constants_propagate_without_underscore_spelling(
     )
 
 
-def test_module_global_containers_propagate_to_default_parameter_specialization():
+def test_module_global_container_defaults_carry_only_the_conservative_type():
     source = (
         "def combinations(items):\n"
         " result = []\n"
@@ -370,18 +370,10 @@ def test_module_global_containers_propagate_to_default_parameter_specialization(
     compilation = compile_source(source)
     by_name = {lam.source_name: lam for lam in compilation.lambdas}
     step_fn = by_name["step"]
-    assert step_fn.default_types[0] == ListType(
-        TupleType(3, (ListType(FLOAT), ListType(FLOAT), FLOAT))
-    )
-    assert step_fn.default_types[1] == ListType(
-        TupleType(
-            2,
-            (
-                TupleType(3, (ListType(FLOAT), ListType(FLOAT), FLOAT)),
-                TupleType(3, (ListType(FLOAT), ListType(FLOAT), FLOAT)),
-            ),
-        )
-    )
+    # Any code may reach a module global and mutate the list it holds, so a
+    # reference to SYSTEM or PAIRS sees only SBCL's conservative list type.
+    assert step_fn.default_types[0] == LIST_TYPE
+    assert step_fn.default_types[1] == LIST_TYPE
     assert compilation.facts is not None
     observed_variants = [
         v for v in compilation.facts[step_fn].variants if v.id == "observed"
@@ -431,4 +423,6 @@ def test_higher_order_callable_and_tuple_element_specialization():
         param = variants[0].parameters[0]
         assert param.arity == 2
         assert param.elements is not None
-        assert param.elements[1].has_float_specialization()
+        # ``u`` reaches the tuple through ``eval_times_u``'s parameter, which
+        # has two references, so it carries SBCL's conservative list type.
+        assert param.elements[1] == LIST_TYPE

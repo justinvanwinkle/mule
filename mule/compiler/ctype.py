@@ -77,6 +77,9 @@ class ValueTypeVisitor:
     def visit_ByteArrayType(self, fact):
         return self.visit_PrimitiveType(fact)
 
+    def visit_WordVectorType(self, fact):
+        return self.visit_PrimitiveType(fact)
+
     def visit_FunctionType(self, fact):
         return self.visit_ValueType(fact)
 
@@ -315,28 +318,7 @@ class ValueType:
         result = union_type(self, NONE_TYPE)
         return result.with_unbound() if may_be_unbound else result
 
-    def update_nested_lists(self, elem_type):
-        return self
-
-    def _update_as_nested_list(self, elem_type):
-        return self.update_nested_lists(elem_type)
-
-    def update_nested_dicts(self, key_type, val_type):
-        return self
-
-    def _update_as_nested_dict(self, key_type, val_type):
-        return self.update_nested_dicts(key_type, val_type)
-
-    def update_nested_sets(self, elem_type):
-        return self
-
-    def _update_as_nested_set(self, elem_type):
-        return self.update_nested_sets(elem_type)
-
-    def propagate_to_parent_container(self, parent):
-        return parent
-
-    def widen_mutable_containers(self):
+    def conservative_type(self):
         return self
 
     def limit_container_depth(self, max_depth: int = 4):
@@ -2140,6 +2122,30 @@ BYTE_STORAGE_TYPE = ByteStorageType()
 
 
 @dataclass(frozen=True, slots=True)
+class WordVectorType(PrimitiveType):
+    """Private fixed-length vector of fixnum words (SBCL's
+    ``(simple-array fixnum (*))``): its representation, not flow facts,
+    gives every element the fixnum type, and its length never changes."""
+
+    may_be_unbound: bool = False
+
+    @property
+    def is_heap_object(self):
+        return not self.may_be_unbound
+
+    def accept(self, visitor):
+        return visitor.visit_WordVectorType(self)
+
+    def getitem_type(self, index):
+        if index.fits(PYTHON_INTEGER):
+            return IntegerType(FIXNUM_MIN, FIXNUM_MAX)
+        return UNKNOWN
+
+
+WORD_VECTOR_TYPE = WordVectorType()
+
+
+@dataclass(frozen=True, slots=True)
 class BytesType(PrimitiveType):
     may_be_unbound: bool = False
 
@@ -2638,43 +2644,10 @@ class TupleType(ValueType):
             return TupleType(self.arity, elem_domains)
         return None
 
-    def update_nested_lists(self, elem_type):
+    def conservative_type(self):
         if self.elements is None:
             return self
-        new_elems = tuple(
-            el._update_as_nested_list(elem_type).limit_container_depth(3)
-            for el in self.elements
-        )
-        if new_elems == self.elements:
-            return self
-        return TupleType(self.arity, new_elems, self.may_be_unbound)
-
-    def update_nested_dicts(self, key_type, val_type):
-        if self.elements is None:
-            return self
-        new_elems = tuple(
-            el._update_as_nested_dict(key_type, val_type).limit_container_depth(3)
-            for el in self.elements
-        )
-        if new_elems == self.elements:
-            return self
-        return TupleType(self.arity, new_elems, self.may_be_unbound)
-
-    def update_nested_sets(self, elem_type):
-        if self.elements is None:
-            return self
-        new_elems = tuple(
-            el._update_as_nested_set(elem_type).limit_container_depth(3)
-            for el in self.elements
-        )
-        if new_elems == self.elements:
-            return self
-        return TupleType(self.arity, new_elems, self.may_be_unbound)
-
-    def widen_mutable_containers(self):
-        if self.elements is None:
-            return self
-        new_elems = tuple(el.widen_mutable_containers() for el in self.elements)
+        new_elems = tuple(el.conservative_type() for el in self.elements)
         if new_elems == self.elements:
             return self
         return TupleType(self.arity, new_elems, self.may_be_unbound)
@@ -2967,42 +2940,6 @@ class ListType(ValueType):
     def has_bottom_part(self) -> bool:
         return self.element.has_bottom_part()
 
-    def update_nested_lists(self, elem_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
-            3
-        )
-        if new_elem == self.element:
-            return self
-        return ListType(new_elem, self.may_be_unbound)
-
-    def _update_as_nested_list(self, elem_type):
-        return self.update_nested_lists(elem_type).with_element(elem_type)
-
-    def update_nested_dicts(self, key_type, val_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_dict(
-            key_type, val_type
-        ).limit_container_depth(3)
-        if new_elem == self.element:
-            return self
-        return ListType(new_elem, self.may_be_unbound)
-
-    def update_nested_sets(self, elem_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
-            3
-        )
-        if new_elem == self.element:
-            return self
-        return ListType(new_elem, self.may_be_unbound)
-
-    def propagate_to_parent_container(self, parent):
-        return parent.update_nested_lists(self.element)
-
     def widen_constant(self):
         return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
 
@@ -3011,7 +2948,7 @@ class ListType(ValueType):
             return LIST_TYPE if not self.may_be_unbound else ListType(UNKNOWN, True)
         return ListType(self.element.widen_inferred_contract(), self.may_be_unbound)
 
-    def widen_mutable_containers(self):
+    def conservative_type(self):
         # Code the analysis cannot see may store any value or remove any
         # element, so neither the length nor the element type survives.
         return self.widen_constant()
@@ -3376,40 +3313,6 @@ class DictType(ValueType):
     def has_bottom_part(self) -> bool:
         return self.key.has_bottom_part() or self.value.has_bottom_part()
 
-    def update_nested_lists(self, elem_type):
-        if self.value is BOTTOM or self.value is UNKNOWN:
-            return self
-        new_val = self.value._update_as_nested_list(elem_type).limit_container_depth(3)
-        if new_val == self.value:
-            return self
-        return DictType(self.key, new_val, self.may_be_unbound, self.proven)
-
-    def update_nested_dicts(self, key_type, val_type):
-        if self.value is BOTTOM or self.value is UNKNOWN:
-            return self
-        new_val = self.value._update_as_nested_dict(
-            key_type, val_type
-        ).limit_container_depth(3)
-        if new_val == self.value:
-            return self
-        return DictType(self.key, new_val, self.may_be_unbound, self.proven)
-
-    def _update_as_nested_dict(self, key_type, val_type):
-        return self.update_nested_dicts(key_type, val_type).with_entry(
-            key_type, val_type
-        )
-
-    def update_nested_sets(self, elem_type):
-        if self.value is BOTTOM or self.value is UNKNOWN:
-            return self
-        new_val = self.value._update_as_nested_set(elem_type).limit_container_depth(3)
-        if new_val == self.value:
-            return self
-        return DictType(self.key, new_val, self.may_be_unbound, self.proven)
-
-    def propagate_to_parent_container(self, parent):
-        return parent.update_nested_dicts(self.key, self.value)
-
     def widen_constant(self):
         if not self.proven:
             return DictType(UNKNOWN, UNKNOWN, self.may_be_unbound, False)
@@ -3417,7 +3320,7 @@ class DictType(ValueType):
             DICT_TYPE if not self.may_be_unbound else DictType(UNKNOWN, UNKNOWN, True)
         )
 
-    def widen_mutable_containers(self):
+    def conservative_type(self):
         # As for lists: unseen code may insert or delete any entry.
         return self.widen_constant()
 
@@ -3729,40 +3632,10 @@ class IteratorType(ValueType):
     def has_bottom_part(self) -> bool:
         return self.element.has_bottom_part()
 
-    def update_nested_lists(self, elem_type):
+    def conservative_type(self):
         if self.element is BOTTOM or self.element is UNKNOWN:
             return self
-        new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
-            3
-        )
-        if new_elem == self.element:
-            return self
-        return IteratorType(new_elem, self.may_be_unbound)
-
-    def update_nested_dicts(self, key_type, val_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_dict(
-            key_type, val_type
-        ).limit_container_depth(3)
-        if new_elem == self.element:
-            return self
-        return IteratorType(new_elem, self.may_be_unbound)
-
-    def update_nested_sets(self, elem_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
-            3
-        )
-        if new_elem == self.element:
-            return self
-        return IteratorType(new_elem, self.may_be_unbound)
-
-    def widen_mutable_containers(self):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element.widen_mutable_containers()
+        new_elem = self.element.conservative_type()
         if new_elem == self.element:
             return self
         return IteratorType(new_elem, self.may_be_unbound)
@@ -4448,17 +4321,8 @@ class UnionType(ValueType):
     def has_bottom_part(self) -> bool:
         return any(m.has_bottom_part() for m in self.members)
 
-    def update_nested_lists(self, elem_type):
-        return self.map(lambda m: m._update_as_nested_list(elem_type))
-
-    def update_nested_dicts(self, key_type, val_type):
-        return self.map(lambda m: m._update_as_nested_dict(key_type, val_type))
-
-    def update_nested_sets(self, elem_type):
-        return self.map(lambda m: m._update_as_nested_set(elem_type))
-
-    def widen_mutable_containers(self):
-        return self.map(lambda m: m.widen_mutable_containers())
+    def conservative_type(self):
+        return self.map(lambda m: m.conservative_type())
 
 
 MAX_UNION_MEMBERS = 8
@@ -4736,15 +4600,17 @@ class SetType(InstanceType):
         )
 
     def annotated_set(self, expected):
-        if not self.proven and self.identity == expected.identity:
-            return SetType(
-                self.identity,
-                self.may_be_unbound,
-                self.fixed_slots,
-                self.element,
-                True,
-            )
-        return self if self.identity == expected.identity else expected
+        if self.identity == expected.identity:
+            if not self.proven:
+                return SetType(
+                    self.identity,
+                    self.may_be_unbound,
+                    self.fixed_slots,
+                    self.element,
+                    True,
+                )
+            return self
+        return SetType(expected.identity, fixed_slots=expected.fixed_slots)
 
     def dispatch_domain(self):
         if self.may_be_unbound or not self.proven:
@@ -4827,48 +4693,6 @@ class SetType(InstanceType):
     def has_bottom_part(self) -> bool:
         return self.element.has_bottom_part()
 
-    def update_nested_lists(self, elem_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_list(elem_type).limit_container_depth(
-            3
-        )
-        if new_elem == self.element:
-            return self
-        return SetType(
-            self.identity, self.may_be_unbound, self.fixed_slots, new_elem, self.proven
-        )
-
-    def update_nested_dicts(self, key_type, val_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_dict(
-            key_type, val_type
-        ).limit_container_depth(3)
-        if new_elem == self.element:
-            return self
-        return SetType(
-            self.identity, self.may_be_unbound, self.fixed_slots, new_elem, self.proven
-        )
-
-    def update_nested_sets(self, elem_type):
-        if self.element is BOTTOM or self.element is UNKNOWN:
-            return self
-        new_elem = self.element._update_as_nested_set(elem_type).limit_container_depth(
-            3
-        )
-        if new_elem == self.element:
-            return self
-        return SetType(
-            self.identity, self.may_be_unbound, self.fixed_slots, new_elem, self.proven
-        )
-
-    def _update_as_nested_set(self, elem_type):
-        return self.update_nested_sets(elem_type).with_element(elem_type)
-
-    def propagate_to_parent_container(self, parent):
-        return parent.update_nested_sets(self.element)
-
     def widen_constant(self):
         if not self.proven:
             return SetType(
@@ -4882,11 +4706,11 @@ class SetType(InstanceType):
             self.identity, self.may_be_unbound, self.fixed_slots, UNKNOWN, True
         )
 
-    def widen_mutable_containers(self):
+    def conservative_type(self):
         if self.identity == "mule_dict_frozenset":
             if self.element is BOTTOM or self.element is UNKNOWN:
                 return self
-            new_elem = self.element.widen_mutable_containers()
+            new_elem = self.element.conservative_type()
             if new_elem == self.element:
                 return self
             return SetType(
@@ -5283,7 +5107,7 @@ class ClassType(ValueType):
             inst = self.instance_types[0]
             if inst.fits_class():
                 return ANY_CLASS_TYPE
-            return inst.widen_mutable_containers().widen_constant()
+            return inst.conservative_type().widen_constant()
         return UNKNOWN
 
     def allocate_instance_type(self):
@@ -5875,6 +5699,9 @@ class _SerializeValueType(ValueTypeVisitor):
     def visit_ByteStorageType(self, fact):
         return {"kind": "byte_storage", "unbound": fact.may_be_unbound}
 
+    def visit_WordVectorType(self, fact):
+        return {"kind": "word_vector", "unbound": fact.may_be_unbound}
+
     def visit_ByteArrayType(self, fact):
         return {"kind": "bytearray", "unbound": fact.may_be_unbound}
 
@@ -6013,6 +5840,8 @@ def value_type_from_dict(data: dict | None) -> ValueType:
         return BytesType(may_be_unbound=unbound) if unbound else BYTES_TYPE
     if kind == "byte_storage":
         return ByteStorageType(may_be_unbound=unbound) if unbound else BYTE_STORAGE_TYPE
+    if kind == "word_vector":
+        return WordVectorType(may_be_unbound=unbound) if unbound else WORD_VECTOR_TYPE
     if kind == "bytearray":
         return ByteArrayType(may_be_unbound=unbound) if unbound else BYTEARRAY_TYPE
     if kind == "function":

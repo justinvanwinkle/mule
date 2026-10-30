@@ -17,7 +17,6 @@ from mule.compiler.ctype import (
     BytesType,
     ImmortalType,
     IntegerType,
-    ListType,
     NoneType,
     PythonIntegerType,
     TextType,
@@ -974,7 +973,9 @@ def test_call_site_arg_propagation_specializes_chains_recursion_keywords_and_def
     assert leaf_obs.parameters[1].is_fixnum
     assert leaf_obs.parameters[2].is_fixnum
     middle_obs = observed(compilation, middle_fn)
-    assert middle_obs.parameters[0] == ListType(IntegerType(10, 30))
+    # ``middle`` also passes ``items`` to itself through a variable with
+    # several references, which sees only SBCL's conservative list type.
+    assert middle_obs.parameters[0] == LIST_TYPE
     assert middle_obs.parameters[1].is_fixnum
     local_params = compilation.facts[local_step_fn].parameters
     assert local_params[0] == TupleType(2, (IntegerType(4, 4), IntegerType(5, 5)))

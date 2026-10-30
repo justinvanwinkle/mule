@@ -4296,13 +4296,29 @@ class _Statements(ast.Visitor):
             )
             frontier = ctran
             operands.append(value)
+        resolved_field_annotations = []
+        if native is not None:
+            for fname, (contract, _) in native.fields.items():
+                resolved_field_annotations.append((fname, contract))
+        else:
+            for fname, annotation in declarations:
+                if fname in (
+                    "__dict__",
+                    "__slots__",
+                    "__class__",
+                    "__match_args__",
+                    "__annotations__",
+                    "__weakref__",
+                ):
+                    continue
+                contract = converter.declared_contract(annotation, function)
+                if contract is not None:
+                    resolved_field_annotations.append((fname, contract))
         info = ClassInfo(
             node.name,
             len(positional),
             tuple(fields),
-            tuple(contract for contract, declaration in native.fields.values())
-            if native is not None
-            else (),
+            tuple(resolved_field_annotations),
             policy,
             converter.location(node),
             identity,

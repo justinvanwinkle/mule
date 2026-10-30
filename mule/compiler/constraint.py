@@ -178,6 +178,44 @@ class _InstanceFieldType(ValueTypeVisitor):
         return result
 
 
+class _InstanceDeclaredField(ValueTypeVisitor):
+    def __init__(self, class_facts, name: str):
+        self.class_facts = class_facts
+        self.name = name
+
+    def visit_ValueType(self, fact):
+        return None
+
+    def visit_InstanceType(self, fact):
+        if fact.may_be_unbound:
+            return None
+        identity = fact.instance_class()
+        if identity is None:
+            return None
+        facts = self.class_facts.get(identity)
+        if facts is None:
+            return None
+        contract = facts.declared_fields.get(self.name)
+        if contract is None:
+            return None
+        return contract, (self.name in facts.unsafe_declared_fields)
+
+    def visit_UnionType(self, fact):
+        if fact.may_be_unbound or not fact.members:
+            return None
+        it = iter(fact.members)
+        first = next(it).accept(self)
+        if first is None:
+            return None
+        contract, is_unsafe = first
+        for member in it:
+            res = member.accept(self)
+            if res is None or res[0] != contract:
+                return None
+            is_unsafe = is_unsafe or res[1]
+        return contract, is_unsafe
+
+
 @dataclass(frozen=True, slots=True)
 class Fact:
     type: ValueType = UNKNOWN
@@ -193,6 +231,10 @@ class Fact:
         if self.target is None and not self.proven:
             return _fact(type_)
         return Fact(type_, self.target, self.proven)
+
+    def conservative(self) -> Fact:
+        """This fact without claims about mutable contents (SBCL CONSERVATIVE-TYPE)."""
+        return self.with_type(self.type.conservative_type())
 
     def argument_domain(self) -> ValueType:
         """A guarded entry may test a predicted callable's code identity."""
@@ -569,6 +611,9 @@ class _IsBuiltinSequenceType(ValueTypeVisitor):
     def visit_TupleType(self, fact: TupleType) -> bool:
         return not fact.may_be_unbound
 
+    def visit_WordVectorType(self, fact) -> bool:
+        return not fact.may_be_unbound
+
 
 _IS_BUILTIN_SEQUENCE_TYPE = _IsBuiltinSequenceType()
 
@@ -585,6 +630,52 @@ class _IsMutableSequenceType(ValueTypeVisitor):
 
 
 _IS_MUTABLE_SEQUENCE_TYPE = _IsMutableSequenceType()
+
+
+class _IsMutableContainerType(ValueTypeVisitor):
+    def visit_ValueType(self, fact: ValueType) -> bool:
+        return False
+
+    def visit_ListType(self, fact) -> bool:
+        return True
+
+    def visit_DictType(self, fact) -> bool:
+        return True
+
+    def visit_SetType(self, fact) -> bool:
+        return fact.identity != "mule_dict_frozenset"
+
+
+_IS_MUTABLE_CONTAINER_TYPE = _IsMutableContainerType()
+
+
+class _IsSimpleSequenceType(ValueTypeVisitor):
+    """Whether a sequence's length is fixed when it is created.
+
+    SBCL uses vector-length constraints to elide bound checks only for a
+    SIMPLE-ARRAY (%CHECK-BOUND and VECTOR-CONSTRAINT-LENGTH in
+    equality-constraints.lisp): an adjustable vector's length may change
+    through any reference. Python's text, bytes, and tuples are simple; lists
+    and bytearrays are adjustable.
+    """
+
+    def visit_ValueType(self, fact: ValueType) -> bool:
+        return False
+
+    def visit_TextType(self, fact: TextType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_BytesType(self, fact) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_TupleType(self, fact: TupleType) -> bool:
+        return not fact.may_be_unbound
+
+    def visit_WordVectorType(self, fact) -> bool:
+        return not fact.may_be_unbound
+
+
+_IS_SIMPLE_SEQUENCE_TYPE = _IsSimpleSequenceType()
 
 
 class _LiteralSeqLength(NodeVisitor, LeafVisitor, ast.Visitor):
@@ -766,7 +857,7 @@ class _LinearUpdate(NodeVisitor):
 
     def _extract_seq_len_linear(self, seq_lvar):
         src_var = self._origin_var(seq_lvar)
-        if src_var is not None:
+        if src_var is not None and self.visitor.has_vector_length(seq_lvar):
             src_var = self.visitor.walk.temp_source.get(src_var, src_var)
             seq_key = self.visitor.walk.seq_len_keys.get(src_var)
             if seq_key is not None:
@@ -968,11 +1059,13 @@ class _SequenceProducerLength(NodeVisitor):
             src1 = visitor.origins.get(node.args[1])
             if (
                 src0 is not None
+                and visitor.has_vector_length(node.args[0])
                 and (k0 := visitor.walk.seq_len_keys.get(src0)) is not None
             ):
                 linear = (k0, right_len.minimum, right_len.maximum)
             elif (
                 src1 is not None
+                and visitor.has_vector_length(node.args[1])
                 and (k1 := visitor.walk.seq_len_keys.get(src1)) is not None
             ):
                 linear = (k1, left_len.minimum, left_len.maximum)
@@ -1084,7 +1177,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.origins = origins
         self.relations: dict = {}
         self.edge_relations: dict | None = None
-        self.parent_origins: dict[object, object] = {}
         self.type_of_origins: dict[object, object] = {}
         self.tuple_list_origins: dict[object, TupleType] = {}
         self.handler_state: dict[object, Fact] | None = None
@@ -1106,7 +1198,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
         self.relations = relations.copy() if relations is not None else {}
         self.edge_relations = None
         self.origins.clear()
-        self.parent_origins.clear()
         self.type_of_origins.clear()
         self.tuple_list_origins.clear()
         self.changed.clear()
@@ -1146,7 +1237,12 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return Fact(narrowed_type, current.target, current.proven)
 
     def apply_element_contract(
-        self, node, static_type: ValueType, elem_contract
+        self,
+        node,
+        static_type: ValueType,
+        elem_contract,
+        *,
+        trusted_static: bool = True,
     ) -> ValueType:
         if elem_contract is None or elem_contract.contradicts(static_type):
             self.walk.element_contracts.pop(node, None)
@@ -1155,7 +1251,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
             self.walk.lvar_contracts[node.lvar] = elem_contract
         checked = elem_contract.checked_type
         if checked is UNKNOWN or (
-            static_type is not UNKNOWN and static_type.fits(checked)
+            trusted_static and static_type is not UNKNOWN and static_type.fits(checked)
         ):
             self.walk.element_contracts.pop(node, None)
             return static_type
@@ -1166,6 +1262,14 @@ class _Propagation(NodeVisitor, LeafVisitor):
             return elem_contract.refine(static_type)
         self.walk.element_contracts[node] = elem_contract
         return elem_contract.refine(static_type)
+
+    def has_vector_length(self, seq_lvar) -> bool:
+        """Whether a variable's vector-length facts describe ``seq_lvar``.
+
+        Only a simple sequence's length is fixed by its creation; any other
+        reference may resize a list or bytearray (see _IsSimpleSequenceType).
+        """
+        return self.type_of(seq_lvar).accept(_IS_SIMPLE_SEQUENCE_TYPE)
 
     def sequence_length_type(self, lvar) -> ValueType | None:
         seq_type = self.type_of(lvar)
@@ -1181,7 +1285,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
             if lit_len is not None:
                 return IntegerType(lit_len, lit_len)
         src_var = self.origins.get(lvar)
-        if src_var is not None:
+        if src_var is not None and self.has_vector_length(lvar):
             src_var = self.walk.temp_source.get(src_var, src_var)
             seq_key = self.walk.seq_len_keys.get(src_var)
             if seq_key is not None and seq_key in self.state:
@@ -1248,14 +1352,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
     def record_in_bounds(self, node, seq_lvar, idx_lvar) -> None:
         self.check_in_bounds_access(node, seq_lvar, idx_lvar)
 
-    def _invalidate_seq_len(self, var) -> None:
-        seq_key = self.walk.seq_len_keys.get(var)
-        if seq_key is None or seq_key not in self.state:
-            return
-        self.assign(seq_key, _SEQ_LEN_BOUND_FACT)
-        if self.relations:
-            self._drop_relations_for(seq_key)
-
     def _narrow_var_interval(
         self, var, minimum: int | None, maximum: int | None
     ) -> None:
@@ -1291,7 +1387,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
         in_bounds = self.is_proven_in_bounds(seq_lvar, idx_lvar)
         seq_key = None
         src_var = _LinearUpdate(self)._origin_var(seq_lvar)
-        if src_var is not None:
+        if src_var is not None and self.has_vector_length(seq_lvar):
             src_var = self.walk.temp_source.get(src_var, src_var)
             seq_key = self.walk.seq_len_keys.get(src_var)
         idx_var = None
@@ -1356,48 +1452,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 )
                 self._narrow_var_interval(base_var, lo, hi)
 
-    def update_mutated_container(self, recv_var, updated_type: ValueType) -> None:
-        if (
-            recv_var is None
-            or recv_var not in self.state
-            or recv_var in self.walk.indirect
-        ):
-            return
-        if self.state.get(recv_var) is not UNBOUND_FACT:
-            self.assign(recv_var, _fact(updated_type))
-        all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
-        for member in all_vars:
-            self._invalidate_seq_len(member)
-        for alias_var in all_vars - {recv_var}:
-            if alias_var in self.state and alias_var not in self.walk.indirect:
-                alias_type = self.state[alias_var].type
-                joined = alias_type.join(updated_type)
-                if joined != alias_type and joined is not UNKNOWN:
-                    self.assign(alias_var, _fact(joined))
-        parents = set()
-        for member in all_vars:
-            parents.update(self.walk.parent_containers.get(member, ()))
-        for parent_var in parents:
-            if parent_var in self.state and parent_var not in self.walk.indirect:
-                current_fact = self.state[parent_var]
-                updated_nested = updated_type.propagate_to_parent_container(
-                    current_fact.type
-                )
-                if updated_nested != current_fact.type:
-                    self.assign(parent_var, _fact(updated_nested))
-
-    def mutate_container_element(
-        self, lvar, elem_type: ValueType, *, preserves_length: bool = False
-    ) -> None:
-        recv_var = self.origins.get(lvar)
-        recv_type = self.type_of(lvar)
-        if recv_type.fits_list(LIST_TYPE):
-            self.mutate_list(
-                recv_var, recv_type, elem_type, preserves_length=preserves_length
-            )
-        elif recv_type.fits_mutable_set():
-            self.mutate_set(recv_var, recv_type, elem_type)
-
     def resolve_call_target(self, node: Combination):
         callee_fact = self.fact_of(node.fun)
         if callee_fact.target is not None:
@@ -1411,10 +1465,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return self.walk.builtin_target(node.fun)
 
     def invalidate(self):
-        # Closures created in this frame read its captured variables, so any
-        # code the call may run can mutate the containers they hold.
-        for var in self.walk.captured:
-            self.widen_escaped_container(var)
         if not self.globals_invalidated and self.walk.invalidated:
             state = self.state
             has_handler = self.has_handler
@@ -1438,117 +1488,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 for lvar, origin in self.origins.items()
                 if origin is not var
             }
-
-    def record_alias(self, target_var, source_var):
-        if source_var is None or source_var is target_var:
-            return
-        aliases = self.walk.aliases
-        group = aliases[source_var] | aliases[target_var] | {source_var, target_var}
-        for member in group:
-            aliases[member] = group - {member}
-
-    def record_container_child(self, parent_var, child_var):
-        if parent_var is None or child_var is None or parent_var is child_var:
-            return
-        parents = self.walk.parent_containers
-        for member in {child_var} | self.walk.aliases.get(child_var, set()):
-            if member is not parent_var:
-                parents[member].add(parent_var)
-
-    def mutate_list(
-        self,
-        recv_var,
-        recv_type: ValueType,
-        elem_type: ValueType,
-        *,
-        preserves_length: bool = False,
-    ):
-        if recv_var is not None and recv_var not in self.walk.indirect:
-            if self.state.get(recv_var) is not UNBOUND_FACT:
-                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
-            all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
-            if not preserves_length:
-                for member in all_vars:
-                    self._invalidate_seq_len(member)
-            for alias_var in all_vars - {recv_var}:
-                if alias_var in self.state and alias_var not in self.walk.indirect:
-                    alias_type = self.state[alias_var].type
-                    if alias_type.fits_list(LIST_TYPE):
-                        self.assign(
-                            alias_var, _fact(alias_type.with_element(elem_type))
-                        )
-            parents = set()
-            for member in all_vars:
-                parents.update(self.walk.parent_containers.get(member, ()))
-            for parent_var in parents:
-                if parent_var in self.state and parent_var not in self.walk.indirect:
-                    current_fact = self.state[parent_var]
-                    updated_nested = current_fact.type.update_nested_lists(elem_type)
-                    if updated_nested != current_fact.type:
-                        self.assign(parent_var, _fact(updated_nested))
-
-    def mutate_dict(
-        self, recv_var, recv_type: ValueType, key_type: ValueType, val_type: ValueType
-    ):
-        if recv_var is not None and recv_var not in self.walk.indirect:
-            if self.state.get(recv_var) is not UNBOUND_FACT:
-                self.assign(recv_var, _fact(recv_type.with_entry(key_type, val_type)))
-            all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
-            for alias_var in all_vars - {recv_var}:
-                if alias_var in self.state and alias_var not in self.walk.indirect:
-                    alias_type = self.state[alias_var].type
-                    if alias_type.fits_dict(DICT_TYPE):
-                        self.assign(
-                            alias_var,
-                            _fact(alias_type.with_entry(key_type, val_type)),
-                        )
-            parents = set()
-            for member in all_vars:
-                parents.update(self.walk.parent_containers.get(member, ()))
-            for parent_var in parents:
-                if parent_var in self.state and parent_var not in self.walk.indirect:
-                    current_fact = self.state[parent_var]
-                    updated_nested = current_fact.type.update_nested_dicts(
-                        key_type, val_type
-                    )
-                    if updated_nested != current_fact.type:
-                        self.assign(parent_var, _fact(updated_nested))
-
-    def mutate_set(self, recv_var, recv_type: ValueType, elem_type: ValueType):
-        if recv_var is not None and recv_var not in self.walk.indirect:
-            if self.state.get(recv_var) is not UNBOUND_FACT:
-                self.assign(recv_var, _fact(recv_type.with_element(elem_type)))
-            all_vars = {recv_var} | self.walk.aliases.get(recv_var, set())
-            for member in all_vars:
-                self._invalidate_seq_len(member)
-            for alias_var in all_vars - {recv_var}:
-                if alias_var in self.state and alias_var not in self.walk.indirect:
-                    alias_type = self.state[alias_var].type
-                    if alias_type.fits_mutable_set():
-                        self.assign(
-                            alias_var, _fact(alias_type.with_element(elem_type))
-                        )
-            parents = set()
-            for member in all_vars:
-                parents.update(self.walk.parent_containers.get(member, ()))
-            for parent_var in parents:
-                if parent_var in self.state and parent_var not in self.walk.indirect:
-                    current_fact = self.state[parent_var]
-                    updated_nested = current_fact.type.update_nested_sets(elem_type)
-                    if updated_nested != current_fact.type:
-                        self.assign(parent_var, _fact(updated_nested))
-
-    def widen_escaped_container(self, var):
-        if var is None or var not in self.state or var in self.walk.indirect:
-            return
-        targets = {var} | self.walk.aliases.get(var, set())
-        for member in targets:
-            self._invalidate_seq_len(member)
-            if member in self.state and member not in self.walk.indirect:
-                cur = self.state[member].type
-                widened = cur.widen_mutable_containers()
-                if widened != cur:
-                    self.assign(member, _fact(widened))
 
     def note_handler_state(self):
         """Join the state after a node into what an error edge carries.
@@ -1590,7 +1529,10 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return fact
 
     def visit_GlobalVar(self, leaf):
-        fact = self.state[(_GLOBAL, leaf.name)]
+        # Any code anywhere may reference a module global and mutate the
+        # container it holds, so its references see only the conservative
+        # type (SBCL NODE-CONSERVATIVE-TYPE in ir1opt.lisp).
+        fact = self.state[(_GLOBAL, leaf.name)].conservative()
         ref = self._current_ref
         if ref is not None and ref.lvar is not None:
             self.origins[ref.lvar] = (_GLOBAL, leaf.name)
@@ -1608,8 +1550,8 @@ class _Propagation(NodeVisitor, LeafVisitor):
             and ref.lexenv.policy.safety < 3
         ):
             if target is not None:
-                return Fact(ref.derived_type, target, fact.proven)
-            return _fact(ref.derived_type)
+                return Fact(ref.derived_type.conservative_type(), target, fact.proven)
+            return _fact(ref.derived_type.conservative_type())
         if fact.target is None and target is not None:
             fact = Fact(fact.type, target)
         return fact
@@ -1640,6 +1582,14 @@ class _Propagation(NodeVisitor, LeafVisitor):
             target = self.walk.imported_targets.get(leaf.name)
             if target is not None:
                 fact = Fact(fact.type, target)
+        if len(leaf.refs) > 1:
+            # SBCL NODE-CONSERVATIVE-TYPE (ir1opt.lisp): a type that describes
+            # a mutable container's contents holds at a reference only when
+            # it is the variable's sole reference. Through any other
+            # reference, code the analysis cannot see may have changed them.
+            fact = fact.conservative()
+            if leaf in self.walk.var_contracts and not fact.type.may_be_unbound:
+                fact = fact.with_type(self.walk.var_contracts[leaf].refine(fact.type))
         return fact
 
     def visit_Lambda(self, leaf):
@@ -1723,18 +1673,15 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 else:
                     self.walk.iter_contracts.pop(key, None)
             src_var = self.origins.get(node.value)
-            if src_var is not None and src_var in self.state:
-                self.record_alias(key, src_var)
-                if (
-                    key in self.walk.local_vars_set
-                    and key.hidden
-                    and len(key.sets) == 1
-                    and src_var in self.walk.local_vars_set
-                ):
-                    self.walk.temp_source[key] = src_var
-            parent_var = self.parent_origins.get(node.value)
-            if parent_var is not None and parent_var in self.state:
-                self.record_container_child(parent_var, key)
+            if (
+                src_var is not None
+                and src_var in self.state
+                and key in self.walk.local_vars_set
+                and key.hidden
+                and len(key.sets) == 1
+                and src_var in self.walk.local_vars_set
+            ):
+                self.walk.temp_source[key] = src_var
             type_origin = self.type_of_origins.get(node.value) or (
                 self.type_of_origins.get(src_var) if src_var is not None else None
             )
@@ -2067,38 +2014,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
                         )
                         if preserved is not None:
                             self.walk.lvar_contracts[node.lvar] = preserved
-            if target is not None:
-                mutated = None
-                if node.args:
-                    recv_var = self.origins.get(node.args[0])
-                    if (
-                        recv_var is not None
-                        and recv_var in self.state
-                        and recv_var not in self.walk.indirect
-                    ):
-                        recv_type = self.state[recv_var].type
-                        if (
-                            recv_type.fits_list(LIST_TYPE)
-                            or recv_type.fits_dict(DICT_TYPE)
-                            or recv_type.fits_set()
-                        ):
-                            mutated = target.derive_self_type(
-                                arg_types, info.keywords, receiver_type=recv_type
-                            )
-                            if (
-                                mutated is not None
-                                and mutated is not BOTTOM
-                                and mutated is not UNKNOWN
-                            ):
-                                self.update_mutated_container(recv_var, mutated)
-                if callee_fact.target is not None:
-                    if mutated is None and node.args:
-                        self.widen_escaped_container(self.origins.get(node.args[0]))
-                    for arg in node.args[1:]:
-                        self.widen_escaped_container(self.origins.get(arg))
-            elif builtin_type is UNKNOWN:
-                for arg in node.args:
-                    self.widen_escaped_container(self.origins.get(arg))
             fact = _fact(resolved)
             if not (
                 builtin_type is not UNKNOWN
@@ -2548,7 +2463,7 @@ def _make_binary_propagator(operator: ast.BinaryOperator):
             if left_contract is not None:
                 right_contract = visitor.walk.lvar_contracts.get(args[1])
                 res_contract = left_contract.binary_result_contract(
-                    operator, right_contract
+                    operator, right_contract, right
                 )
                 if res_contract is not None:
                     visitor.walk.lvar_contracts[node.lvar] = res_contract
@@ -3052,16 +2967,12 @@ def _propagate_set_add(visitor: _Propagation, node: Combination):
     args = node.args
     if len(args) != 2:
         return None
-    recv_var = visitor.origins.get(args[0])
-    elem_var = visitor.origins.get(args[1])
-    visitor.record_container_child(recv_var, elem_var)
     recv_type = visitor.type_of(args[0])
     elem_type = visitor.type_of(args[1])
     if recv_type is BOTTOM or elem_type is BOTTOM:
         return NO_FACT
     if elem_type.may_run_user_code:
         visitor.invalidate()
-    visitor.mutate_set(recv_var, recv_type, elem_type)
     return NONE_FACT
 
 
@@ -3324,32 +3235,30 @@ def _propagate_unpack_ref(visitor: _Propagation, node: Combination):
 
 @defpropagate("%resolve_method")
 def _propagate_resolve_method(visitor: _Propagation, node: Combination):
-    if (
-        node.lvar is not None
-        and node.lvar.dest is not None
-        and node.lvar.dest.block is not node.block
-    ):
-        # Argument evaluation can introduce control flow between method
-        # resolution and invocation. Origins are block-local, so the later
-        # call cannot attribute mutation to this receiver. Treat the bound
-        # receiver as escaped while its origin is still available.
-        visitor.widen_escaped_container(visitor.origins.get(node.args[0]))
+    return None
 
 
 @defpropagate("%getattr")
 def _propagate_getattr(visitor: _Propagation, node: Combination):
-    # A bound method such as ``add = items.append`` can mutate the receiver
-    # through calls this analysis does not attribute to it, so the receiver's
-    # tracked contents no longer hold. Direct method calls use
-    # ``%resolve_method`` and keep their precise mutation tracking.
-    if node.args:
-        visitor.widen_escaped_container(visitor.origins.get(node.args[0]))
-        if node.info is not None:
-            return _predicted_field_result(visitor, node, node.info.name)
+    if node.args and node.info is not None:
+        return _predicted_field_result(visitor, node, node.info.name)
 
 
 def _predicted_field_result(visitor, node, name):
-    field_type = visitor.walk.instance_field_type(visitor.type_of(node.args[0]), name)
+    recv_type = visitor.type_of(node.args[0])
+    declared = visitor.walk.instance_declared_field(recv_type, name)
+    if declared is not None:
+        contract, is_unsafe = declared
+        if node.lvar is not None and contract.has_element_contracts():
+            visitor.walk.lvar_contracts[node.lvar] = contract
+        if is_unsafe:
+            visitor.apply_element_contract(
+                node, UNKNOWN, contract, trusted_static=False
+            )
+        else:
+            visitor.walk.element_contracts.pop(node, None)
+        return _fact(contract.fact)
+    field_type = visitor.walk.instance_field_type(recv_type, name)
     if field_type is UNKNOWN:
         return None
     if (
@@ -3461,11 +3370,6 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                 )
             visitor.walk.method_targets[node] = method
             if not receiver_type.fits_set():
-                # A guarded target prediction does not prove the method's
-                # effects. Its receiver and arguments can escape or mutate.
-                visitor.widen_escaped_container(visitor.origins.get(receiver_lvar))
-                for argument in args[1:]:
-                    visitor.widen_escaped_container(visitor.origins.get(argument))
                 visitor.invalidate()
                 return UNKNOWN_FACT
         if (
@@ -3496,17 +3400,13 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
                     mod_res = visitor.walk.module_returns.get(
                         (mod_name, method_name), UNKNOWN
                     )
-                if mod_target is None and mod_res is UNKNOWN:
-                    for arg in args[1:]:
-                        visitor.widen_escaped_container(visitor.origins.get(arg))
                 visitor.invalidate()
                 return _fact(mod_res)
-        recv_var = visitor.origins.get(receiver_lvar)
         (
             result_type,
-            updated_receiver,
-            child_arg_index,
-            returns_child,
+            _updated_receiver,
+            _child_arg_index,
+            _returns_child,
             may_call,
         ) = receiver_type.method_call(
             method_name,
@@ -3514,14 +3414,6 @@ def _propagate_call_resolved(visitor: _Propagation, node: Combination):
             has_keywords,
             visitor.walk.storage_methods,
         )
-        if child_arg_index is not None and 1 + child_arg_index < len(args):
-            visitor.record_container_child(
-                recv_var, visitor.origins.get(args[1 + child_arg_index])
-            )
-        if returns_child and recv_var is not None and node.lvar is not None:
-            visitor.parent_origins[node.lvar] = recv_var
-        if updated_receiver is not None:
-            visitor.update_mutated_container(recv_var, updated_receiver)
         if may_call:
             visitor.invalidate()
         recv_contract = visitor.walk.lvar_contracts.get(receiver_lvar)
@@ -3544,9 +3436,6 @@ def _propagate_extend_arguments(visitor: _Propagation, node: Combination):
     recv_var = visitor.origins.get(args[0])
     recv_type = visitor.type_of(args[0])
     seq_type = visitor.type_of(args[1])
-    elem_type = seq_type.iterate_type().next_item_type()
-    if recv_type.fits_list(LIST_TYPE):
-        visitor.mutate_list(recv_var, recv_type, elem_type)
     tup = seq_type.accept(_AS_TUPLE_TYPE)
     if recv_var is not None and recv_type == EMPTY_LIST_TYPE and tup is not None:
         visitor.tuple_list_origins[recv_var] = tup
@@ -3626,9 +3515,6 @@ def _propagate_call_with_helper(
         if builtin_type is BOTTOM:
             return NO_FACT
         resolved = builtin_type
-    if builtin_type is UNKNOWN and target is None:
-        for arg in args[1:]:
-            visitor.widen_escaped_container(visitor.origins.get(arg))
     visitor.invalidate()
     return _fact(resolved)
 
@@ -3664,9 +3550,6 @@ def _propagate_format(visitor: _Propagation, node: Combination):
 @defpropagate("%getitem")
 def _propagate_getitem(visitor: _Propagation, node: Combination):
     args = node.args
-    recv_var = visitor.origins.get(args[0])
-    if recv_var is not None and node.lvar is not None:
-        visitor.parent_origins[node.lvar] = recv_var
     receiver_type = visitor.type_of(args[0])
     index_type = visitor.type_of(args[1])
     if receiver_type is BOTTOM or index_type is BOTTOM:
@@ -3694,7 +3577,12 @@ def _propagate_getitem(visitor: _Propagation, node: Combination):
         if recv_contract is not None
         else None
     )
-    item_type = visitor.apply_element_contract(node, static_item, elem_contract)
+    item_type = visitor.apply_element_contract(
+        node,
+        static_item,
+        elem_contract,
+        trusted_static=not receiver_type.accept(_IS_MUTABLE_CONTAINER_TYPE),
+    )
     return _fact(item_type)
 
 
@@ -3727,12 +3615,8 @@ def _propagate_setitem(visitor: _Propagation, node: Combination):
     args = node.args
     if len(args) != 3:
         return None
-    recv_var = visitor.origins.get(args[0])
-    val_var = visitor.origins.get(args[2])
-    visitor.record_container_child(recv_var, val_var)
     recv_type = visitor.type_of(args[0])
     key_type = visitor.type_of(args[1])
-    val_type = visitor.type_of(args[2])
     if not recv_type.fits_list(LIST_TYPE) or key_type.may_run_user_code:
         visitor.invalidate()
     if recv_type.fits_list(LIST_TYPE):
@@ -3744,17 +3628,8 @@ def _propagate_setitem(visitor: _Propagation, node: Combination):
                 visitor.prove_argument_type(args[1], IntegerType(bounds[0], bounds[1]))
         else:
             visitor.walk.in_bounds_nodes.discard(node)
-        elem_type = (
-            val_type
-            if key_type.fits(PYTHON_INTEGER)
-            else val_type.iterate_type().next_item_type()
-        )
-        visitor.mutate_list(
-            recv_var, recv_type, elem_type, preserves_length=is_int_index
-        )
     else:
         visitor.walk.in_bounds_nodes.discard(node)
-        visitor.mutate_dict(recv_var, recv_type, key_type, val_type)
     return NONE_FACT
 
 
@@ -3813,7 +3688,7 @@ def _propagate_next_item(visitor: _Propagation, node: Combination):
                 visitor.walk.lvar_contracts[node.lvar] = elem_contract
             else:
                 item_type = visitor.apply_element_contract(
-                    node, item_type, elem_contract
+                    node, item_type, elem_contract, trusted_static=False
                 )
         if item_type is not UNKNOWN:
             return _fact(item_type)
@@ -3857,10 +3732,6 @@ class LambdaGraph:
     back_edges: frozenset
     global_names: tuple
     indirect: tuple
-    # Variables nested functions read but only this frame binds, whether
-    # held in cells or copied into closures. Closures may still mutate the
-    # containers they hold whenever user code runs.
-    captured: tuple
     volatile_keys: tuple
     call_nodes: tuple
     thresholds: tuple[int, ...] = _BASE_WIDENING_THRESHOLDS
@@ -3972,13 +3843,6 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         *((_GLOBAL, name) for name in global_names),
         *indirect,
     )
-    rebound = frozenset(indirect)
-    captured = tuple(
-        var
-        for var in lambda_.locals
-        if var not in rebound
-        and any(ref.home_lambda is not lambda_ for ref in var.refs)
-    )
     return LambdaGraph(
         blocks=blocks,
         block_nodes=block_nodes,
@@ -3991,7 +3855,6 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         back_edges=back_edges,
         global_names=global_names,
         indirect=indirect,
-        captured=captured,
         volatile_keys=volatile_keys,
         call_nodes=call_nodes,
         thresholds=thresholds,
@@ -4099,7 +3962,6 @@ class _Walk:
         self.back_edges = graph.back_edges
         self.global_names = graph.global_names
         self.indirect = graph.indirect
-        self.captured = graph.captured
         self.volatile_keys = graph.volatile_keys
         self.thresholds = graph.thresholds
         self.local_vars_tuple = tuple(var for var in lambda_.locals if not var.indirect)
@@ -4118,9 +3980,7 @@ class _Walk:
             + tuple(self.range_stop_keys.values())
         )
         self.relational_vars_set = frozenset(self.relational_vars_tuple)
-        self.aliases: dict[object, set[object]] = defaultdict(set)
         self.temp_source: dict[object, object] = {}
-        self.parent_containers: dict[object, set[object]] = defaultdict(set)
         self.local_contracts = {
             var: contract
             for var in lambda_.locals
@@ -4245,6 +4105,11 @@ class _Walk:
         return receiver_type.accept(
             _InstanceFieldType(self.class_facts, self.storage_methods, name)
         )
+
+    def instance_declared_field(self, receiver_type: ValueType, name: str):
+        """Return ``(contract, is_unsafe)`` when ``name`` is a declared field
+        on the receiver's class."""
+        return receiver_type.accept(_InstanceDeclaredField(self.class_facts, name))
 
     def allocated_instance_type(self, class_type: ValueType) -> ValueType:
         # Physical allocation bypasses __new__. Its result belongs to the

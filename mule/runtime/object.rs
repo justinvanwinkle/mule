@@ -6,6 +6,12 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+unsafe extern "C" {
+    /// Compiled code allocates `RawWords` data with `malloc`.
+    #[link_name = "free"]
+    fn raw_words_free(data: *mut c_void);
+}
+
 pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
 #[repr(C)]
@@ -414,6 +420,9 @@ pub enum Data {
     },
     /// Private compact mutable storage owned by a compiled bytearray instance.
     ByteStorage(crate::byte_buffer::ByteBuffer),
+    /// Words laid out, allocated, and accessed by compiled code. They hold no
+    /// object references, so destruction only frees the `malloc` block.
+    RawWords { data: *mut i64, length: usize },
 }
 
 /// Byte offsets compiled code reads, from the object address. `Data`'s
@@ -439,6 +448,9 @@ pub const NATIVE_INSTANCE_TAG: u32 = 17;
 pub const NATIVE_INSTANCE_CLASS_OFFSET: usize = 24;
 pub const NATIVE_INSTANCE_PAYLOAD_OFFSET: usize = 32;
 pub const NATIVE_INSTANCE_LENGTH_OFFSET: usize = 40;
+pub const RAW_WORDS_TAG: u32 = 28;
+pub const RAW_WORDS_DATA_OFFSET: usize = 24;
+pub const RAW_WORDS_LENGTH_OFFSET: usize = 32;
 pub const CLASS_TAG: u32 = 15;
 /// `Data::Instance.ty`, the class object.
 pub const INSTANCE_CLASS_OFFSET: usize = 24;
@@ -460,7 +472,7 @@ impl Data {
 
     pub fn visit_owned_values(&self, mut visit: impl FnMut(Value)) {
         match self {
-            Self::ByteStorage(_) => (),
+            Self::ByteStorage(_) | Self::RawWords { .. } => (),
             Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
                 visit(*ty); visit(*attributes);
                 for value in values.iter().rev() { visit(*value); }
@@ -504,7 +516,7 @@ impl Data {
 
     pub fn cycle_candidate(&self) -> bool {
         match self {
-            Self::ByteStorage(_) => false,
+            Self::ByteStorage(_) | Self::RawWords { .. } => false,
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
             Self::Args(values, ty, attributes) => {
@@ -1262,6 +1274,11 @@ unsafe fn destroy(value: Value) {
             Data::NativeInstance { ty, .. } => {
                 release(*ty);
                 drop_and_dealloc_object(value);
+                return;
+            }
+            Data::RawWords { data, .. } => {
+                raw_words_free((*data).cast());
+                dealloc_object(value);
                 return;
             }
             _ => (),
@@ -3061,6 +3078,7 @@ pub unsafe fn formatted_value(
         }
         Some(match &(*value).data {
             Data::ByteStorage(_) => b"<compact byte storage>".to_vec(),
+            Data::RawWords { .. } => b"<raw words>".to_vec(),
             Data::None => b"None".to_vec(),
             Data::Bool(value) => {
                 if *value {
@@ -3804,6 +3822,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
         Some(
             match &(*value).data {
                 Data::ByteStorage(_) => "compact byte storage",
+                Data::RawWords { .. } => "raw words",
                 Data::None => "NoneType",
                 Data::Bool(_) => "bool",
                 Data::BigInt(..) => "int",
@@ -4881,6 +4900,24 @@ mod lifetime_tests {
             assert_eq!(payload as *const f64 as usize - base, FLOAT_VALUE_OFFSET);
             assert_eq!(class as *const Value as usize - base, FLOAT_CLASS_OFFSET);
             assert_eq!(attributes as *const Value as usize - base, FLOAT_ATTRIBUTES_OFFSET);
+            release(value);
+        }
+    }
+
+    #[test]
+    fn compiled_raw_words_offsets_match_header_and_release_frees_data() {
+        unsafe extern "C" {
+            fn malloc(size: usize) -> *mut c_void;
+        }
+        unsafe {
+            let data = malloc(2 * 8).cast::<i64>();
+            data.write(-1);
+            data.add(1).write(7);
+            let value = new_untracked_value(Data::RawWords { data, length: 2 });
+            assert_eq!(word::<u32>(value, DATA_OFFSET), RAW_WORDS_TAG);
+            assert_eq!(word::<*mut i64>(value, RAW_WORDS_DATA_OFFSET), data);
+            assert_eq!(word::<usize>(value, RAW_WORDS_LENGTH_OFFSET), 2);
+            assert!(!(*value).data.cycle_candidate());
             release(value);
         }
     }

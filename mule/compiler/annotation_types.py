@@ -89,6 +89,9 @@ class ContractVisitor:
     def visit_InferredReturnContract(self, contract):
         return self.visit_Contract(contract)
 
+    def visit_DeclaredFieldContract(self, contract):
+        return self.visit_Contract(contract)
+
 
 class AnnotationLedger:
     """The annotation declarations one module's compilation proved wrong.
@@ -166,7 +169,7 @@ class Contract:
         return None
 
     def binary_result_contract(
-        self, operator, other: Contract | None
+        self, operator, other: Contract | None, other_type: ValueType = UNKNOWN
     ) -> Contract | None:
         return None
 
@@ -771,7 +774,7 @@ class SetContract(Contract):
         return None
 
     def binary_result_contract(
-        self, operator, other: Contract | None
+        self, operator, other: Contract | None, other_type: ValueType = UNKNOWN
     ) -> Contract | None:
         from mule import ast
 
@@ -792,6 +795,17 @@ class SetContract(Contract):
                         self.identity,
                         union_contract(self.element, other_elem),
                     )
+            else:
+                iter_t = other_type.flow_iterate_type()
+                if (
+                    iter_t.fits_iterator()
+                    and iter_t.element is not UNKNOWN
+                    and (
+                        iter_t.element is BOTTOM
+                        or iter_t.element.fits(self.element.fact)
+                    )
+                ):
+                    return self
         return None
 
 
@@ -970,6 +984,38 @@ class DeclaredReturnContract(Contract):
 
     def requires_check(self, policy_checks):
         return True
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredFieldContract(Contract):
+    """Enforce a declared class field's type on resolved stores according to policy."""
+
+    class_name: str
+    annotation: Contract
+
+    @property
+    def display_name(self):
+        return self.annotation.display_name
+
+    @property
+    def fact(self):
+        return self.annotation.fact
+
+    @property
+    def checked_type(self) -> ValueType:
+        return self.annotation.checked_type
+
+    def accept(self, visitor):
+        return self.annotation.accept(visitor)
+
+    def contradicts(self, actual) -> bool:
+        return False
+
+    def refine(self, actual):
+        return self.annotation.refine(actual)
+
+    def requires_check(self, policy_checks: bool) -> bool:
+        return policy_checks
 
 
 class _RuntimeCheckedReturnFact(ValueTypeVisitor):

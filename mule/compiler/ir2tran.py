@@ -52,7 +52,12 @@ from .ctype import (
     ValueTypeVisitor,
 )
 from .ir1util import block_exception_target, block_start_cleanup, made_lambda
-from .ltn import EntryContext, primitive_type_of, template_results_ok
+from .ltn import (
+    EntryContext,
+    primitive_type_of,
+    template_args_ok,
+    template_results_ok,
+)
 from .node import (
     Bind,
     CallKind,
@@ -1146,8 +1151,7 @@ def _specialize_sequence_iterations(component: IR2Component) -> None:
                 for step in block.vops
             )
             and all(
-                step.info.name
-                in ("insert-safepoint", "load-local", "branch")
+                step.info.name in ("insert-safepoint", "load-local", "branch")
                 or step.info.name.startswith(
                     (
                         "byte-cursor-mutable-list-%byte_available-",
@@ -4070,9 +4074,20 @@ class _Converter(NodeVisitor):
                 self.context.type_of(arg.use()) if len(arg.uses) == 1 else UNKNOWN
             )
             primitive = known_length_primitive(arg_type)
-            template = (
-                templates_for(primitive)[0] if primitive is not None else vops.FAST_LEN
-            )
+            if primitive is not None:
+                arg_ptype = (
+                    arg.info.primitive_type
+                    if arg.info is not None
+                    else primitive_type_of(arg_type)
+                )
+                template = next(
+                    candidate
+                    for candidate in templates_for(primitive)
+                    if candidate.ltn_policy != "raw"
+                    and template_args_ok(candidate, (arg_ptype,))
+                )
+            else:
+                template = vops.FAST_LEN
             result, discard = self.result_tn(node)
             self.emit(
                 template,

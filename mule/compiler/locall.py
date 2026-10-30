@@ -131,7 +131,6 @@ from .node import (
     Lambda,
     LambdaVar,
     LeafVisitor,
-    Lvar,
     NodeVisitor,
     Ref,
     Set,
@@ -1581,7 +1580,7 @@ class _GlobalConstantStores(NodeVisitor, LeafVisitor):
                 )
         else:
             return
-        vtype = vtype.widen_mutable_containers()
+        vtype = vtype.conservative_type()
         if vtype is UNKNOWN:
             return
         if self.is_protocol:
@@ -1664,6 +1663,7 @@ class _ModuleClassCollector(NodeVisitor):
         # Names a class body binds to anything other than a plain function.
         self.other_bindings: dict[str, set[str]] = defaultdict(set)
         self.fields: dict[str, tuple[str, ...]] = {}
+        self.declared_fields: dict[str, dict[str, object]] = defaultdict(dict)
         self.native_classes: set[str] = set()
         self.unproven_slot_classes: set[str] = set()
 
@@ -1700,6 +1700,7 @@ class _ModuleClassCollector(NodeVisitor):
             if info.class_id is not None:
                 self.native_classes.add(info.identity)
             self.fields[info.identity] = info.fields
+            self.declared_fields[info.identity] = dict(info.field_annotations)
             self.public_names[info.identity] = info.public_name
             self.definitions[info.public_name] += 1
             if info.has_keywords:
@@ -1737,6 +1738,8 @@ class ClassFacts:
     fixed_slots: tuple[str, ...] = ()
     constructor_proven: bool = True
     widened_fields: set[str] = field(default_factory=set)
+    declared_fields: dict[str, object] = field(default_factory=dict)
+    unsafe_declared_fields: frozenset[str] = frozenset()
 
 
 class _ProtocolSelfPrediction(ValueTypeVisitor):
@@ -1934,6 +1937,10 @@ class _SanitizeProtocolFieldType(_SanitizeInstanceFieldType):
             return UNKNOWN
         elem = fact.element.accept(self)
         return ListType(elem)
+
+    def visit_WordVectorType(self, fact):
+        # Word-vector templates check the receiver's tag before each access.
+        return UNKNOWN if fact.may_be_unbound else fact
 
 
 _SANITIZE_PROTOCOL_FIELD_TYPE = _SanitizeProtocolFieldType()
@@ -2133,15 +2140,8 @@ class _DependsOnInstanceField(NodeVisitor, LeafVisitor):
 
 
 class _CollectSetattrSites(NodeVisitor):
-    def __init__(
-        self,
-        sites: list[Combination],
-        setitems: list[Combination],
-        list_mutations: list[Combination] | None = None,
-    ):
+    def __init__(self, sites: list[Combination]):
         self.sites = sites
-        self.setitems = setitems
-        self.list_mutations = list_mutations if list_mutations is not None else []
 
     def visit_Combination(self, node: Combination):
         if node.kind is CallKind.KNOWN and (
@@ -2154,19 +2154,6 @@ class _CollectSetattrSites(NodeVisitor):
             )
         ):
             self.sites.append(node)
-        elif (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is PROTOCOLS.get("setitem")
-            and len(node.args) == 3
-        ):
-            self.setitems.append(node)
-        elif (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.name in ("_storage_append", "_storage_write")
-            and len(node.args) in (2, 3)
-        ):
-            self.list_mutations.append(node)
 
 
 class _InstanceClasses(ValueTypeVisitor):
@@ -2214,18 +2201,13 @@ def _entry_narrowed_parameters(
 def _update_class_field_types(
     class_facts: dict[str, ClassFacts],
     setattr_sites: list[tuple[Lambda, Combination]],
-    setitem_sites: list[tuple[Lambda, Combination]],
     bodies: dict[tuple[Lambda, str], Body],
     parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]],
-    list_mutation_sites: list[tuple[Lambda, Combination]] = (),
 ) -> bool:
     if not class_facts or not setattr_sites:
         return False
     direct_stores: dict[str, dict[str, ValueType]] = defaultdict(dict)
     unattributed_stores: dict[str, ValueType] = {}
-    stored_field_targets: dict[tuple[Lambda, LambdaVar], list[tuple[Lvar, str]]] = (
-        defaultdict(list)
-    )
     ambiguous_fields: set[str] = set()
     unknown_field_write = False
     for lam, node in setattr_sites:
@@ -2240,9 +2222,6 @@ def _update_class_field_types(
             continue
         recv_use = node.args[0].use()
         val_use = node.args[2 if physical else 1].use()
-        stored_var = val_use.accept(_READ_LAMBDA_VAR)
-        if stored_var is not None:
-            stored_field_targets[(lam, stored_var)].append((node.args[0], field_name))
         found_context = False
         saw_typed_receiver = False
         best_stores: dict[str, ValueType] = {}
@@ -2305,92 +2284,15 @@ def _update_class_field_types(
             previous = unattributed_stores.get(field_name, BOTTOM)
             unattributed_stores[field_name] = previous.join(unattributed_type)
 
-    for lam, node in setitem_sites:
-        attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
-        if attr is not None:
-            targets = (attr,)
-        else:
-            target_var = node.args[0].use().accept(_READ_LAMBDA_VAR)
-            targets = (
-                tuple(stored_field_targets.get((lam, target_var), ()))
-                if target_var is not None
-                else ()
-            )
-        if not targets:
-            continue
-        key_use = node.args[1].use()
-        val_use = node.args[2].use()
-        for inst_lvar, field_name in targets:
-            inst_use = inst_lvar.use()
-            for ctx_name in ("observed", "fixnum", "general"):
-                body = bodies.get((lam, ctx_name))
-                if body is None:
-                    continue
-                inst_fact = body.facts.get(inst_use, NO_FACT)
-                key_fact = body.facts.get(key_use, NO_FACT)
-                val_fact = body.facts.get(val_use, NO_FACT)
-                if (
-                    inst_fact.type is BOTTOM
-                    or key_fact.type is BOTTOM
-                    or val_fact.type is BOTTOM
-                ):
-                    continue
-                for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
-                    if inst_cls not in class_facts:
-                        continue
-                    cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
-                    if cur_field.fits_dict():
-                        direct_stores[inst_cls][field_name] = cur_field.with_entry(
-                            key_fact.type, val_fact.type
-                        )
-
-    for lam, node in list_mutation_sites:
-        attr = node.args[0].use().accept(_GETATTR_ON_INSTANCE)
-        if attr is not None:
-            targets = (attr,)
-        else:
-            target_var = node.args[0].use().accept(_READ_LAMBDA_VAR)
-            targets = (
-                tuple(stored_field_targets.get((lam, target_var), ()))
-                if target_var is not None
-                else ()
-            )
-        if not targets:
-            continue
-        val_use = node.args[-1].use()
-        for inst_lvar, field_name in targets:
-            inst_use = inst_lvar.use()
-            for ctx_name in ("observed", "fixnum", "general"):
-                body = bodies.get((lam, ctx_name))
-                if body is None:
-                    continue
-                inst_fact = body.facts.get(inst_use, NO_FACT)
-                val_fact = body.facts.get(val_use, NO_FACT)
-                if inst_fact.type is BOTTOM or val_fact.type is BOTTOM:
-                    continue
-                for inst_cls in inst_fact.type.accept(_INSTANCE_CLASSES):
-                    if inst_cls not in class_facts:
-                        continue
-                    cur_type = class_facts[inst_cls].fields.get(field_name, BOTTOM)
-                    if (
-                        val_fact.type is UNKNOWN
-                        and cur_type is BOTTOM
-                        and val_use.accept(_DependsOnInstanceField(field_name))
-                    ):
-                        continue
-                    cur_field = direct_stores[inst_cls].get(field_name, BOTTOM)
-                    if cur_field.fits_list():
-                        direct_stores[inst_cls][field_name] = cur_field.with_element(
-                            val_fact.type
-                        )
-
     if unknown_field_write:
         ambiguous_fields.update(
             name for fields in direct_stores.values() for name in fields
         )
     changed = False
     for class_id, facts in class_facts.items():
-        new_fields: dict[str, ValueType] = {}
+        new_fields: dict[str, ValueType] = {
+            fname: contract.fact for fname, contract in facts.declared_fields.items()
+        }
         chain = facts.chain or (class_id,)
         sanitizer = (
             _SANITIZE_PROTOCOL_FIELD_TYPE
@@ -2402,6 +2304,7 @@ def _update_class_field_types(
             for anc_id in chain
             for name in direct_stores.get(anc_id, ())
             if class_facts[anc_id].constructor_proven
+            and name not in facts.declared_fields
             and name not in ambiguous_fields
             and name not in facts.widened_fields
             and name not in facts.methods
@@ -2533,10 +2436,31 @@ def _collect_class_tables(lambdas):
                 methods_map, chain, shadowed = _resolved_class_info(
                     collector, class_id, cls_name
                 )
+                declared_fields: dict[str, object] = {}
+                unsafe_declared: set[str] = set()
+                seen_undeclared_fields: set[str] = set()
+                for anc_id in reversed(chain):
+                    anc_declared = collector.declared_fields.get(anc_id, {})
+                    for fname, contract in anc_declared.items():
+                        if fname in methods_map:
+                            continue
+                        if fname in declared_fields:
+                            prev_contract = declared_fields[fname]
+                            if not prev_contract.fact.fits(contract.fact):
+                                unsafe_declared.add(fname)
+                        elif fname in seen_undeclared_fields:
+                            unsafe_declared.add(fname)
+                        declared_fields[fname] = contract
+                    for fname in collector.fields.get(anc_id, ()):
+                        if fname not in declared_fields:
+                            seen_undeclared_fields.add(fname)
+                initial_fields = {
+                    fname: contract.fact for fname, contract in declared_fields.items()
+                }
                 typed[class_id] = ClassFacts(
                     class_id,
                     methods_map,
-                    {},
+                    initial_fields,
                     chain,
                     shadowed,
                     public_name=cls_name,
@@ -2545,6 +2469,8 @@ def _collect_class_tables(lambdas):
                     constructor_proven=_constructs_own_instances(
                         collector, class_id, cls_name
                     ),
+                    declared_fields=declared_fields,
+                    unsafe_declared_fields=frozenset(unsafe_declared),
                 )
     return by_ns, typed
 
@@ -3544,21 +3470,15 @@ def analyze(
     inputs: dict[tuple[Lambda, str], tuple] = {}
     deriver_cache: dict[tuple[Lambda, tuple[ValueType, ...]], Body] = {}
     setattr_sites: list[tuple[Lambda, Combination]] = []
-    setitem_sites: list[tuple[Lambda, Combination]] = []
-    list_mutation_sites: list[tuple[Lambda, Combination]] = []
     if class_facts:
         for lambda_ in lambdas:
             graph = graphs[lambda_]
-            site_collector = _CollectSetattrSites([], [], [])
+            site_collector = _CollectSetattrSites([])
             for block in graph.blocks:
                 for node in graph.block_nodes[block]:
                     node.accept(site_collector)
             for site in site_collector.sites:
                 setattr_sites.append((lambda_, site))
-            for site in site_collector.setitems:
-                setitem_sites.append((lambda_, site))
-            for site in site_collector.list_mutations:
-                list_mutation_sites.append((lambda_, site))
     field_changes = 0
     initial_pending_reset: set[tuple[Lambda, str]] = set()
     must_recompute: set[Lambda] = set(lambdas)
@@ -4205,10 +4125,10 @@ def analyze(
                                 or vtype.fits_none(NONE_TYPE)
                             ):
                                 continue
-                            if vtype.widen_mutable_containers() != vtype and (
+                            if vtype.conservative_type() != vtype and (
                                 _global_container_is_mutated(leaf)
                             ):
-                                vtype = vtype.widen_mutable_containers()
+                                vtype = vtype.conservative_type()
                             vtype = _widen_user_constant_type(vtype)
                             if vtype is UNKNOWN:
                                 continue
@@ -4256,16 +4176,13 @@ def analyze(
                                             else None
                                         )
                                         if (
-                                            def_type.widen_mutable_containers()
-                                            != def_type
+                                            def_type.conservative_type() != def_type
                                             and param_var is not None
                                             and _default_param_container_is_mutated(
                                                 param_var
                                             )
                                         ):
-                                            def_type = (
-                                                def_type.widen_mutable_containers()
-                                            )
+                                            def_type = def_type.conservative_type()
                                         def_type = _widen_user_constant_type(def_type)
                                     elif (
                                         len(def_lvar.uses) == 1
@@ -4338,9 +4255,7 @@ def analyze(
             # closures can use it without an environment-specific guard: an
             # escaping function exposes its cells to arbitrary external writes.
             joined = (
-                parameters[var.home, "general"][
-                    var.home.vars.index(var)
-                ].widen_mutable_containers()
+                parameters[var.home, "general"][var.home.vars.index(var)]
                 if parameter
                 else BOTTOM
             )
@@ -4351,14 +4266,8 @@ def analyze(
                 if store.value is None:
                     joined = joined.join(UNBOUND)
                 else:
-                    # The fact describes the container when it was stored.
-                    # A closure may read it after the defining frame or
-                    # another closure mutated it, so only the binding's
-                    # identity facts survive, not its contents.
                     joined = joined.join(
-                        home_body.facts.get(
-                            store.value.use(), NO_FACT
-                        ).type.widen_mutable_containers()
+                        home_body.facts.get(store.value.use(), NO_FACT).type
                     )
             if joined != var.optimistic_type:
                 var_changes[var] += 1
@@ -4729,10 +4638,8 @@ def analyze(
             and _update_class_field_types(
                 class_facts,
                 setattr_sites,
-                setitem_sites,
                 bodies,
                 parameters,
-                list_mutation_sites,
             )
         ):
             field_changes += 1
@@ -4962,6 +4869,7 @@ def analyze(
         state_cache["deriver_cache"] = dict(deriver_cache)
         state_cache["ignored"] = set(annotations.ignored)
         state_cache["results"] = dict(results)
+        state_cache["class_facts"] = class_facts
         state_cache["class_fields"] = {
             cls_id: dict(cf.fields) for cls_id, cf in class_facts.items()
         }

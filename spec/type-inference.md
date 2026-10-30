@@ -202,41 +202,18 @@ no-inlining policy and supplies the dynamic opt-out corresponding to SBCL's
 contracts retain their existing policy rules. This mandatory inferred check is
 the user's requested boundary, not an assumption that rebinding cannot occur.
 
-### Inferred instance fields
+### Declared instance fields
 
-Field predictions join the stores attributed to a class during local-call
-analysis. A reachable store whose receiver has no class identity in any analyzed
-entry contributes its value type to every existing candidate for that attribute.
-It can widen those candidates, but cannot establish a receiver class or create a
-new field prediction. An unknown stored value removes the prediction. Method
-ownership does not prove the runtime receiver's class. A variadic constructor
-can have only a general entry with an unknown receiver. Its assignments must
-not disappear from the evidence used to predict the field type.
-
-A stored value that derives from a parameter takes its type from the general
-entry, not from a guarded observed or fixnum entry that narrows that parameter.
-Those entries are specializations selected by argument-domain guards. Any call
-outside their domains runs the general entry, and so does any call that
-local-call analysis never saw, such as a construction through a class object
-it cannot resolve. The general entry carries the declared parameter types, or
-the join of every call's arguments when closed-callee seeding proves that all
-calls are known. This follows SBCL's `optimistic-type-propagatable-fun-p` and
-`propagate-local-call-args` in `src/compiler/ir1opt.lisp`, which narrow a
-lambda's variables from call-site argument types only when it has no external
-entry (`functional-entry-fun`) and every reference is a local call. A class's
-methods are reachable through the class object, so an `int` parameter stored
-in a field predicts `int`, not the fixnum interval its observed callers pass.
-A value whose derivation from such a parameter cannot be ruled out is treated
-as derived from it.
-
-Ambiguous fields retain generic access rather than a checked narrow prediction
-from the remaining stores. This preserves `None` defaults and arbitrary supplied
-values when another method later writes text, integers, or dictionaries.
-This changes the evidence accepted by the existing IR1 analysis, not the
-runtime check mechanism. SBCL's `src/pcl/ctor.lisp`, `with-type-checked` and
-`fake-initialization-emf`, check initialization values against slot definition
-types. Python's unannotated instance fields provide no equivalent declared
-slot contract that would justify rejecting values omitted from inference.
+Instance field types come from explicit class-body field annotations, not from
+joining stores across methods. Following SBCL's `defstruct` slot descriptors
+(`dsd-type` and `slot-access-transform` in `src/code/defstruct.lisp`), an
+undeclared attribute has `UNKNOWN` (`*universal-type*`) so arbitrary mutations
+(such as `None` defaults later replaced by integers, strings, or containers)
+retain generic access without static store tracking. Declared class-body fields
+are enforced at resolved store sites via policy-controlled `Cast`s (checked
+above `safety == 0`, trusted at `safety == 0`) and trusted on read unless a
+subclass narrows an inherited declared field's type (`not dsd-safe-p`), in
+which case reads of the narrowed field emit a check (Section 3.6).
 
 ### 2.2 Hybrid package and wheel model (package `.so` + `interface.json` + `.py` source)
 
@@ -303,16 +280,17 @@ Following SBCL's `CTYPE` hierarchy, all lattice operations (`join`, `fits`, arit
 | Floats | `FloatType` (`FLOAT`) | IEEE-754 double-precision float (`fits_float`); enables unboxed `double` registers and raw float VOPs. Builtin `float` annotations (`PythonFloatContract`) also resolve to `FLOAT`. |
 | Strings & bytes | `TextType(literal)` (`TEXT_TYPE`), `BytesType` (`BYTES_TYPE`) | Exact `str` (optionally with known constant literal) and exact `bytes`; enables direct `_text_length`, `_text_slice`, `byte_length`, and `TextStorage` / `BytesStorage` method resolution. |
 | Tuples | `TupleType(arity, elements)` | Exact `tuple` with optional known length and per-element `ValueType` tuple; enables constant-bounds `len()` folding and per-index element type projection (`tuple_index_type`). |
-| Lists | `ListType(element)` (`LIST_TYPE`, `EMPTY_LIST_TYPE`) | Exact `list` with homogeneous element-type summary (`element` starts at `BOTTOM` for `[]` and joins on `append`/`insert`/`extend`/`__setitem__`); enables direct `_storage_length`, `_storage_read`, and typed iteration. |
-| Dicts | `DictType(key, value)` (`DICT_TYPE`, `EMPTY_DICT_TYPE`) | Exact `dict` with joined key and value `ValueType` summaries; enables direct `dict` method resolution and key/value type propagation on subscript and iteration. |
-| Sets | `SetType(element, frozen)` (`SET_TYPE`, `EMPTY_SET_TYPE`, `FROZENSET_TYPE`, `EMPTY_FROZENSET_TYPE`) | Exact `set` or `frozenset` with homogeneous element-type summary; enables direct `set_contains`, `set_not_contains`, `set_add`, `set_discard`, `set_remove`, `set_and`, `set_or`, `set_sub`, `set_xor`, `table_len`, and typed iteration. |
+| Lists | `ListType(element)` (`LIST_TYPE`, `EMPTY_LIST_TYPE`) | Exact `list`. A list is adjustable, so its element type and length describe its contents only at a reference to a variable with a single reference; every other reference has only `LIST_TYPE` (Section 3.6). Enables direct `_storage_length`, `_storage_read`, and iteration on proven lists. |
+| Dicts | `DictType(key, value)` (`DICT_TYPE`, `EMPTY_DICT_TYPE`) | Exact `dict`. Key and value types follow the same single-reference rule as list elements (Section 3.6). Enables direct `dict` method resolution. |
+| Sets | `SetType(element, frozen)` (`SET_TYPE`, `EMPTY_SET_TYPE`, `FROZENSET_TYPE`, `EMPTY_FROZENSET_TYPE`) | Exact `set` or `frozenset`. A mutable `set`'s element type follows the single-reference rule (Section 3.6); a `frozenset` keeps its element type. Enables direct `set_contains`, `set_not_contains`, `set_add`, `set_discard`, `set_remove`, `set_and`, `set_or`, `set_sub`, `set_xor`, `table_len`, and iteration. |
+| Word vectors | `WordVectorType` (`WORD_VECTOR_TYPE`) | Private fixed-length vector of raw fixnum words, SBCL's `(simple-array fixnum (*))`. Every element is a fixnum because of the representation, and the length never changes (Section 3.6). |
 | Iterators | `IteratorType(element)` (`ITERATOR_TYPE`) | Iterator object yielding `element` on each `%for_next` step; propagates loop-target variable types across `for` loops. |
 | Callables | `FunctionType` (`FUNCTION_TYPE`) | Function object; paired in `Fact(type, target, proven)` with the predicted `Lambda` target and whether its identity is proven against rebinding. |
 | Unions | `UnionType(members)` | Bounded disjunction of disjoint `ValueType` members (such as `T \| NoneType` or `IntegerType \| FloatType`). Supports `narrow_none` and distributes transfer operations across members before widening to `UNKNOWN`. |
 
-The list, dict, and set element summaries are inferred from writes, an SBCL
-departure. Section 3.6 specifies their replacement by SBCL's conservative types
-(proposed).
+Mutable container (`list`, `dict`, `set`) element summaries follow SBCL's
+conservative rule: contents types apply only at a single-reference variable,
+while declared element contracts come from annotations (Section 3.6).
 
 `union_type` normalizes all alternative joins. It flattens nested unions, removes
 bottom, absorbs unknown, and repeatedly applies the existing polymorphic pair
@@ -365,7 +343,7 @@ For a single `Lambda` and parameter tuple, `propagate()` runs a worklist over th
      - Direct/guarded local calls via the `resolve_call` callback supplied by `locall.analyze`.
 3. **Side-effect invalidation**:
    - After any node where `_node_may_run_user_code` is true (an unknown call, or an operation on potentially non-primitive operands that could invoke user dunder methods), `invalidate_globals` clears proven module-global callable identities and resets indirect (closed-over mutable cell) variables to their interprocedural `optimistic_type`.
-   - Global container references retain their origins for the same mutation tracking as local references. Predicted methods with unknown effects widen receiver and argument container facts. This tracking of container contents is an SBCL departure: a write through an untracked alias leaves a stale fact. Section 3.6 specifies its replacement (proposed).
+   - Container contents are not tracked through mutation. A reference to a mutable container through a variable with several references, or through a module global, carries only the container's conservative type (Section 3.6), so no later write can invalidate an element or length fact.
    - Method resolution marks its receiver as escaped when argument evaluation separates resolution and invocation across blocks. This discards stale size facts before block-local origins disappear.
    - Conversion publishes dynamic namespace mutation before unit preparation optimizes IR1. Such namespaces do not permit predictable builtin-call folding.
 4. **Path-sensitive branch narrowing (`_ConstrainEdge` and `_ConstrainComparison`)**:
@@ -444,14 +422,11 @@ Serialization preserves these content facts and requires all fields.
 
 #### Known analysis gaps
 
-- **Inferred instance field types (SBCL departure):** `_update_class_field_types`
-  in `locall.py` predicts a field's type by joining the values stored into it
-  (Section 2.1, Inferred instance fields). SBCL never infers slot types: an
-  undeclared `defstruct` slot has type `T` (`dsd-type` in
-  `src/code/defstruct.lisp`). Section 3.6 removes container contents from these
-  predictions; scalar predictions such as `_Table._used` would remain.
-  Replace this inference with declared field types (Section 3.6) as a separate
-  change.
+- **Inferred instance field types (resolved):** `_update_class_field_types` in
+  `locall.py` no longer infers instance field types from stores. Undeclared
+  fields have type `UNKNOWN`, and only declared class-body field annotations
+  populate `ClassFacts.fields`, following SBCL's `defstruct` `dsd-type` and
+  `slot-access-transform` (Section 3.6).
 - **`TYPE_CHECKING` import folding (resolved):** `fold_type_checking_constants`
   has been removed from `main.py` and `locall.py` (`eebe93d`), so imported
   `typing.TYPE_CHECKING` bindings follow ordinary dominance, execution-order,
@@ -470,15 +445,11 @@ Serialization preserves these content facts and requires all fields.
   facts after standard-library sources change. Stale generated code has not been
   reproduced, and the relevant refresh paths have not been fully established.
 
-### 3.6 Container contents, specialized storage, and declared fields (proposed)
+### 3.6 Container contents, specialized storage, and declared fields
 
 Element types come from a container's representation and from declarations.
 They never come from inference about the values written into a mutable
 container.
-
-This section specifies the target behavior. It is not in `master`. Branch
-`sbcl-container-types` implements part of it, and
-[compiler-gaps.md](compiler-gaps.md) Section 6V tracks the remaining work.
 
 #### Conservative types for mutable containers
 
@@ -491,8 +462,8 @@ adjustable array keeps its element type, which is its representation, but
 loses its dimensions. A simple array is unchanged. `propagate-to-refs` does not
 narrow such variables from their uses.
 
-Mule is to follow the same rule. On the branch, `ValueType.conservative_type()`
-and `Fact.conservative()` in `ctype.py` compute the conservative type, and
+Mule follows the same rule. `ValueType.conservative_type()` and
+`Fact.conservative()` in `ctype.py` compute the conservative type, and
 `_Propagation.visit_LambdaVar` and `visit_GlobalVar` in `constraint.py` apply
 it:
 
@@ -510,8 +481,10 @@ it:
   and bytearray indexing keeps its bound check.
 - Declared types are not contents facts. A declaration is the programmer's
   assertion, and the conservative rule never widens it (Section 3.3 and
-  declared instance fields below). On the branch,
-  `Fact.conservative()` still discards declared element types.
+  declared instance fields below). Parameter and local container contracts live
+  in `walk.local_contracts` and `walk.element_contracts`, separate from the
+  container's `ValueType`, and propagate element contracts across reads and
+  iteration.
 
 #### Specialized storage: word vectors
 
@@ -520,8 +493,7 @@ holds only that type, as with SBCL's specialized arrays. SBCL's own hash table
 declares its index, next, and hash vectors as
 `(simple-array hash-table-index (*))` (`src/code/hash-table.lisp:106-119`).
 
-`WordVectorType`, implemented on the branch, is a fixed-length vector of raw
-fixnum words:
+`WordVectorType` is Mule's fixed-length vector of raw fixnum words:
 
 - Compiled code owns the layout. `mule.word_vector.new` in
   `mule/compiler/wordops.py` allocates the words with `malloc` and initializes
@@ -535,37 +507,44 @@ fixnum words:
   LLVM procedure, and LLVM decides inlining.
 - A generic storage access whose receiver is not proven dispatches on the
   receiver's tag, as SBCL's `hairy-data-vector-ref` dispatches on the array's
-  widetag. On the branch, the generic paths still reject word vectors.
+  widetag (`fast_storage_length.ll`, `fast_storage_read.ll`,
+  `fast_storage_read_borrow.ll`, `fast_storage_write.ll`, and
+  `mule/runtime/sequences.rs`).
 - The templates check the receiver's tag and the fixnum tag of any operand not
   proven to be a fixnum. Bounds remain the responsibility of the compiled
   Python that indexes the vector.
-- `_Table._indices` and `_Table._hashes` in `stdlib/_dict.py` become word vectors.
+- `_Table._indices` and `_Table._hashes` in `stdlib/_dict.py` are word vectors.
   `_hashes` holds two thirds of the index size, the limit at which inserts
   resize, and each new entry's hash is written at the entry's position.
 
-#### Declared instance fields (not implemented)
+#### Declared instance fields
 
-Mule does not yet read class-body field annotations: `field_annotations` in
-`ir1tran.py` has no consumer. The required design follows SBCL's typed
-`defstruct` slots, `slot-access-transform` in `src/code/defstruct.lisp`:
+Class-body field annotations (`ClassInfo.field_annotations` in `ir1tran.py`,
+`ClassFacts.declared_fields` in `locall.py`) follow SBCL's typed `defstruct`
+slots, `slot-access-transform` in `src/code/defstruct.lisp`:
 
-- Every read of a declared field has the declared type and is never checked,
-  at any safety (`the*` with `:derive-type-only`). The number of references to
-  the object, and what other code could reach the field, do not matter.
+- Every read of a safe declared field has the declared type and is never
+  checked, at any safety (`the*` with `:derive-type-only`). The number of
+  references to the object, and what other code could reach the field, do not
+  matter.
 - A store the compiler resolves to a declared field asserts the declared type
-  of the stored value (`the*`). It is a policy-controlled `Cast`: checked when
-  safety is above 0, and trusted at safety 0 (`type-check` in
-  `src/compiler/policies.lisp`). The class's own methods are not treated
-  differently from other code.
+  of the stored value (`DeclaredFieldContract` in `return_checks.py`). It is a
+  policy-controlled `Cast`: checked when safety is above 0, and trusted at
+  safety 0 (`type-check` in `src/compiler/policies.lisp`). The class's own
+  methods are not treated differently from other code.
 - A store the compiler cannot resolve, such as dynamic `setattr`, corresponds
   to SBCL's raw `%instance-set`. It is not checked, and the field keeps its
   declared type. Code that writes a field this way is responsible for keeping
   the type correct. Accessing a private member from outside its class is at
   the accessor's own risk.
 - SBCL checks reads only of an unsafe slot (`dsd-safe-p`), for example one
-  whose type a subclass narrows. A subclass that redeclares a field with a
-  narrower type follows the same rule.
+  whose type a subclass narrows (`ClassFacts.unsafe_declared_fields`). A
+  subclass that redeclares an inherited field with a narrower type emits a
+  read-site type check when reading that field on the subclass.
 - A declared element type on a general container field, such as
-  `list[int]`, is kept at every read of the field. Element reads through it
-  have the declared element type, and element writes the compiler attributes
-  to the field are checked under the same policy as field stores.
+  `list[int]`, is kept at every read of the field (`_InstanceDeclaredField` in
+  `constraint.py`). Element reads through it have the declared element type,
+  and element writes the compiler attributes to the field (`append`, `insert`,
+  `add`, `%setitem`, `_storage_append`, `_storage_write`, and container
+  displays assigned to the field) are checked under the same policy as field
+  stores.

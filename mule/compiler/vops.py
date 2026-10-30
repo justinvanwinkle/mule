@@ -25,7 +25,6 @@ from mule import ast, procedures
 from . import fndb
 from .annotation_types import ContractVisitor
 from .ctype import (
-    FLOAT,
     INTEGER,
     PYTHON_INTEGER,
     REAL,
@@ -37,7 +36,6 @@ from .vmdef import define_vop
 from .vop import (
     BOOLEAN,
     BOOLEAN_T,
-    BOX_LAYOUTS,
     BOXED_FLOAT,
     BOXED_I64,
     BOXED_REAL,
@@ -4038,97 +4036,6 @@ def protocol_setitem(gen, vop):
         sequence = gen.take(vop.args[0])
         index = gen.take(vop.args[1])
         raw_item = gen.take(vop.args[2])
-        if (
-            seq_type.is_exact_list
-            and idx_type.is_fixnum
-            and seq_type.iterate_type().next_item_type() == FLOAT
-        ):
-            non_negative = idx_type.minimum is not None and idx_type.minimum >= 0
-            in_bounds = vop.node in gen.context.in_bounds_nodes and non_negative
-            if vop.args[1].tn.sc is SIGNED:
-                raw_idx = index
-            else:
-                bits = gen.operation(f"ptrtoint ptr {index} to i64")
-                raw_idx = gen.operation(f"ashr i64 {bits}, 1")
-            reuse_lbl = gen.fresh("list.freuse")[1:]
-            alloc_lbl = gen.fresh("list.falloc")[1:]
-            done_lbl = gen.fresh("list.fdone")[1:]
-            if in_bounds:
-                pos = raw_idx
-            else:
-                len_addr = gen.operation(
-                    f"getelementptr i64, ptr {sequence}, i64 {VALUE_BUFFER_LENGTH_OFFSET // 8}"
-                )
-                length = gen.operation(f"load i64, ptr {len_addr}")
-                if non_negative:
-                    pos = raw_idx
-                else:
-                    neg = gen.operation(f"icmp slt i64 {raw_idx}, 0")
-                    wrapped = gen.operation(f"add i64 {raw_idx}, {length}")
-                    pos = gen.operation(
-                        f"select i1 {neg}, i64 {wrapped}, i64 {raw_idx}"
-                    )
-                inside = gen.operation(f"icmp ult i64 {pos}, {length}")
-                set_lbl = gen.fresh("list.fset")[1:]
-                slow_lbl = gen.fresh("list.fslow")[1:]
-                gen.line(
-                    f"br i1 {inside}, label %{set_lbl}, label %{slow_lbl}, "
-                    f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
-                )
-                gen.lines.append(set_lbl + ":")
-            data_addr = gen.operation(
-                f"getelementptr ptr, ptr {sequence}, i64 {VALUE_BUFFER_DATA_OFFSET // 8}"
-            )
-            data = gen.operation(f"load ptr, ptr {data_addr}")
-            slot = gen.operation(f"getelementptr ptr, ptr {data}, i64 {pos}")
-            old_box = gen.operation(f"load ptr, ptr {slot}, !nonnull !{{}}")
-            refs = gen.operation(f"load i64, ptr {old_box}")
-            exclusive = gen.operation(f"icmp eq i64 {refs}, 1")
-            gen.line(
-                f"br i1 {exclusive}, label %{reuse_lbl}, label %{alloc_lbl}, "
-                f'!prof !{{!"branch_weights", i32 2000, i32 1}}'
-            )
-            gen.lines.append(reuse_lbl + ":")
-            payload = gen.operation(
-                f"getelementptr i8, ptr {old_box}, i64 {FLOAT_BOX_LAYOUT.payload_offset}"
-            )
-            gen.line(f"store double {raw_item}, ptr {payload}")
-            gen.line(f"br label %{done_lbl}")
-            gen.lines.append(alloc_lbl + ":")
-            new_box = gen.operation(
-                f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
-            )
-            gen.line(f"store ptr {new_box}, ptr {slot}")
-            gen.line(f"call void @mule.fast.release(ptr {old_box})")
-            gen.line(f"br label %{done_lbl}")
-            if in_bounds:
-                gen.lines.append(done_lbl + ":")
-                result = "@mule.none"
-            else:
-                gen.lines.append(slow_lbl + ":")
-                slow_box = gen.operation(
-                    f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
-                )
-                slow_index = gen.encode(index) if vop.args[1].tn.sc is SIGNED else index
-                helper = gen.module.setitem_helper(move=True)
-                slow_res = gen.operation(
-                    f"call ptr {helper}(ptr {sequence}, ptr {slow_index}, ptr {slow_box})"
-                )
-                slow_end = gen.current_block()
-                gen.line(f"br label %{done_lbl}")
-                gen.lines.append(done_lbl + ":")
-                result = gen.operation(
-                    f"phi ptr [@mule.none, %{reuse_lbl}], [@mule.none, %{alloc_lbl}], [{slow_res}, %{slow_end}]"
-                )
-            gen.immortal_values.add(result)
-            gen.release(sequence)
-            if vop.args[1].tn.sc in OBJECT:
-                gen.release(index)
-            gen.publish(vop.results[0], result)
-            if not in_bounds:
-                gen.check_pointer(result)
-            gen.refine(vop.results[0].tn, result)
-            return
         boxed_item = gen.operation(
             f"call ptr @{FLOAT_BOX_LAYOUT.symbol()}(double {raw_item})"
         )

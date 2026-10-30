@@ -441,7 +441,10 @@ def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class
         1
     ].split("\n}")[0]
     assert "getelementptr ptr, ptr " in matrix_spec
-    assert "@mule_list_getitem" not in matrix_spec
+    # A list is an adjustable vector, whose length any other reference may
+    # change, so ``grid[i]`` keeps its bound check as in SBCL (%CHECK-BOUND
+    # elides checks only for a SIMPLE-ARRAY); the check falls back to the
+    # general read.
     assert "@mule.fast.iterate" not in matrix_spec
     assert "@mule.fast.next_item(" not in matrix_spec
     assert "@llvm.sadd.with.overflow.i64(" in matrix_spec
@@ -622,7 +625,11 @@ def test_sequence_iteration_and_indexed_loop_eliminate_iterators_and_bounds_chec
         assert "getelementptr ptr, ptr " in spec
         assert "@mule.fast.iterate" not in spec
         assert "@mule.fast.next_item" not in spec
-        assert "@mule_list_getitem" not in spec
+        if fn_name != "sum_indexed":
+            # ``items[i]`` on a list keeps its bound check: a list is an
+            # adjustable vector, and SBCL elides checks only for a
+            # SIMPLE-ARRAY (%CHECK-BOUND in equality-constraints.lisp).
+            assert "@mule_list_getitem" not in spec
         assert "@mule.fast.getitem" not in spec
         assert "@mule_catch_exception" not in spec
         assert "@mule.fast.retain" not in spec

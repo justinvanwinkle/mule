@@ -190,7 +190,7 @@ def test_visitor_hooks_for_dict_and_iterator():
     assert LIST_TYPE.accept(visitor) == "other"
 
 
-def test_nested_list_in_dict_mutation_widens_element_type():
+def test_multiply_referenced_dict_of_lists_has_only_the_conservative_type():
     comp = compile_source(
         """
 def aggregate(items: list):
@@ -211,9 +211,9 @@ def aggregate(items: list):
     lam = comp.lambdas[1]
     routes_var = next(v for v in lam.locals if v.name == "routes")
     last_routes_ref = routes_var.refs[-1]
-    assert last_routes_ref.derived_type == DictType(
-        UNKNOWN, ListType(IntegerType(0, None))
-    )
+    # The nested lists are mutated through ``group`` while ``routes`` holds
+    # them; SBCL's conservative type keeps only the dict kind.
+    assert last_routes_ref.derived_type == DICT_TYPE
 
 
 def test_stdlib_type_summary_derives_methods_and_builtins():

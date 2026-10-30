@@ -63,7 +63,7 @@ from .node import (
     Set,
     linked,
 )
-from .return_checks import assert_inferred_results
+from .return_checks import assert_declared_field_stores, assert_inferred_results
 
 
 @dataclass(slots=True)
@@ -107,6 +107,9 @@ def ir1_phases(compilation: Compilation) -> None:
                 facts_stale = True
                 continue
             if assert_inferred_results(compilation):
+                facts_stale = True
+                continue
+            if assert_declared_field_stores(compilation):
                 facts_stale = True
                 continue
             facts = linked(compilation.facts, compilation, "facts")

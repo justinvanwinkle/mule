@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from mule import ast, procedures
 from mule.diagnostics import phase
 
-from . import argument_layout, fndb, vops
+from . import argument_layout, fndb, vops, wordops
 from .callconv import (
     NumericEntry,
     entry_steps,
@@ -419,7 +419,10 @@ def _parsed_helpers(
     helper_defs: list[tuple[str, str]] = []
     current_symbol = None
     current_lines: list[str] = []
-    for emitter, helper_text in procedures.all_procedures():
+    for emitter, helper_text in (
+        *procedures.all_procedures(),
+        ("mule/compiler/wordops.py", wordops.helpers()),
+    ):
         for line in helper_text.splitlines():
             if current_symbol is not None:
                 current_lines.append(line)

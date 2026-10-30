@@ -506,6 +506,8 @@ def test_scalar_and_dict_instance_field_specialization_and_method_return_contrac
         "  self.val = val\n"
         "  self.prev = None\n"
         "class Box:\n"
+        " limit: int\n"
+        " table: dict\n"
         " def __init__(self, limit: int):\n"
         "  self.limit = limit\n"
         "  self.table = {}\n"

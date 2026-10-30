@@ -821,7 +821,11 @@ def dict_setitem(table, key, value):
         slot,
         _storage_length(_instance_field(table, "_keys")),
     )
-    _storage_append(_instance_field(table, "_hashes"), code)
+    _storage_write(
+        _instance_field(table, "_hashes"),
+        _storage_length(_instance_field(table, "_keys")),
+        code,
+    )
     _storage_append(_instance_field(table, "_keys"), key)
     _storage_append(_instance_field(table, "_values"), value)
     next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
@@ -918,7 +922,11 @@ def set_add(table, key):
         slot,
         _storage_length(_instance_field(table, "_keys")),
     )
-    _storage_append(_instance_field(table, "_hashes"), code)
+    _storage_write(
+        _instance_field(table, "_hashes"),
+        _storage_length(_instance_field(table, "_keys")),
+        code,
+    )
     _storage_append(_instance_field(table, "_keys"), key)
     next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
     _set_instance_field(table, "_used", next_used)
@@ -1065,7 +1073,7 @@ def set_and(left, right):
                             _storage_write(
                                 res_indices, res_slot, _storage_length(res_keys)
                             )
-                            _storage_append(res_hashes, code)
+                            _storage_write(res_hashes, _storage_length(res_keys), code)
                             _storage_append(res_keys, key)
                             break
                 elif entry is _TABLE_EMPTY:
@@ -1099,7 +1107,7 @@ def set_or(left, right):
                 res_perturb >>= 5
                 res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
             _storage_write(res_indices, res_slot, _storage_length(res_keys))
-            _storage_append(res_hashes, code)
+            _storage_write(res_hashes, _storage_length(res_keys), code)
             _storage_append(res_keys, key)
         index += 1
     right_count = _storage_length(_instance_field(right, "_keys"))
@@ -1119,7 +1127,7 @@ def set_or(left, right):
                             break
                 elif entry is _TABLE_EMPTY:
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 res_perturb >>= 5
@@ -1162,7 +1170,7 @@ def set_sub(left, right):
                         res_perturb >>= 5
                         res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 perturb >>= 5
@@ -1207,7 +1215,7 @@ def set_xor(left, right):
                         res_perturb >>= 5
                         res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 perturb >>= 5
@@ -1238,7 +1246,7 @@ def set_xor(left, right):
                         res_perturb >>= 5
                         res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 perturb >>= 5

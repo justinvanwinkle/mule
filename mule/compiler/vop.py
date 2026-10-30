@@ -172,6 +172,8 @@ RANGE_T = PrimitiveType("range-state", (RANGE,))
 # A native class object: owned, or borrowed once its layout is guarded.
 CLASS_T = PrimitiveType("class", (DESCRIPTOR, CLASS))
 REFERENCE_T = PrimitiveType("object-reference", (REFERENCE, DESCRIPTOR))
+# A fixed-length fixnum word vector (SBCL's ``simple-array-fixnum``).
+WORD_VECTOR_T = PrimitiveType("word-vector", (DESCRIPTOR, REFERENCE))
 
 
 def instance_type(layout) -> PrimitiveType:

@@ -846,3 +846,24 @@ the owning dictionary during release matches Python.
 The final default suite passed with 4,252 tests. The targeted native integration
 suite passed at `-O2` and `-O3`, including real dictionary protocol loops,
 guarded layouts, singleton fill, ownership, and mutation behavior. Ruff passed.
+
+## SBCL conservative container types, word vectors, and declared instance fields, 2026-10-30
+
+Replacing static container-mutation, alias, parent-container, and unannotated
+instance-field store tracking with SBCL's conservative container rule
+(`lvar-conservative-type`), `Data::RawWords` word vectors for `_Table._indices`
+and `_Table._hashes`, and declared class-body field contracts (`slot-access-transform`
+and `dsd-safe-p`) resolves the `heterogeneous_slot_mutation` miscompilation in
+`perf/topics/objects/cycles_and_lifetimes.py`:
+
+| Scenario (`--quick`) | CPython 3.14t | Mule | Mule / CPython |
+| --- | ---: | ---: | ---: |
+| `objects/cycles_and_lifetimes:cyclic_graph_churn` | 11.47s | 10.56s | 0.92x |
+| `objects/cycles_and_lifetimes:heterogeneous_slot_mutation` | 10.02s | 13.65s | 1.36x |
+
+Unannotated mutable containers accessed through multiply referenced variables
+or module globals carry only their container kind (`LIST_TYPE`, `DICT_TYPE`,
+`SET_TYPE`) and retain bound checks on adjustable sequences (`list`,
+`bytearray`), while declared container annotations (`list[T]`, `dict[K, V]`,
+`set[T]`) and declared class-body instance fields preserve element and field
+specialization.
