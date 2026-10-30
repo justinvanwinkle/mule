@@ -103,6 +103,10 @@ def test_python_algorithm(filename, program, output, tmp_path):
     name = "threading" if filename == "threading.py" else "stdlib_under_test"
     loader = (
         "import importlib.util\nimport sys\n"
+        f"mt_spec = importlib.util.spec_from_file_location('mule_types', {str(STDLIB / 'mule_types.py')!r})\n"
+        "mt_mod = importlib.util.module_from_spec(mt_spec)\n"
+        "sys.modules['mule_types'] = mt_mod\n"
+        "mt_spec.loader.exec_module(mt_mod)\n"
         f"spec = importlib.util.spec_from_file_location({name!r}, {str(STDLIB / filename)!r})\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "sys.modules[spec.name] = module\n"
