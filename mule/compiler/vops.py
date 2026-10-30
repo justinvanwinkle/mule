@@ -4561,9 +4561,12 @@ def text_access(function):
                 index = (
                     values[1] if vop.args[1].tn.sc is SIGNED else gen.decode(values[1])
                 )
-                return gen.operation(
-                    f"call ptr @mule_text_codepoint_at(ptr {values[0]}, i64 {index})"
+                helper = (
+                    "@mule.fast.text.codepoint.at"
+                    if index_type.minimum is not None and index_type.minimum >= 0
+                    else "@mule_text_codepoint_at"
                 )
+                return gen.operation(f"call ptr {helper}(ptr {values[0]}, i64 {index})")
         if function == "mule_read_byte" and len(vop.args) == 2:
             index_type = vop.args[1].tn.type or UNKNOWN
             if index_type.is_fixnum:

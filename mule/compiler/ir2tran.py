@@ -948,6 +948,22 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
         for reader, _ in reads.get(vop.results[0].tn, ())
         if reader.info is vops.MOVE
     }
+    worklist = list(local_tns)
+    while worklist:
+        cur_local = worklist.pop()
+        for reader, _ in reads.get(cur_local, ()):
+            if (
+                reader.info is vops.LOAD_LOCAL
+                and reader.codegen_info is not None
+                and reader.codegen_info.bound
+            ):
+                load_res = reader.results[0].tn
+                for consumer, _ in reads.get(load_res, ()):
+                    if consumer.info is vops.MOVE:
+                        dest_local = consumer.results[0].tn
+                        if dest_local not in local_tns:
+                            local_tns.add(dest_local)
+                            worklist.append(dest_local)
 
     def valid_value_reads(tn) -> bool:
         tn_reads = reads.get(tn)
@@ -972,7 +988,18 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
     changed = True
     while changed:
         changed = False
-        getitem_result_tns = {vop.results[0].tn for vop in getitem_vops}
+        valid_move_sources = {vop.results[0].tn for vop in getitem_vops}
+        for src_local in local_tns:
+            for reader, _ in reads.get(src_local, ()):
+                if (
+                    reader.info is vops.LOAD_LOCAL
+                    and reader.codegen_info is not None
+                    and reader.codegen_info.bound
+                    and len(writes.get(reader.results[0].tn, ())) == 1
+                ):
+                    valid_move_sources.add(reader.results[0].tn)
+        direct_comparison_locals: set = set()
+        local_move_edges: dict = {}
         for local_tn in list(local_tns):
             tn_writes = writes.get(local_tn)
             tn_reads = reads.get(local_tn)
@@ -981,14 +1008,15 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
                 or not tn_reads
                 or any(
                     writer.info is not vops.MOVE
-                    or writer.args[0].tn not in getitem_result_tns
+                    or writer.args[0].tn not in valid_move_sources
                     for writer, _ in tn_writes
                 )
             ):
                 local_tns.remove(local_tn)
                 changed = True
                 continue
-            has_comparison = False
+            has_direct_comparison = False
+            move_targets: set = set()
             valid_local = True
             for reader, _ in tn_reads:
                 if (
@@ -1010,20 +1038,45 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
                     if consumer.info is vops.DISCARD:
                         continue
                     if (
+                        consumer.info is vops.MOVE
+                        and consumer.results[0].tn in local_tns
+                    ):
+                        move_targets.add(consumer.results[0].tn)
+                        continue
+                    if (
                         _codepoint_comparison_constant(consumer, cref, reads, writes)
                         is not None
                         or _codepoint_contains_constant(consumer, cref, reads, writes)
                         is not None
                     ):
-                        has_comparison = True
+                        has_direct_comparison = True
                         continue
                     valid_local = False
                     break
                 if not valid_local:
                     break
-            if not valid_local or not has_comparison:
+            if not valid_local or (not has_direct_comparison and not move_targets):
                 local_tns.remove(local_tn)
                 changed = True
+                continue
+            if has_direct_comparison:
+                direct_comparison_locals.add(local_tn)
+            local_move_edges[local_tn] = move_targets
+        if local_tns:
+            reaches_comparison = set(direct_comparison_locals)
+            edge_changed = True
+            while edge_changed:
+                edge_changed = False
+                for local_tn in local_tns:
+                    if local_tn in reaches_comparison:
+                        continue
+                    if local_move_edges.get(local_tn, set()) & reaches_comparison:
+                        reaches_comparison.add(local_tn)
+                        edge_changed = True
+            for local_tn in list(local_tns):
+                if local_tn not in reaches_comparison:
+                    local_tns.remove(local_tn)
+                    changed = True
         for vop in list(getitem_vops):
             if not valid_value_reads(vop.results[0].tn):
                 getitem_vops.remove(vop)

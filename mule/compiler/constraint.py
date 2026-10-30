@@ -19,7 +19,8 @@ local-call analysis may guard.
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+import heapq
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -453,25 +454,67 @@ def widen_fact(old: Fact, new: Fact, thresholds: tuple[int, ...] = ()) -> Fact:
 _BASE_WIDENING_THRESHOLDS: tuple[int, ...] = (-1, 0, 1)
 
 
-def _join_relations_list(rels_list: list[dict]) -> dict:
+def _state_diff_bound(state: dict, u, v) -> int | None:
+    if u not in state or v not in state:
+        return None
+    u_type = state[u].type
+    v_type = state[v].type
+    if (
+        not u_type.fits(PYTHON_INTEGER)
+        or u_type.may_be_unbound
+        or u_type.maximum is None
+        or not v_type.fits(PYTHON_INTEGER)
+        or v_type.may_be_unbound
+        or v_type.minimum is None
+    ):
+        return None
+    return u_type.maximum - v_type.minimum
+
+
+def _join_relations_list(
+    rels_list: list[dict], states_list: list[dict] | None = None
+) -> dict:
     if not rels_list:
         return {}
-    first = rels_list[0]
     if len(rels_list) == 1:
-        return first
-    if not first or any(not r for r in rels_list[1:]):
+        return rels_list[0]
+    if not any(rels_list):
         return {}
+    if states_list is None:
+        first = rels_list[0]
+        if not first or any(not r for r in rels_list[1:]):
+            return {}
+        result = {}
+        others = rels_list[1:]
+        for pair, val in first.items():
+            hi = val
+            for other in others:
+                other_val = other.get(pair)
+                if other_val is None:
+                    break
+                hi = max(hi, other_val)
+            else:
+                result[pair] = hi
+        return result
+    candidates = set()
+    for r in rels_list:
+        if r:
+            candidates.update(r.keys())
     result = {}
-    others = rels_list[1:]
-    for pair, val in first.items():
-        hi = val
-        for other in others:
-            other_val = other.get(pair)
-            if other_val is None:
-                break
-            hi = max(hi, other_val)
+    n = len(rels_list)
+    for pair in candidates:
+        u, v = pair
+        hi = None
+        for idx in range(n):
+            val = rels_list[idx].get(pair)
+            if val is None:
+                val = _state_diff_bound(states_list[idx], u, v)
+                if val is None:
+                    break
+            hi = val if hi is None or val > hi else hi
         else:
-            result[pair] = hi
+            if hi is not None:
+                result[pair] = hi
     return result
 
 
@@ -1761,26 +1804,18 @@ class _Propagation(NodeVisitor, LeafVisitor):
                 _tighten_relation(rels, src_var, key, -d_min)
             return fact
         self._drop_relations_for(key)
-        if fact.type.fits(PYTHON_INTEGER) and not fact.type.may_be_unbound:
-            k_min, k_max = fact.type.minimum, fact.type.maximum
-            if k_min is not None or k_max is not None:
-                for other_var in self.walk.relational_vars_tuple:
-                    if other_var is key or other_var not in self.state:
-                        continue
-                    other_type = self.state[other_var].type
-                    if not other_type.fits(PYTHON_INTEGER) or other_type.may_be_unbound:
-                        continue
-                    o_min, o_max = other_type.minimum, other_type.maximum
-                    if k_max is not None and o_min is not None:
-                        rels[key, other_var] = k_max - o_min
-                    if o_max is not None and k_min is not None:
-                        rels[other_var, key] = o_max - k_min
         return fact
 
     def _update_seq_len_on_set(self, seq_key, value_lvar, fact: Fact) -> None:
         rels = self.relations
-        self._drop_relations_for(seq_key)
-        if fact.type.may_be_unbound:
+        if rels:
+            self._drop_relations_for(seq_key)
+        if (
+            fact.type.may_be_unbound
+            or fact.type.fits(PYTHON_INTEGER)
+            or fact.type is FLOAT
+            or fact.type is NONE_TYPE
+        ):
             self.assign(seq_key, UNBOUND_FACT)
             return
         src_var = self.origins.get(value_lvar)
@@ -1811,23 +1846,6 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     _tighten_relation(rels, seq_key, base_key, d_max)
                 if d_min is not None:
                     _tighten_relation(rels, base_key, seq_key, -d_min)
-        k_min, k_max = seq_len_t.minimum, seq_len_t.maximum
-        if k_min is not None or k_max is not None:
-            for other_var in self.walk.relational_vars_tuple:
-                if other_var is seq_key or other_var not in self.state:
-                    continue
-                other_type = self.state[other_var].type
-                if not other_type.fits(PYTHON_INTEGER) or other_type.may_be_unbound:
-                    continue
-                o_min, o_max = other_type.minimum, other_type.maximum
-                if k_max is not None and o_min is not None:
-                    cur = rels.get((seq_key, other_var))
-                    if cur is None or k_max - o_min < cur:
-                        rels[seq_key, other_var] = k_max - o_min
-                if o_max is not None and k_min is not None:
-                    cur = rels.get((other_var, seq_key))
-                    if cur is None or o_max - k_min < cur:
-                        rels[other_var, seq_key] = o_max - k_min
 
     def visit_Cast(self, node: Cast):
         value = self.type_of(node.value)
@@ -2861,11 +2879,12 @@ def _make_comparison_constrainer(operator: ast.ComparisonOperator):
                 if narrowed != current.type:
                     state[target_local] = visitor.narrowed_fact(current, narrowed)
                     changed = True
-        active_rels = edge_rels if edge_rels is not None else visitor.relations
-        if active_rels and _apply_relations_to_state(active_rels, state, visitor):
-            if _DEAD_EDGE in state:
-                return True
-            changed = True
+        if edge_rels is not None or changed:
+            active_rels = edge_rels if edge_rels is not None else visitor.relations
+            if active_rels and _apply_relations_to_state(active_rels, state, visitor):
+                if _DEAD_EDGE in state:
+                    return True
+                changed = True
         return changed
 
     return _constrain_ord
@@ -3739,6 +3758,37 @@ class LambdaGraph:
     range_states: tuple = ()
 
 
+_THRESHOLD_COMPARISON_INFOS = frozenset(
+    (
+        fndb.COMPARE[ast.ComparisonOperator.LESS],
+        fndb.COMPARE[ast.ComparisonOperator.LESS_EQUAL],
+        fndb.COMPARE[ast.ComparisonOperator.GREATER],
+        fndb.COMPARE[ast.ComparisonOperator.GREATER_EQUAL],
+        fndb.COMPARE[ast.ComparisonOperator.NOT_EQUAL],
+    )
+)
+
+
+class _ConstantThreshold(NodeVisitor, LeafVisitor):
+    def visit_Node(self, node):
+        return None
+
+    def visit_Ref(self, node: Ref):
+        return node.leaf.accept(self)
+
+    def visit_Leaf(self, leaf):
+        return None
+
+    def visit_Constant(self, leaf):
+        val = constant_type(leaf.value).exact_integer()
+        if val is not None and FIXNUM_MIN < val < FIXNUM_MAX:
+            return val
+        return None
+
+
+_CONSTANT_THRESHOLD = _ConstantThreshold()
+
+
 class _GraphScan(NodeVisitor, LeafVisitor):
     """Collects global variable names and full/guarded call sites for a lambda."""
 
@@ -3751,16 +3801,17 @@ class _GraphScan(NodeVisitor, LeafVisitor):
         self.has_seq_length_ops: bool = False
         self.range_states: list = []
 
+    def _add_lvar_threshold(self, lvar) -> None:
+        if len(lvar.uses) == 1:
+            val = lvar.uses[0].accept(_CONSTANT_THRESHOLD)
+            if val is not None:
+                self.threshold_set.update((val - 1, val, val + 1))
+
     def visit_Ref(self, node):
         node.leaf.accept(self)
 
     def visit_Set(self, node):
         node.var.accept(self)
-
-    def visit_Constant(self, leaf):
-        val = constant_type(leaf.value).exact_integer()
-        if val is not None and FIXNUM_MIN < val < FIXNUM_MAX:
-            self.threshold_set.update((val - 1, val, val + 1))
 
     def visit_GlobalVar(self, leaf):
         self.global_names.add(leaf.name)
@@ -3773,9 +3824,14 @@ class _GraphScan(NodeVisitor, LeafVisitor):
         ):
             self.call_nodes.append((self.block, node))
         if node.kind is CallKind.KNOWN:
+            if node.fun_info in _THRESHOLD_COMPARISON_INFOS:
+                for arg in node.args:
+                    self._add_lvar_threshold(arg)
             if node.fun_info is fndb.RANGE_PREPARE and node.info is not None:
                 self.range_states.append(node.info)
                 self.has_seq_length_ops = True
+                for arg in node.info.arguments:
+                    self._add_lvar_threshold(arg)
             elif node.fun_info is not None and node.fun_info.name in (
                 "_text_length",
                 "_storage_length",
@@ -3796,6 +3852,7 @@ class _GraphScan(NodeVisitor, LeafVisitor):
                             self.consumers[use].add(self.block)
             if node.fun_info is fndb.RANGE_ADVANCE and node.info is not None:
                 for arg in node.info.arguments:
+                    self._add_lvar_threshold(arg)
                     for use in arg.uses:
                         if use.block is not self.block:
                             self.consumers[use].add(self.block)
@@ -4168,9 +4225,7 @@ class _Walk:
         if self.lambda_.policy.safety >= 3:
             return UNKNOWN
         name = fun_lvar.use().accept(_IMPORTED_CALLEE_NAME)
-        if self.lambda_.kind is FunctionalKind.TOPLEVEL and (
-            self.lambda_.is_protocol or name != "list"
-        ):
+        if self.lambda_.kind is FunctionalKind.TOPLEVEL and self.lambda_.is_protocol:
             return UNKNOWN
         if name is None or name in self.rebound_globals or name in self.global_targets:
             return UNKNOWN
@@ -4343,12 +4398,16 @@ class _Walk:
         visits = defaultdict(int)
         key_visits = defaultdict(int)
         did_widen = False
+        rpo = {block: idx for idx, block in enumerate(self.blocks)}
         initial = (
             [self.entry]
             if widening
             else [block for block in self.blocks if block in incoming]
         )
-        pending, queued = deque(initial), set(initial)
+        current_heap = [(rpo[block], block) for block in initial]
+        heapq.heapify(current_heap)
+        next_heap: list[tuple[int, object]] = []
+        queued = set(initial)
         cross_changed = set()
         visited_edges = set()
         predecessors = self.predecessors
@@ -4366,23 +4425,23 @@ class _Walk:
         cmp_constrainer = _ConstrainComparison(visitor, {}, False)
         edge_constrainer.cmp_constrainer = cmp_constrainer
 
-        while pending:
-            block = pending.popleft()
+        while current_heap or next_heap:
+            if not current_heap:
+                current_heap, next_heap = next_heap, current_heap
+            cur_rpo, block = heapq.heappop(current_heap)
             queued.remove(block)
             operand_changed = block in cross_changed
             if operand_changed:
                 cross_changed.remove(block)
-            parent_rels = [
-                edge_relations.get((parent, block), {})
-                for parent in predecessors[block]
-                if (parent, block) in edge_states
-            ]
+            parent_rels = []
+            rel_states = []
+            for parent in predecessors[block]:
+                edge_key = parent, block
+                if edge_key in edge_states:
+                    parent_rels.append(edge_relations.get(edge_key, {}))
+                    rel_states.append(edge_states[edge_key])
             if widening or block not in headers:
-                parents = [
-                    edge_states[parent, block]
-                    for parent in predecessors[block]
-                    if (parent, block) in edge_states
-                ]
+                parents = rel_states.copy()
                 stale_backs = None
             else:
                 parents = []
@@ -4398,9 +4457,10 @@ class _Walk:
             if block is self.entry:
                 parents.append(self.initial)
                 parent_rels.append({})
+                rel_states.append(self.initial)
             if not parents:
                 continue
-            rels = _join_relations_list(parent_rels)
+            rels = _join_relations_list(parent_rels, rel_states)
             if not widening and (block in headers or visits[block] >= 3):
                 rels = _widen_relations(in_relations.get(block, {}), rels)
             state = parents[0]
@@ -4421,10 +4481,10 @@ class _Walk:
                     state, changed = join_states(previous, state)
                 old_rels = in_relations.get(block)
                 if old_rels is not None:
-                    if (block in headers and visits[block] >= 1) or visits[block] >= 4:
+                    if (block in headers and visits[block] >= 2) or visits[block] >= 4:
                         rels = _widen_relations(old_rels, rels)
                     else:
-                        rels = _join_relations_list([old_rels, rels])
+                        rels = _join_relations_list([old_rels, rels], [previous, state])
                 rel_changed = rels != old_rels
                 if rel_changed:
                     in_relations[block] = rels
@@ -4501,7 +4561,7 @@ class _Walk:
                 else:
                     state_changed = state is not previous and state != previous
                 rel_changed = rels != old_rels
-                if state_changed or rel_changed:
+                if visits[block] == 0 or state_changed or rel_changed:
                     visits[block] += 1
                     incoming[block] = state
                     in_relations[block] = rels
@@ -4532,7 +4592,11 @@ class _Walk:
                         for consumer in consumers.get(node, ()):
                             cross_changed.add(consumer)
                             if consumer not in queued:
-                                pending.append(consumer)
+                                c_rpo = rpo[consumer]
+                                heapq.heappush(
+                                    current_heap if c_rpo > cur_rpo else next_heap,
+                                    (c_rpo, consumer),
+                                )
                                 queued.add(consumer)
                 if has_handler:
                     visitor.note_handler_state()
@@ -4587,7 +4651,13 @@ class _Walk:
                 ):
                     edge_states[key] = edge
                     if target not in queued:
-                        pending.append(target)
+                        t_rpo = rpo[target]
+                        heapq.heappush(
+                            current_heap
+                            if t_rpo > cur_rpo and key not in back_edges
+                            else next_heap,
+                            (t_rpo, target),
+                        )
                         queued.add(target)
         return did_widen
 
@@ -5065,6 +5135,7 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget]
     "range": ForeignCallTarget(return_type=IteratorType(INTEGER)),
     "ord": ForeignCallTarget(return_type=IntegerType(0, 0x10FFFF)),
     "chr": ForeignCallTarget(return_type=TEXT_TYPE),
+    "input": ForeignCallTarget(return_type=TEXT_TYPE),
 }
 
 

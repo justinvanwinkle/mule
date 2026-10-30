@@ -95,14 +95,10 @@ def build_and_consume(items: list[int]) -> tuple[set[int], int]:
     fn = compilation.lambdas[1]
     variant = compilation.facts[fn].variants[0]
     var_types = {var.name: variant.types[var.refs[-1]] for var in fn.locals if var.refs}
-    from mule.compiler.ctype import PYTHON_INTEGER, SetType
+    from mule.compiler.ctype import PYTHON_INTEGER
 
-    assert var_types["s"] == SetType(
-        "mule_dict_set", element=PYTHON_INTEGER, proven=True
-    )
-    assert var_types["combined"] == SetType(
-        "mule_dict_set", element=PYTHON_INTEGER, proven=True
-    )
+    assert var_types["s"] == SET_TYPE
+    assert var_types["combined"] == SET_TYPE
     assert var_types["val"] == PYTHON_INTEGER
 
 
@@ -271,39 +267,42 @@ print("length:", mutate_list_length())
 print("aug:", augmented_assign_list())
 print("undeclared:", mutate_undeclared_field())
 
-box = DeclaredBox(5, [10, 20], 7)
-print("box_total:", box.total())
+def exercise_declared_fields():
+    box = DeclaredBox(5, [10, 20], 7)
+    print("box_total:", box.total())
 
-try:
-    box.count = "not-an-int"
-except TypeError as exc:
-    print("checked_field_store:", type(exc).__name__)
+    try:
+        box.count = "not-an-int"
+    except TypeError as exc:
+        print("checked_field_store:", type(exc).__name__)
 
-try:
-    box.items.append("not-an-int")
-except TypeError as exc:
-    print("checked_field_elem_append:", type(exc).__name__)
+    try:
+        box.items.append("not-an-int")
+    except TypeError as exc:
+        print("checked_field_elem_append:", type(exc).__name__)
 
-try:
-    box.items[0] = "not-an-int"
-except TypeError as exc:
-    print("checked_field_elem_setitem:", type(exc).__name__)
+    try:
+        box.items[0] = "not-an-int"
+    except TypeError as exc:
+        print("checked_field_elem_setitem:", type(exc).__name__)
 
-# Unresolved dynamic setattr and @optimize(safety=0) bypass compile-time store
-# checks; reading the declared field trusts the declared type without a runtime
-# check on read.
-store_unchecked(box, 12)
-print("after_unchecked:", box.total())
-setattr(box, "count", 15)
-print("after_setattr:", box.total())
+    # Unresolved dynamic setattr and @optimize(safety=0) bypass compile-time store
+    # checks; reading the declared field trusts the declared type without a runtime
+    # check on read.
+    store_unchecked(box, 12)
+    print("after_unchecked:", box.total())
+    setattr(box, "count", 15)
+    print("after_setattr:", box.total())
 
-sub = NarrowedSub(41)
-print("narrowed_ok:", sub.read_narrowed())
-setattr(sub, "value", "oops")
-try:
-    print(sub.read_narrowed())
-except TypeError as exc:
-    print("narrowed_read_checked:", type(exc).__name__)
+    sub = NarrowedSub(41)
+    print("narrowed_ok:", sub.read_narrowed())
+    setattr(sub, "value", "oops")
+    try:
+        print(sub.read_narrowed())
+    except TypeError as exc:
+        print("narrowed_read_checked:", type(exc).__name__)
+
+exercise_declared_fields()
 """
     result = run_native(tmp_path, source)
     assert result.returncode == 0, result.stderr
