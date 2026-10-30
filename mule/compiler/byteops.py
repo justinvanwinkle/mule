@@ -6,7 +6,7 @@ the allocator. Immutable byte views retain their owner in the IR1 loop local.
 """
 
 from .ctype import BOOLEAN, BYTE_STORAGE_TYPE, NONE_TYPE, UNKNOWN, IntegerType
-from .fndb import _arg_type, defknown
+from .fndb import defknown, lvar_type
 from .knownfun import defpropagate
 from .vmdef import define_vop
 from .vop import DESCRIPTOR, IMMEDIATE, NULL, REFERENCE, SIGNED
@@ -214,7 +214,7 @@ ITERATE = defknown(
     "%byte_iterate",
     "call",
     "unsafe",
-    derive_type=lambda node: _arg_type(node.args[0]).iterate_type(),
+    derive_type=lambda node: lvar_type(node.args[0]).iterate_type(),
 )
 AVAILABLE = defknown(
     "%byte_available",
@@ -226,7 +226,7 @@ AVAILABLE = defknown(
 NEXT = defknown(
     "%byte_next",
     "unsafe",
-    derive_type=lambda node: _arg_type(node.args[0]).next_item_type(),
+    derive_type=lambda node: lvar_type(node.args[0]).next_item_type(),
     borrowed_args=frozenset({0}),
     numeric=True,
 )

@@ -22,11 +22,8 @@ import functools
 from mule import ast
 
 from . import fndb
-from .constraint import constant_type
 from .ctype import (
-    BOTTOM,
     BYTES_TYPE,
-    FUNCTION_TYPE,
     NONE_TYPE,
     PYTHON_INTEGER,
     REAL,
@@ -39,6 +36,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
+from .fndb import DERIVE_NODE_TYPE, constant_type, lvar_type, node_derived_type
 from .ir1util import (
     _FLUSH_DEAD_REFERENCE,
     _flush_operand,
@@ -113,103 +111,6 @@ _UNARY_NAMES = {
 }
 # Folded integers stay within the bounds literal syntax reaches comfortably.
 _FOLD_LIMIT_BITS = 128
-
-
-class _DeriveNodeType(NodeVisitor, LeafVisitor):
-    def visit_Node(self, node):
-        return UNKNOWN
-
-    def visit_Ref(self, node: Ref):
-        derived = node.leaf.accept(self)
-        if node.derived_type is not None and (
-            derived is UNKNOWN
-            or (
-                node.derived_type.as_bound().fits(derived.as_bound())
-                if derived.may_be_unbound
-                else node.derived_type.fits(derived)
-            )
-        ):
-            return node.derived_type
-        return derived
-
-    def visit_Leaf(self, leaf):
-        return leaf.type if leaf.type is not None else UNKNOWN
-
-    def visit_Constant(self, leaf: Constant):
-        return constant_type(leaf.value)
-
-    def visit_Lambda(self, leaf):
-        return FUNCTION_TYPE
-
-    def visit_LambdaVar(self, leaf):
-        if leaf.type is not None:
-            return leaf.type
-        if leaf.optimistic_type is not None and leaf.optimistic_type is not BOTTOM:
-            return leaf.optimistic_type
-        return UNKNOWN
-
-    def visit_Cast(self, node: Cast):
-        if node.value is None:
-            return UNKNOWN
-        return node.contract.refine(lvar_type(node.value))
-
-    def visit_Combination(self, node: Combination):
-        derived = UNKNOWN
-        if (
-            node.kind is CallKind.KNOWN
-            and node.fun_info is not None
-            and node.fun_info.derive_type is not None
-        ):
-            result = node.fun_info.derive_type(node)
-            if result is not None:
-                derived = result
-        if node.derived_type is not None and (
-            derived is UNKNOWN
-            or (
-                node.derived_type.as_bound().fits(derived.as_bound())
-                if derived.may_be_unbound
-                else node.derived_type.fits(derived)
-            )
-        ):
-            return node.derived_type
-        return derived
-
-    def visit_Exit(self, node: Exit):
-        return lvar_type(node.value) if node.value is not None else UNKNOWN
-
-
-_DERIVE_NODE_TYPE = _DeriveNodeType()
-
-
-class _NodeDerivedType(NodeVisitor):
-    def visit_Node(self, node):
-        return UNKNOWN
-
-    def visit_ValuedNode(self, node):
-        if node.derived_type is None:
-            node.derived_type = node.accept(_DERIVE_NODE_TYPE)
-        return node.derived_type
-
-
-_NODE_DERIVED_TYPE = _NodeDerivedType()
-
-
-def node_derived_type(node: Node) -> ValueType:
-    """The derived value type of ``node``, computed and cached on demand."""
-    return node.accept(_NODE_DERIVED_TYPE)
-
-
-def lvar_type(lvar: Lvar) -> ValueType:
-    """The union of the derived types of ``lvar``'s producing nodes."""
-    if lvar.derived_type is not None:
-        return lvar.derived_type
-    if not lvar.uses:
-        return BOTTOM
-    derived = node_derived_type(lvar.uses[0])
-    for use in lvar.uses[1:]:
-        derived = derived.join(node_derived_type(use))
-    lvar.derived_type = derived
-    return derived
 
 
 def ir1_optimize_until_done(component: Component) -> bool:
@@ -916,7 +817,7 @@ class _UpdateDerivedType(NodeVisitor):
         if not self.force and node.derived_type is not None:
             new_type = node.derived_type
         else:
-            new_type = node.accept(_DERIVE_NODE_TYPE)
+            new_type = node.accept(DERIVE_NODE_TYPE)
             node.derived_type = new_type
         if new_type != self.old_type and node.lvar is not None:
             reoptimize_lvar(node.lvar)
@@ -1193,7 +1094,7 @@ def _fold_call_derived_to_constant(node: Combination) -> bool:
         is_pure_bound_ref(arg) or _is_flushable_value_lvar(arg) for arg in node.args
     ):
         return False
-    derived = node.accept(_DERIVE_NODE_TYPE)
+    derived = node.accept(DERIVE_NODE_TYPE)
     literal = derived.accept(_SINGLETON_LITERAL)
     if literal is None:
         return False

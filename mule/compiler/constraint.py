@@ -83,6 +83,7 @@ from .ctype import (
     ValueType,
     ValueTypeVisitor,
 )
+from .fndb import INTERNED_TEXTS, SMALL_INTS, SMALL_TUPLES, constant_type
 from .ir1util import block_exception_target, made_function, made_lambda
 from .knownfun import defconstrain, defpropagate
 from .node import (
@@ -556,23 +557,17 @@ def _tighten_relation(rels: dict, u, v, off: int) -> bool:
     return True
 
 
-_SMALL_INTS = {i: IntegerType(i, i) for i in range(-16, 257)}
-_SMALL_INT_FACTS = {i: Fact(vt) for i, vt in _SMALL_INTS.items()}
-_SMALL_TUPLES = tuple(TupleType(i) for i in range(16))
-_SMALL_TUPLE_FACTS = tuple(Fact(vt) for vt in _SMALL_TUPLES)
-_UNBOUNDED_TUPLE = TupleType(None)
-_UNBOUNDED_TUPLE_FACT = Fact(_UNBOUNDED_TUPLE)
-_INTERNED_TEXTS = {
-    "": TextType(""),
-    **{chr(code): TextType(chr(code)) for code in range(256)},
-}
-_INTERNED_TEXT_FACTS = {s: Fact(vt) for s, vt in _INTERNED_TEXTS.items()}
+SMALL_INT_FACTS = {i: Fact(vt) for i, vt in SMALL_INTS.items()}
+SMALL_TUPLE_FACTS = tuple(Fact(vt) for vt in SMALL_TUPLES)
+UNBOUNDED_TUPLE = TupleType(None)
+_UNBOUNDED_TUPLE_FACT = Fact(UNBOUNDED_TUPLE)
+INTERNED_TEXT_FACTS = {s: Fact(vt) for s, vt in INTERNED_TEXTS.items()}
 _INTERNED_TEXT_FACT = Fact(INTERNED_TEXT_TYPE)
 _CANONICAL_FACTS[id(INTERNED_TEXT_TYPE)] = _INTERNED_TEXT_FACT
-_CANONICAL_FACTS[id(_UNBOUNDED_TUPLE)] = _UNBOUNDED_TUPLE_FACT
-_CANONICAL_FACTS.update({id(fact.type): fact for fact in _SMALL_INT_FACTS.values()})
-_CANONICAL_FACTS.update({id(fact.type): fact for fact in _SMALL_TUPLE_FACTS})
-_CANONICAL_FACTS.update({id(fact.type): fact for fact in _INTERNED_TEXT_FACTS.values()})
+_CANONICAL_FACTS[id(UNBOUNDED_TUPLE)] = _UNBOUNDED_TUPLE_FACT
+_CANONICAL_FACTS.update({id(fact.type): fact for fact in SMALL_INT_FACTS.values()})
+_CANONICAL_FACTS.update({id(fact.type): fact for fact in SMALL_TUPLE_FACTS})
+_CANONICAL_FACTS.update({id(fact.type): fact for fact in INTERNED_TEXT_FACTS.values()})
 
 
 def _tuple_fact(
@@ -583,48 +578,8 @@ def _tuple_fact(
     if elements is not None and not all(el is UNKNOWN for el in elements):
         return Fact(TupleType(arity, elements))
     if 0 <= arity < 16:
-        return _SMALL_TUPLE_FACTS[arity]
+        return SMALL_TUPLE_FACTS[arity]
     return Fact(TupleType(arity))
-
-
-class _LiteralFacts(ast.Visitor):
-    def visit_Node(self, node):
-        return UNKNOWN
-
-    def visit_IntegerLiteral(self, node):
-        value = node.value
-        cached = _SMALL_INTS.get(value)
-        return IntegerType(value, value) if cached is None else cached
-
-    def visit_BooleanLiteral(self, node):
-        return BOOLEAN_TRUE if node.value else BOOLEAN_FALSE
-
-    def visit_FloatLiteral(self, node):
-        return FLOAT
-
-    def visit_NoneLiteral(self, node):
-        return NONE_TYPE
-
-    def visit_TextLiteral(self, node):
-        return _INTERNED_TEXTS.get(node.value, TEXT_TYPE)
-
-    def visit_BytesLiteral(self, node):
-        return BYTES_TYPE
-
-    def visit_Tuple(self, node):
-        arity = len(node.elements)
-        if 0 < arity <= 64:
-            elements = tuple(el.accept(self) for el in node.elements)
-            if not all(el is UNKNOWN for el in elements):
-                return TupleType(arity, elements)
-        return _SMALL_TUPLES[arity] if arity < 16 else TupleType(arity)
-
-
-_LITERAL_FACTS = _LiteralFacts()
-
-
-def constant_type(literal) -> ValueType:
-    return literal.accept(_LITERAL_FACTS)
 
 
 _GLOBAL = object()
@@ -942,7 +897,7 @@ class _LinearUpdate(NodeVisitor):
                 step_t = (
                     self.visitor.type_of(state.arguments[2])
                     if len(state.arguments) == 3
-                    else _SMALL_INTS[1]
+                    else SMALL_INTS[1]
                 )
                 positive_step = step_t.minimum is not None and step_t.minimum > 0
                 negative_step = step_t.maximum is not None and step_t.maximum < 0
@@ -2103,7 +2058,7 @@ class _Propagation(NodeVisitor, LeafVisitor):
                     maximum = min(maximum, stop.maximum - 1)
             else:
                 start, stop = arguments[0], arguments[1]
-                step = arguments[2] if len(arguments) == 3 else _SMALL_INTS[1]
+                step = arguments[2] if len(arguments) == 3 else SMALL_INTS[1]
                 if step.minimum is not None and step.minimum > 0:
                     if start.minimum is not None:
                         minimum = max(minimum, start.minimum)
@@ -2736,7 +2691,7 @@ class _ConstantTextLiteralType(NodeVisitor, LeafVisitor, ast.Visitor):
 
     def visit_TextLiteral(self, node: ast.TextLiteral):
         if len(node.value.encode("utf-8", "surrogatepass")) <= 64:
-            return _INTERNED_TEXTS.get(node.value) or TextType(node.value)
+            return INTERNED_TEXTS.get(node.value) or TextType(node.value)
         return None
 
 
@@ -4716,7 +4671,7 @@ class _NarrowTruthiness(ValueTypeVisitor):
                 and fact.minimum <= 0
                 and (fact.maximum is None or fact.maximum >= 0)
             ):
-                return _SMALL_INTS[0]
+                return SMALL_INTS[0]
             if self.truth:
                 if fact.minimum == 0 and (fact.maximum is None or fact.maximum > 0):
                     return fact.narrow(ast.ComparisonOperator.GREATER, 0, True)

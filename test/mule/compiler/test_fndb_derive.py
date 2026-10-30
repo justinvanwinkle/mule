@@ -57,7 +57,7 @@ def saved_fun_info(*names: str):
 
 def test_fndb_arg_type_handles_empty_cached_and_multi_use_lvars():
     empty = Lvar()
-    assert fndb._arg_type(empty) is BOTTOM
+    assert fndb.lvar_type(empty) is BOTTOM
 
     compilation = compile_toplevel("def f():\n return 10, 20\n")
     fn = compilation.lambdas[1]
@@ -67,11 +67,11 @@ def test_fndb_arg_type_handles_empty_cached_and_multi_use_lvars():
 
     joined_lvar = Lvar()
     joined_lvar.uses = [first_use, second_use]
-    assert fndb._arg_type(joined_lvar) == IntegerType(10, 20)
+    assert fndb.lvar_type(joined_lvar) == IntegerType(10, 20)
 
     cached_lvar = Lvar()
     cached_lvar.derived_type = TEXT_TYPE
-    assert fndb._arg_type(cached_lvar) is TEXT_TYPE
+    assert fndb.lvar_type(cached_lvar) is TEXT_TYPE
 
 
 @pytest.mark.parametrize(

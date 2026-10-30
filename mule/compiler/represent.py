@@ -182,7 +182,7 @@ def _representation_move(vop) -> bool:
     return False
 
 
-def _is_non_identity_list_setitem(
+def is_non_identity_list_setitem(
     component, reader, ref, has_identity_compare: bool
 ) -> bool:
     if (
@@ -249,7 +249,7 @@ def _select_float_representations(component):
                 and len(reader.args) == 3
                 and ref is reader.args[2]
             ):
-                if not _is_non_identity_list_setitem(
+                if not is_non_identity_list_setitem(
                     component, reader, ref, has_identity_compare
                 ):
                     demanded.add(tn)

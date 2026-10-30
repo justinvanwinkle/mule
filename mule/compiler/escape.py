@@ -484,7 +484,7 @@ class _UseClassifier(NodeVisitor):
                 info not in (fndb.PROTOCOLS["getitem"], fndb.PROTOCOLS["setitem"])
                 or (
                     len(node.args) >= 2
-                    and not lvar_type(node.args[1]).may_run_user_code
+                    and not self.solver.lvar_type(node.args[1]).may_run_user_code
                 )
             )
         ):
@@ -495,7 +495,7 @@ class _UseClassifier(NodeVisitor):
             elif not (
                 self.source in self.solver.facts._allocations
                 or self.source.accept(self.container_origin) is not None
-                or _is_safe_container_reader_call(node, info)
+                or is_safe_container_reader_call(self.solver, node, info)
             ):
                 self.solver.non_container_escape(self.source)
             return
@@ -1094,11 +1094,15 @@ def _classify_resolved_method_argument(
     return None
 
 
-def _is_safe_container_reader_call(node: Combination, info) -> bool:
-    if not node.args or not lvar_type(node.args[0]).accept(_BUILTIN_CONTAINER_TYPE):
+def is_safe_container_reader_call(solver: _Solver, node: Combination, info) -> bool:
+    if not node.args or not solver.lvar_type(node.args[0]).accept(
+        _BUILTIN_CONTAINER_TYPE
+    ):
         return False
     if info in (fndb.PROTOCOLS["getitem"], fndb.PROTOCOLS["setitem"]):
-        return len(node.args) >= 2 and not lvar_type(node.args[1]).may_run_user_code
+        return (
+            len(node.args) >= 2 and not solver.lvar_type(node.args[1]).may_run_user_code
+        )
     return True
 
 

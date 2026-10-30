@@ -41,7 +41,7 @@ from .ctype import (
     ValueType,
     union_type,
 )
-from .fndb import _arg_type, defknown
+from .fndb import defknown, lvar_type
 from .ir1opt import bound_constant_literal
 from .knownfun import defconstrain, defpropagate, deftransform
 from .main import compile_toplevel, ir1_phases
@@ -194,9 +194,9 @@ class _TextLiteralLength(ast.Visitor):
 _TEXT_LITERAL_LENGTH = _TextLiteralLength()
 
 
-def _derive_storage_length(node) -> ValueType:
+def derive_storage_length(node) -> ValueType:
     if len(node.args) == 1:
-        seq_type = _arg_type(node.args[0])
+        seq_type = lvar_type(node.args[0])
         if seq_type is BOTTOM:
             return BOTTOM
         exact_len = seq_type.exact_length()
@@ -210,9 +210,9 @@ def _derive_storage_length(node) -> ValueType:
     return IntegerType(0, (1 << 60) - 1)
 
 
-def _derive_text_length(node) -> ValueType:
+def derive_text_length(node) -> ValueType:
     if len(node.args) == 1:
-        text_type = _arg_type(node.args[0])
+        text_type = lvar_type(node.args[0])
         if text_type is BOTTOM:
             return BOTTOM
         exact_len = text_type.exact_length()
@@ -234,8 +234,8 @@ _RESULT_TYPES = {
     "_class_is_subclass": lambda node: BooleanType(),
     "_is_class": lambda node: BooleanType(),
     "_is_instance": lambda node: BooleanType(),
-    "_storage_length": _derive_storage_length,
-    "_text_length": _derive_text_length,
+    "_storage_length": derive_storage_length,
+    "_text_length": derive_text_length,
     "_text_codepoint": lambda node: IntegerType(0, 0x10FFFF),
     "_byte_length": lambda node: IntegerType(0, (1 << 48) - 1),
     "_read_byte": lambda node: IntegerType(0, 255),
@@ -248,7 +248,7 @@ _RESULT_TYPES = {
     "_text_from_codepoints": lambda node: TEXT_TYPE,
     "_text_decode_bytes": lambda node: (
         TEXT_TYPE
-        if len(node.args) == 2 and _arg_type(node.args[1]).exact_integer() == 1
+        if len(node.args) == 2 and lvar_type(node.args[1]).exact_integer() == 1
         else union_type(TEXT_TYPE, NONE_TYPE)
     ),
     "_text_encode_bytes": lambda node: union_type(BYTES_TYPE, NONE_TYPE),
@@ -444,7 +444,7 @@ def _propagate_storage_read(visitor, node) -> ValueType | None:
 
 
 @defpropagate("_storage_length")
-def _propagate_storage_length(visitor, node) -> ValueType:
+def propagate_storage_length(visitor, node) -> ValueType:
     args = node.args
     if len(args) == 1:
         seq_type = visitor.type_of(args[0])
@@ -462,7 +462,7 @@ def _propagate_storage_length(visitor, node) -> ValueType:
 
 
 @defpropagate("_text_length")
-def _propagate_text_length(visitor, node) -> ValueType:
+def propagate_text_length(visitor, node) -> ValueType:
     args = node.args
     if len(args) == 1:
         text_type = visitor.type_of(args[0])

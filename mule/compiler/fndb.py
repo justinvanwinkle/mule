@@ -38,12 +38,18 @@ from .ctype import (
     ValueType,
 )
 from .knownfun import defknown, fun_info
-from .node import CallKind, LeafVisitor, NodeVisitor
+from .node import CallKind, LeafVisitor, Lvar, Node, NodeVisitor
 
-_TUPLE_TYPE = TupleType()
+TUPLE_TYPE = TupleType()
+SMALL_INTS = {i: IntegerType(i, i) for i in range(-16, 257)}
+SMALL_TUPLES = tuple(TupleType(i) for i in range(16))
+INTERNED_TEXTS = {
+    "": TextType(""),
+    **{chr(code): TextType(chr(code)) for code in range(256)},
+}
 
 
-class _LiteralType(ast.Visitor):
+class LiteralType(ast.Visitor):
     def visit_Node(self, node):
         return UNKNOWN
 
@@ -54,17 +60,15 @@ class _LiteralType(ast.Visitor):
         return BOOLEAN_TRUE if node.value else BOOLEAN_FALSE
 
     def visit_IntegerLiteral(self, node):
-        return IntegerType(node.value, node.value)
+        value = node.value
+        cached = SMALL_INTS.get(value)
+        return IntegerType(value, value) if cached is None else cached
 
     def visit_FloatLiteral(self, node):
         return FLOAT
 
     def visit_TextLiteral(self, node):
-        return (
-            TextType(node.value)
-            if node.value == "" or (len(node.value) == 1 and ord(node.value) <= 0xFF)
-            else TEXT_TYPE
-        )
+        return INTERNED_TEXTS.get(node.value, TEXT_TYPE)
 
     def visit_BytesLiteral(self, node):
         return BYTES_TYPE
@@ -75,24 +79,38 @@ class _LiteralType(ast.Visitor):
             elements = tuple(el.accept(self) for el in node.elements)
             if not all(el is UNKNOWN for el in elements):
                 return TupleType(arity, elements)
-        return TupleType(arity)
+        return SMALL_TUPLES[arity] if arity < 16 else TupleType(arity)
 
 
-_LITERAL_TYPE = _LiteralType()
+LITERAL_TYPE = LiteralType()
 
 
-class _DeriveUseType(NodeVisitor, LeafVisitor):
+def constant_type(literal) -> ValueType:
+    return literal.accept(LITERAL_TYPE)
+
+
+class DeriveNodeType(NodeVisitor, LeafVisitor):
     def visit_Node(self, node):
         return UNKNOWN
 
     def visit_Ref(self, node):
-        return node.leaf.accept(self)
+        derived = node.leaf.accept(self)
+        if node.derived_type is not None and (
+            derived is UNKNOWN
+            or (
+                node.derived_type.as_bound().fits(derived.as_bound())
+                if derived.may_be_unbound
+                else node.derived_type.fits(derived)
+            )
+        ):
+            return node.derived_type
+        return derived
 
     def visit_Leaf(self, leaf):
         return leaf.type if leaf.type is not None else UNKNOWN
 
     def visit_Constant(self, leaf):
-        return leaf.value.accept(_LITERAL_TYPE)
+        return constant_type(leaf.value)
 
     def visit_Lambda(self, leaf):
         return FUNCTION_TYPE
@@ -107,87 +125,111 @@ class _DeriveUseType(NodeVisitor, LeafVisitor):
     def visit_Cast(self, node):
         if node.value is None:
             return UNKNOWN
-        return node.contract.refine(_arg_type(node.value))
+        return node.contract.refine(lvar_type(node.value))
 
     def visit_Combination(self, node):
+        derived = UNKNOWN
         if (
             node.kind is CallKind.KNOWN
             and node.fun_info is not None
             and node.fun_info.derive_type is not None
         ):
-            derived = node.fun_info.derive_type(node)
-            if derived is not None:
-                return derived
-        return UNKNOWN
+            result = node.fun_info.derive_type(node)
+            if result is not None:
+                derived = result
+        if node.derived_type is not None and (
+            derived is UNKNOWN
+            or (
+                node.derived_type.as_bound().fits(derived.as_bound())
+                if derived.may_be_unbound
+                else node.derived_type.fits(derived)
+            )
+        ):
+            return node.derived_type
+        return derived
 
     def visit_Exit(self, node):
-        return _arg_type(node.value) if node.value is not None else UNKNOWN
+        return lvar_type(node.value) if node.value is not None else UNKNOWN
 
 
-_DERIVE_USE_TYPE = _DeriveUseType()
+DERIVE_NODE_TYPE = DeriveNodeType()
 
 
-def _use_type(node) -> ValueType:
-    if node.derived_type is not None:
+class NodeDerivedType(NodeVisitor):
+    def visit_Node(self, node):
+        return UNKNOWN
+
+    def visit_ValuedNode(self, node):
+        if node.derived_type is None:
+            node.derived_type = node.accept(DERIVE_NODE_TYPE)
         return node.derived_type
-    return node.accept(_DERIVE_USE_TYPE)
 
 
-def _arg_type(lvar) -> ValueType:
+NODE_DERIVED_TYPE = NodeDerivedType()
+
+
+def node_derived_type(node: Node) -> ValueType:
+    """The derived value type of ``node``, computed and cached on demand."""
+    return node.accept(NODE_DERIVED_TYPE)
+
+
+def lvar_type(lvar: Lvar) -> ValueType:
+    """The union of the derived types of ``lvar``'s producing nodes."""
     if lvar.derived_type is not None:
         return lvar.derived_type
     if not lvar.uses:
         return BOTTOM
-    derived = _use_type(lvar.uses[0])
+    derived = node_derived_type(lvar.uses[0])
     for use in lvar.uses[1:]:
-        derived = derived.join(_use_type(use))
+        derived = derived.join(node_derived_type(use))
+    lvar.derived_type = derived
     return derived
 
 
-def _derive_getslice(node) -> ValueType | None:
-    if any(_arg_type(arg).may_be_unbound for arg in node.args):
+def derive_getslice(node) -> ValueType | None:
+    if any(lvar_type(arg).may_be_unbound for arg in node.args):
         return UNKNOWN
-    arg_types = [_arg_type(arg) for arg in node.args[1:4]]
-    return _arg_type(node.args[0]).getslice_type(*arg_types)
+    arg_types = [lvar_type(arg) for arg in node.args[1:4]]
+    return lvar_type(node.args[0]).getslice_type(*arg_types)
 
 
-def _derive_build_list(node) -> ValueType | None:
+def derive_build_list(node) -> ValueType | None:
     result: ValueType = EMPTY_LIST_TYPE
     for arg in node.args:
-        result = result.with_element(_arg_type(arg))
+        result = result.with_element(lvar_type(arg))
     return result
 
 
-def _derive_build_tuple(node) -> ValueType | None:
+def derive_build_tuple(node) -> ValueType | None:
     arity = len(node.args)
     if 0 < arity <= 64:
-        elements = tuple(_arg_type(arg) for arg in node.args)
+        elements = tuple(lvar_type(arg) for arg in node.args)
         if not all(el is UNKNOWN for el in elements):
             return TupleType(arity, elements)
     return TupleType(arity)
 
 
-def _derive_unpack(node) -> ValueType | None:
-    arity = _arg_type(node.args[1]).exact_integer()
+def derive_unpack(node) -> ValueType | None:
+    arity = lvar_type(node.args[1]).exact_integer()
     if arity is not None and arity >= 0:
-        seq_type = _arg_type(node.args[0])
+        seq_type = lvar_type(node.args[0])
         if seq_type.fits_tuple(TupleType(arity)):
             return seq_type
         return TupleType(arity)
     return TupleType(None)
 
 
-def _is_builtin_sequence_type(t: ValueType) -> bool:
+def is_builtin_sequence_type(t: ValueType) -> bool:
     return (
         t.fits_text(TEXT_TYPE)
         or t.fits(BYTES_TYPE)
         or t.fits(BYTEARRAY_TYPE)
         or t.fits(LIST_TYPE)
-        or t.fits_tuple(_TUPLE_TYPE)
+        or t.fits_tuple(TUPLE_TYPE)
     )
 
 
-def _is_bounded_repeat_count(t: ValueType, max_bound: int = 1 << 30) -> bool:
+def is_bounded_repeat_count(t: ValueType, max_bound: int = 1 << 30) -> bool:
     return (
         t.fits(PYTHON_INTEGER)
         and t.minimum is not None
@@ -197,10 +239,10 @@ def _is_bounded_repeat_count(t: ValueType, max_bound: int = 1 << 30) -> bool:
     )
 
 
-def _flushable_add(node) -> bool:
+def flushable_add(node) -> bool:
     if len(node.args) != 2:
         return False
-    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    left, right = lvar_type(node.args[0]), lvar_type(node.args[1])
     if left.may_be_unbound or right.may_be_unbound:
         return False
     return (
@@ -211,14 +253,14 @@ def _flushable_add(node) -> bool:
             and (right.fits(BYTES_TYPE) or right.fits(BYTEARRAY_TYPE))
         )
         or (left.fits(LIST_TYPE) and right.fits(LIST_TYPE))
-        or (left.fits_tuple(_TUPLE_TYPE) and right.fits_tuple(_TUPLE_TYPE))
+        or (left.fits_tuple(TUPLE_TYPE) and right.fits_tuple(TUPLE_TYPE))
     )
 
 
-def _flushable_subtract(node) -> bool:
+def flushable_subtract(node) -> bool:
     if len(node.args) != 2:
         return False
-    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    left, right = lvar_type(node.args[0]), lvar_type(node.args[1])
     return (
         not left.may_be_unbound
         and not right.may_be_unbound
@@ -227,24 +269,24 @@ def _flushable_subtract(node) -> bool:
     )
 
 
-def _flushable_multiply(node) -> bool:
+def flushable_multiply(node) -> bool:
     if len(node.args) != 2:
         return False
-    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    left, right = lvar_type(node.args[0]), lvar_type(node.args[1])
     if left.may_be_unbound or right.may_be_unbound:
         return False
     if left.fits(REAL) and right.fits(REAL):
         return True
     for seq_t, cnt_t in ((left, right), (right, left)):
-        if _is_builtin_sequence_type(seq_t) and _is_bounded_repeat_count(cnt_t):
+        if is_builtin_sequence_type(seq_t) and is_bounded_repeat_count(cnt_t):
             return True
     return False
 
 
-def _flushable_getslice(node) -> bool:
+def flushable_getslice(node) -> bool:
     if len(node.args) != 4:
         return False
-    seq_t, start_t, stop_t, step_t = (_arg_type(arg) for arg in node.args)
+    seq_t, start_t, stop_t, step_t = (lvar_type(arg) for arg in node.args)
     if (
         seq_t.may_be_unbound
         or start_t.may_be_unbound
@@ -253,7 +295,7 @@ def _flushable_getslice(node) -> bool:
     ):
         return False
     return (
-        _is_builtin_sequence_type(seq_t)
+        is_builtin_sequence_type(seq_t)
         and (start_t.fits(PYTHON_INTEGER) or start_t.fits_none(NONE_TYPE))
         and (stop_t.fits(PYTHON_INTEGER) or stop_t.fits_none(NONE_TYPE))
         and (
@@ -269,10 +311,10 @@ def _flushable_getslice(node) -> bool:
     )
 
 
-def _flushable_compare(node, op: ast.ComparisonOperator) -> bool:
+def flushable_compare(node, op: ast.ComparisonOperator) -> bool:
     if len(node.args) != 2:
         return False
-    left, right = _arg_type(node.args[0]), _arg_type(node.args[1])
+    left, right = lvar_type(node.args[0]), lvar_type(node.args[1])
     if left.may_be_unbound or right.may_be_unbound:
         return False
     if op in (ast.ComparisonOperator.IS, ast.ComparisonOperator.IS_NOT):
@@ -289,10 +331,10 @@ def _flushable_compare(node, op: ast.ComparisonOperator) -> bool:
     )
 
 
-_BINARY_FLUSHABLE_TESTS = {
-    ast.BinaryOperator.ADD: _flushable_add,
-    ast.BinaryOperator.SUBTRACT: _flushable_subtract,
-    ast.BinaryOperator.MULTIPLY: _flushable_multiply,
+BINARY_FLUSHABLE_TESTS = {
+    ast.BinaryOperator.ADD: flushable_add,
+    ast.BinaryOperator.SUBTRACT: flushable_subtract,
+    ast.BinaryOperator.MULTIPLY: flushable_multiply,
 }
 
 # Binary operators: one known per operator and one per in-place form.
@@ -300,10 +342,10 @@ BINARY = {
     operator: defknown(
         f"%{operator.name.lower()}",
         "call",
-        derive_type=lambda node, op=operator: _arg_type(node.args[0]).binary(
-            op, _arg_type(node.args[1])
+        derive_type=lambda node, op=operator: lvar_type(node.args[0]).binary(
+            op, lvar_type(node.args[1])
         ),
-        flushable_test=_BINARY_FLUSHABLE_TESTS.get(operator),
+        flushable_test=BINARY_FLUSHABLE_TESTS.get(operator),
         numeric=True,
     )
     for operator in ast.BinaryOperator
@@ -313,8 +355,8 @@ INPLACE_BINARY = {
         f"%i{operator.name.lower()}",
         "call",
         "unsafe",
-        derive_type=lambda node, op=operator: _arg_type(node.args[0]).binary(
-            op, _arg_type(node.args[1])
+        derive_type=lambda node, op=operator: lvar_type(node.args[0]).binary(
+            op, lvar_type(node.args[1])
         ),
         numeric=True,
     )
@@ -324,7 +366,7 @@ UNARY = {
     operator: defknown(
         f"%unary_{operator.name.lower()}",
         "call",
-        derive_type=lambda node, op=operator: _arg_type(node.args[0]).unary(op),
+        derive_type=lambda node, op=operator: lvar_type(node.args[0]).unary(op),
         numeric=(operator is not ast.UnaryOperator.NOT),
     )
     for operator in ast.UnaryOperator
@@ -333,10 +375,10 @@ COMPARE = {
     operator: defknown(
         f"%compare_{operator.name.lower()}",
         "call",
-        derive_type=lambda node, op=operator: _arg_type(node.args[0]).comparison(
-            op, _arg_type(node.args[1])
+        derive_type=lambda node, op=operator: lvar_type(node.args[0]).comparison(
+            op, lvar_type(node.args[1])
         ),
-        flushable_test=lambda node, op=operator: _flushable_compare(node, op),
+        flushable_test=lambda node, op=operator: flushable_compare(node, op),
         numeric=(
             operator
             not in (
@@ -374,18 +416,18 @@ HASATTR_BUILTIN = defknown("hasattr", "call", "unsafe")
 TYPE_BUILTIN = defknown("type", "call", "unsafe")
 
 
-def _isinstance_answer(node) -> ValueType | None:
+def isinstance_answer(node) -> ValueType | None:
     """``True`` when the operand's class is proven to be one of the classes
     or a subclass. ``False`` is never derived: a metaclass ``__instancecheck__``
     (``abc.ABCMeta`` with registered virtual subclasses) can accept an
     instance whose class is unrelated, and the compiler cannot see that."""
-    value, *classes = (_arg_type(arg) for arg in node.args)
+    value, *classes = (lvar_type(arg) for arg in node.args)
     if any(value.is_instance_of(cls) is True for cls in classes):
         return BOOLEAN_TRUE
     return BOOLEAN
 
 
-def _constrain_instance_check(visitor, node, state, truth: bool) -> bool:
+def constrain_instance_check(visitor, node, state, truth: bool) -> bool:
     """Narrow the tested variable on each branch. True narrows to the union of
     the matching classes; false removes each of them. A true branch the
     classes would make impossible is left unnarrowed, not dead: a metaclass
@@ -419,8 +461,8 @@ ISINSTANCE = defknown(
     "%isinstance",
     "call",
     "unsafe",
-    derive_type=_isinstance_answer,
-    constrain_branch=_constrain_instance_check,
+    derive_type=isinstance_answer,
+    constrain_branch=constrain_instance_check,
 )
 ISINSTANCE_BUILTIN = defknown("isinstance", "call", "unsafe")
 SETATTR = defknown(
@@ -465,17 +507,17 @@ CURRENT_GLOBALS = defknown("%current_globals", "flushable")
 YIELD = defknown("%yield", "call", "unsafe")
 
 # Displays and formatting.
-BUILD_LIST = defknown("%build_list", "flushable", derive_type=_derive_build_list)
+BUILD_LIST = defknown("%build_list", "flushable", derive_type=derive_build_list)
 BUILD_TUPLE = defknown(
     "%build_tuple",
     "flushable",
     "foldable",
-    derive_type=_derive_build_tuple,
+    derive_type=derive_build_tuple,
 )
 UNPACK_REF = defknown(
     "%unpack_ref",
-    derive_type=lambda node: _arg_type(node.args[0]).getitem_type(
-        _arg_type(node.args[1])
+    derive_type=lambda node: lvar_type(node.args[0]).getitem_type(
+        lvar_type(node.args[1])
     ),
     borrowed_args=frozenset({0, 1}),
 )
@@ -508,8 +550,8 @@ GETSLICE = defknown(
     "%getslice",
     "call",
     "unsafe",
-    derive_type=_derive_getslice,
-    flushable_test=_flushable_getslice,
+    derive_type=derive_getslice,
+    flushable_test=flushable_getslice,
     numeric=True,
     non_integer_first_arg=True,
 )
@@ -597,7 +639,7 @@ MIN2 = defknown(
     derive_type=lambda node: (
         None
         if len(node.args) != 2
-        else derive_min2_types(_arg_type(node.args[0]), _arg_type(node.args[1]))
+        else derive_min2_types(lvar_type(node.args[0]), lvar_type(node.args[1]))
     ),
     numeric=True,
 )
@@ -608,7 +650,7 @@ MAX2 = defknown(
     derive_type=lambda node: (
         None
         if len(node.args) != 2
-        else derive_max2_types(_arg_type(node.args[0]), _arg_type(node.args[1]))
+        else derive_max2_types(lvar_type(node.args[0]), lvar_type(node.args[1]))
     ),
     numeric=True,
 )
@@ -655,18 +697,18 @@ MATH_SQRT_IMPORT = defknown(
 )
 
 
-def _derive_list_fill(node) -> ValueType | None:
-    return EMPTY_LIST_TYPE.with_element(_arg_type(node.args[0]))
+def derive_list_fill(node) -> ValueType | None:
+    return EMPTY_LIST_TYPE.with_element(lvar_type(node.args[0]))
 
 
-def _propagate_list_fill(visitor, node) -> ValueType:
+def propagate_list_fill(visitor, node) -> ValueType:
     return EMPTY_LIST_TYPE.with_element(visitor.type_of(node.args[0]))
 
 
-_PROTOCOL_DERIVE_TYPES = {
-    "_list_fill": _derive_list_fill,
-    "getitem": lambda node: _arg_type(node.args[0]).getitem_type(
-        _arg_type(node.args[1])
+PROTOCOL_DERIVE_TYPES = {
+    "_list_fill": derive_list_fill,
+    "getitem": lambda node: lvar_type(node.args[0]).getitem_type(
+        lvar_type(node.args[1])
     ),
     "setitem": lambda node: NONE_TYPE,
     "dict_setitem": lambda node: NONE_TYPE,
@@ -682,20 +724,20 @@ _PROTOCOL_DERIVE_TYPES = {
     "set_not_contains": lambda node: BOOLEAN,
     "text_contains": lambda node: BOOLEAN,
     "text_not_contains": lambda node: BOOLEAN,
-    "set_and": lambda node: _arg_type(node.args[0]).binary(
-        "&", _arg_type(node.args[1])
+    "set_and": lambda node: lvar_type(node.args[0]).binary(
+        "&", lvar_type(node.args[1])
     ),
-    "set_or": lambda node: _arg_type(node.args[0]).binary("|", _arg_type(node.args[1])),
-    "set_sub": lambda node: _arg_type(node.args[0]).binary(
-        "-", _arg_type(node.args[1])
+    "set_or": lambda node: lvar_type(node.args[0]).binary("|", lvar_type(node.args[1])),
+    "set_sub": lambda node: lvar_type(node.args[0]).binary(
+        "-", lvar_type(node.args[1])
     ),
-    "set_xor": lambda node: _arg_type(node.args[0]).binary(
-        "^", _arg_type(node.args[1])
+    "set_xor": lambda node: lvar_type(node.args[0]).binary(
+        "^", lvar_type(node.args[1])
     ),
-    "unpack": _derive_unpack,
+    "unpack": derive_unpack,
 }
 
-_NON_INTEGER_FIRST_PROTOCOLS = frozenset(
+NON_INTEGER_FIRST_PROTOCOLS = frozenset(
     {
         "getitem",
         "setitem",
@@ -721,9 +763,9 @@ _NON_INTEGER_FIRST_PROTOCOLS = frozenset(
         "text_not_contains",
     }
 )
-_INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
+INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
 
-_PROTOCOL_ARGUMENT_TYPES = {
+PROTOCOL_ARGUMENT_TYPES = {
     "dict_get": (DICT_TYPE, UNKNOWN, UNKNOWN),
     "dict_getitem": (DICT_TYPE, UNKNOWN),
     "dict_setitem": (DICT_TYPE, UNKNOWN, UNKNOWN),
@@ -745,30 +787,30 @@ _PROTOCOL_ARGUMENT_TYPES = {
 }
 
 
-def _flushable_list_fill(node) -> bool:
+def flushable_list_fill(node) -> bool:
     if len(node.args) != 2:
         return False
-    elem_t, cnt_t = _arg_type(node.args[0]), _arg_type(node.args[1])
+    elem_t, cnt_t = lvar_type(node.args[0]), lvar_type(node.args[1])
     return (
         not elem_t.may_be_unbound
         and not cnt_t.may_be_unbound
-        and _is_bounded_repeat_count(cnt_t, (1 << 60) - 1)
+        and is_bounded_repeat_count(cnt_t, (1 << 60) - 1)
     )
 
 
-def _flushable_make_slice(node) -> bool:
-    return all(not _arg_type(arg).may_be_unbound for arg in node.args)
+def flushable_make_slice(node) -> bool:
+    return all(not lvar_type(arg).may_be_unbound for arg in node.args)
 
 
-_PROTOCOL_FLUSHABLE_TESTS = {
-    "_list_fill": _flushable_list_fill,
-    "make_slice": _flushable_make_slice,
+PROTOCOL_FLUSHABLE_TESTS = {
+    "_list_fill": flushable_list_fill,
+    "make_slice": flushable_make_slice,
     "empty_set": lambda node: not node.args,
     "dict_len": lambda node: (
-        len(node.args) == 1 and not _arg_type(node.args[0]).may_be_unbound
+        len(node.args) == 1 and not lvar_type(node.args[0]).may_be_unbound
     ),
     "table_len": lambda node: (
-        len(node.args) == 1 and not _arg_type(node.args[0]).may_be_unbound
+        len(node.args) == 1 and not lvar_type(node.args[0]).may_be_unbound
     ),
 }
 
@@ -779,13 +821,13 @@ PROTOCOLS = {
         "call",
         "unsafe",
         protocol=name,
-        derive_type=_PROTOCOL_DERIVE_TYPES.get(name),
-        flushable_test=_PROTOCOL_FLUSHABLE_TESTS.get(name),
-        propagate=_propagate_list_fill if name == "_list_fill" else None,
+        derive_type=PROTOCOL_DERIVE_TYPES.get(name),
+        flushable_test=PROTOCOL_FLUSHABLE_TESTS.get(name),
+        propagate=propagate_list_fill if name == "_list_fill" else None,
         numeric=(name == "make_slice"),
-        non_integer_first_arg=(name in _NON_INTEGER_FIRST_PROTOCOLS),
-        index_second_arg=(name in _INDEX_SECOND_PROTOCOLS),
-        argument_types=_PROTOCOL_ARGUMENT_TYPES.get(name),
+        non_integer_first_arg=(name in NON_INTEGER_FIRST_PROTOCOLS),
+        index_second_arg=(name in INDEX_SECOND_PROTOCOLS),
+        argument_types=PROTOCOL_ARGUMENT_TYPES.get(name),
     )
     for name in (
         "_list_fill",
@@ -888,6 +930,7 @@ __all__ = [
     "CLASS_STORE",
     "COMPARE",
     "CURRENT_GLOBALS",
+    "DERIVE_NODE_TYPE",
     "ENTER_HANDLER",
     "FORMAT",
     "GETATTR",
@@ -898,6 +941,7 @@ __all__ = [
     "IMPORT",
     "IMPORT_STAR",
     "INPLACE_BINARY",
+    "INTERNED_TEXTS",
     "INT_BUILTIN",
     "LEAVE_HANDLER",
     "LEN",
@@ -923,11 +967,16 @@ __all__ = [
     "RESUME_EXCEPTION",
     "SEQUENCE_AVAILABLE",
     "SETATTR",
+    "SMALL_INTS",
+    "SMALL_TUPLES",
     "TEXT_SLICE2_COMPARE",
     "TEXT_SLICE_COMPARE",
     "UNARY",
     "UNPACK_REF",
     "UNWIND",
     "YIELD",
+    "constant_type",
     "fun_info",
+    "lvar_type",
+    "node_derived_type",
 ]
