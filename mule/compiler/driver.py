@@ -14,6 +14,7 @@ import struct
 import subprocess
 import sys
 import threading
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from functools import cache
@@ -80,6 +81,7 @@ from .node import (
 )
 
 __all__ = [
+    "LLVM_OPT_CHOICES",
     "ToolchainError",
     "build",
     "build_runtime",
@@ -87,6 +89,7 @@ __all__ = [
     "compile_program",
     "emit_llvm",
     "link_llvm",
+    "normalize_llvm_opts",
     "read_elf_interface",
 ]
 
@@ -1135,6 +1138,93 @@ def lto_linker(rustc: str) -> Path:
     return linker
 
 
+LLVM_OPT_CHOICES = (
+    "hot-cold-split",
+    "hot-cold-split=<int>",
+    "gvn-sink",
+    "gvn-hoist",
+    "merge-functions",
+    "constraint-elimination",
+    "unroll-and-jam",
+    "attributor",
+    "attributor=<mode>",
+    "inline-threshold=<int>",
+)
+_ATTRIBUTOR_MODES = (
+    "light",
+    "full",
+    "module",
+    "module-light",
+    "cgscc",
+    "cgscc-light",
+)
+_SIMPLE_LLVM_OPTS = {
+    "hot-cold-split": ("--hot-cold-split",),
+    "gvn-sink": ("--enable-gvn-sink",),
+    "gvn-hoist": ("--enable-gvn-hoist",),
+    "merge-functions": ("--enable-merge-functions",),
+    "constraint-elimination": ("--enable-constraint-elimination",),
+    "unroll-and-jam": ("--enable-unroll-and-jam",),
+    "attributor": ("--attributor-enable=light",),
+}
+
+
+def _expand_llvm_opt(spec: str) -> tuple[str, tuple[str, ...]]:
+    item = spec.strip()
+    if not item:
+        raise ValueError(
+            f"empty --opt value; expected one of {', '.join(LLVM_OPT_CHOICES)}"
+        )
+    if item in _SIMPLE_LLVM_OPTS:
+        canonical = "attributor=light" if item == "attributor" else item
+        return canonical, _SIMPLE_LLVM_OPTS[item]
+    name, sep, value = item.partition("=")
+    if sep:
+        if name == "hot-cold-split":
+            try:
+                threshold = int(value)
+            except ValueError as error:
+                raise ValueError(
+                    f"hot-cold-split threshold must be an integer, got {value!r}"
+                ) from error
+            return (
+                f"hot-cold-split={threshold}",
+                ("--hot-cold-split", f"--hotcoldsplit-threshold={threshold}"),
+            )
+        if name == "attributor":
+            if value not in _ATTRIBUTOR_MODES:
+                modes = ", ".join(_ATTRIBUTOR_MODES)
+                raise ValueError(
+                    f"attributor mode must be one of {modes}, got {value!r}"
+                )
+            return f"attributor={value}", (f"--attributor-enable={value}",)
+        if name == "inline-threshold":
+            try:
+                threshold = int(value)
+            except ValueError as error:
+                raise ValueError(
+                    f"inline-threshold must be an integer, got {value!r}"
+                ) from error
+            return f"inline-threshold={threshold}", (f"--inline-threshold={threshold}",)
+    choices = ", ".join(LLVM_OPT_CHOICES)
+    raise ValueError(f"unknown LLVM optimization {item!r}; expected one of {choices}")
+
+
+def normalize_llvm_opts(opts: Iterable[str] | str | None) -> tuple[str, ...]:
+    """Validate and normalize ``--opt`` optimization specifications."""
+    if opts is None:
+        return ()
+    raw_items = (opts,) if isinstance(opts, str) else tuple(opts)
+    normalized: list[str] = []
+    for raw in raw_items:
+        parts = raw.split(",")
+        for part in parts:
+            canonical, _ = _expand_llvm_opt(part)
+            if canonical not in normalized:
+                normalized.append(canonical)
+    return tuple(normalized)
+
+
 @dataclass(frozen=True, slots=True)
 class Toolchain:
     clang: str = "clang"
@@ -1142,11 +1232,13 @@ class Toolchain:
     optimize: int = 1
     lto: bool = False
     arch: str | None = None
+    opt: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.optimize not in (0, 1, 2, 3):
             raise ValueError("optimization level must be 0, 1, 2, or 3")
         object.__setattr__(self, "optimize", int(self.optimize))
+        object.__setattr__(self, "opt", normalize_llvm_opts(self.opt))
 
     def require_target(self) -> None:
         if sys.platform != "linux" or struct.calcsize("P") != 8:
@@ -1167,8 +1259,17 @@ class Toolchain:
             raise ToolchainError(f"LLVM's {name} was not found beside clang")
         return found
 
+    def llvm_flags(self) -> tuple[str, ...]:
+        flags: list[str] = []
+        for spec in self.opt:
+            _, expanded = _expand_llvm_opt(spec)
+            for flag in expanded:
+                if flag not in flags:
+                    flags.append(flag)
+        return tuple(flags)
+
     def clang_settings(self) -> dict:
-        return {
+        settings = {
             "clang": tool_identity(
                 (self.clang, "--version"),
                 tool="LLVM Clang compiler",
@@ -1178,6 +1279,9 @@ class Toolchain:
             "lto": self.lto,
             "arch": self.arch,
         }
+        if self.opt:
+            settings["opt"] = list(self.llvm_flags())
+        return settings
 
     def compile_flags(self) -> list[str]:
         flags = [f"-O{self.optimize}"]
@@ -1187,6 +1291,8 @@ class Toolchain:
             flags.append("-flto=full")
         else:
             flags.append("-fPIC")
+        for flag in self.llvm_flags():
+            flags.extend(("-mllvm", flag))
         return flags
 
     def link_flags(self) -> list[str]:
@@ -1203,6 +1309,8 @@ class Toolchain:
                     "-Wl,--threads=1",
                 ]
             )
+            for flag in self.llvm_flags():
+                flags.append(f"-Wl,-mllvm,{flag}")
         return flags
 
 
@@ -2167,13 +2275,14 @@ def link_llvm(
     optimize: int = 1,
     lto: bool = False,
     arch: str | None = None,
+    opt: Iterable[str] | str = (),
 ) -> Path:
     """Compile a main unit's LLVM, link it with the builtins unit and the
     Rust runtime, and replace ``output`` only on success.
 
     ``optimize`` selects the generated code's level (0 through 3, default 1). ``lto``
     independently requests full LTO across the program and Rust runtime."""
-    toolchain = Toolchain(clang, rustc, optimize, lto, arch)
+    toolchain = Toolchain(clang, rustc, optimize, lto, arch, opt)
     toolchain.require_target()
     with Graph() as graph:
         build = Build(graph, toolchain)
@@ -2306,6 +2415,7 @@ def build(
     optimize: int = 1,
     lto: bool = False,
     arch: str | None = None,
+    opt: Iterable[str] | str = (),
     workers: int | None = None,
 ) -> Path:
     """Compile a source file into a native executable, replacing output on success.
@@ -2326,7 +2436,7 @@ def build(
         source_text,
         str(source_path),
         roots=roots,
-        toolchain=Toolchain(clang, rustc, optimize, lto, arch),
+        toolchain=Toolchain(clang, rustc, optimize, lto, arch, opt),
         source_path=source_path.resolve(),
         workers=workers,
     )

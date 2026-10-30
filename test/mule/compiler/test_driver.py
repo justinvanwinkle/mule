@@ -26,6 +26,65 @@ def test_architecture_changes_clang_artifact_cache_identity():
     assert len(keys) == 3
 
 
+def test_llvm_opt_flags_are_forwarded_to_compile_and_lto_link():
+    opts = (
+        "hot-cold-split=-1",
+        "gvn-sink",
+        "gvn-hoist",
+        "merge-functions",
+        "constraint-elimination",
+        "unroll-and-jam",
+        "attributor=cgscc-light",
+        "inline-threshold=400",
+    )
+    expected_llvm = (
+        "--hot-cold-split",
+        "--hotcoldsplit-threshold=-1",
+        "--enable-gvn-sink",
+        "--enable-gvn-hoist",
+        "--enable-merge-functions",
+        "--enable-constraint-elimination",
+        "--enable-unroll-and-jam",
+        "--attributor-enable=cgscc-light",
+        "--inline-threshold=400",
+    )
+    non_lto = Toolchain(optimize=3, lto=False, opt=opts)
+    compile_flags = non_lto.compile_flags()
+    mllvm_pairs = [
+        compile_flags[i + 1]
+        for i, flag in enumerate(compile_flags[:-1])
+        if flag == "-mllvm"
+    ]
+    assert tuple(mllvm_pairs) == expected_llvm
+    assert not any("-mllvm" in flag for flag in non_lto.link_flags())
+
+    lto = Toolchain(optimize=3, lto=True, opt=opts)
+    lto_link_flags = [
+        flag.removeprefix("-Wl,-mllvm,")
+        for flag in lto.link_flags()
+        if flag.startswith("-Wl,-mllvm,")
+    ]
+    assert tuple(lto_link_flags) == expected_llvm
+
+
+def test_llvm_opt_flags_change_clang_artifact_cache_identity():
+    from mule.compiler.artifacts import artifact_key
+
+    default_key = artifact_key(Toolchain().clang_settings(), [])
+    gvn_key = artifact_key(Toolchain(opt=("gvn-sink",)).clang_settings(), [])
+    attributor_default = artifact_key(
+        Toolchain(opt=("attributor",)).clang_settings(), []
+    )
+    attributor_light = artifact_key(
+        Toolchain(opt=("attributor=light",)).clang_settings(), []
+    )
+    attributor_full = artifact_key(
+        Toolchain(opt=("attributor=full",)).clang_settings(), []
+    )
+    assert len({default_key, gvn_key, attributor_default, attributor_full}) == 4
+    assert attributor_default == attributor_light
+
+
 def test_failed_compilation_preserves_existing_executable(tmp_path):
     source = tmp_path / "bad.py"
     source.write_text("def broken(:\n")

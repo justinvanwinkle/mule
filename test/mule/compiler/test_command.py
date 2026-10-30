@@ -90,6 +90,47 @@ def test_architecture_option_requires_a_value(argv):
         parse(argv)
 
 
+@pytest.mark.parametrize(
+    ("argv", "opt", "arguments"),
+    [
+        (["--opt", "gvn-sink", "s.py"], ("gvn-sink",), []),
+        (
+            ["--opt=hot-cold-split=-1", "--opt", "attributor", "s.py"],
+            ("hot-cold-split=-1", "attributor=light"),
+            [],
+        ),
+        (
+            ["--opt", "merge-functions,constraint-elimination", "-c", "pass"],
+            ("merge-functions", "constraint-elimination"),
+            [],
+        ),
+        (["s.py", "--opt", "gvn-sink"], (), ["--opt", "gvn-sink"]),
+        (["-c", "pass", "--opt=gvn-hoist"], (), ["--opt=gvn-hoist"]),
+    ],
+)
+def test_opt_option_collects_passes_and_stops_at_program_boundary(argv, opt, arguments):
+    options = Options()
+    assert parse(argv, options=options)[2] == arguments
+    assert options.opt == opt
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--opt"],
+        ["--opt="],
+        ["--opt", "--lto", "s.py"],
+        ["--opt", "nonexistent-pass", "s.py"],
+        ["--opt", "attributor=bogus", "s.py"],
+        ["--opt", "inline-threshold=abc", "s.py"],
+        ["--opt", "hot-cold-split=abc", "s.py"],
+    ],
+)
+def test_opt_option_rejects_missing_or_invalid_values(argv):
+    with pytest.raises(UsageError):
+        parse(argv)
+
+
 def test_help_exposes_real_build_defaults():
     parser = help_parser()
     help_text = " ".join(parser.format_help().split())

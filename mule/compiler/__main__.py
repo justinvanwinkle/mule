@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mule.cli_help import DefaultsHelpFormatter
 from mule.compiler import ToolchainError, build
-from mule.compiler.driver import Toolchain, build_dynamic_module
+from mule.compiler.driver import LLVM_OPT_CHOICES, Toolchain, build_dynamic_module
 from mule.diagnostics import configure
 
 
@@ -60,6 +60,15 @@ def main() -> int:
         help="enable full link-time optimization (slower to link)",
     )
     parser.add_argument(
+        "--opt",
+        action="append",
+        metavar="OPT",
+        help=(
+            "enable extra LLVM optimization pass "
+            f"({', '.join(LLVM_OPT_CHOICES)}; repeatable)"
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -81,7 +90,12 @@ def main() -> int:
                 roots=roots,
                 package_paths={k: tuple(v) for k, v in pkg_paths.items()},
                 toolchain=Toolchain(
-                    args.clang, args.rustc, args.level, False, args.arch
+                    args.clang,
+                    args.rustc,
+                    args.level,
+                    False,
+                    args.arch,
+                    args.opt or (),
                 ),
             )
         except (OSError, ValueError, SyntaxError, ToolchainError) as error:
@@ -104,6 +118,7 @@ def main() -> int:
             rustc=args.rustc,
             optimize=args.level,
             lto=args.lto,
+            opt=args.opt or (),
         )
     except SyntaxError as error:
         print(
