@@ -412,8 +412,12 @@ subtask in order rather than reading every file up front to stamp out an entire
 feature at once.
 
 Read the relevant specification, implementation, and nearby tests before changing
-a contract. Keep changes in the active package unless the task explicitly concerns
-`old/`. Preserve unrelated worktree edits.
+a contract, using `rg -n` or `jmcp` to locate exact symbols and line ranges
+rather than paging through large files with sequential line-range reads. When
+answering a direct question or resuming from compaction, read only the specific
+lines needed to answer or apply the next edit. Keep changes in the active
+package unless the task explicitly concerns `old/`. Preserve unrelated worktree
+edits.
 
 Use pytest-native functions and parameterization. Existing tests construct
 expected Mule trees by hand; use `test/mule/parser/ast_query.py` for structural
