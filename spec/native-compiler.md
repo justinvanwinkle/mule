@@ -72,13 +72,15 @@ currently has the limitations described below:
   tables into compilation, enabling cross-module return-type propagation and
   guarded direct calls to `@<prefix>mule_fn_<name>.body`.
 - When the runtime loader (`ensure_artifact` in `mule/runtime/imports.rs`)
-  resolves a source module on `sys.path`, it computes the deterministic FASL
-  cache path from the compiler digest, optimization level, module name, and
-  canonical source file metadata (`st_dev`, `st_ino`, `st_size`, `st_mtime_ns`,
-  `st_ctime_ns`). On a cache hit, the runtime reads the `.mule.interface`
-  dependency list from the ELF section table, loads any dependency FASLs first,
-  and `dlopen`s the cached `.so` with `RTLD_NOW | RTLD_GLOBAL` directly
-  in-process without invoking the compiler.
+  resolves a source module on `sys.path`, it currently reads the entire `.py`
+  file and computes a 128-bit FNV-1a hash over
+  `{compiler_hash}\0{optimize}\0{module_name}\0` plus the raw source bytes
+  (matching `_fasl_cache_path` in `mule/compiler/driver.py`, rather than file
+  metadata `st_dev`/`st_ino`/`st_size`/`st_mtime_ns`/`st_ctime_ns`). On a cache
+  hit, the runtime reads the `.mule.interface` dependency list from the ELF
+  section table, loads any dependency FASLs first, and `dlopen`s the cached
+  `.so` with `RTLD_NOW | RTLD_GLOBAL` directly in-process without invoking the
+  compiler.
 - Only on a FASL cache miss does the runtime invoke `--dynamic-module`
   (`compile-file`), which compiles the requested module and any uncached static
   dependencies bottom-up into their individual `.so` FASLs in the cache.
@@ -86,13 +88,53 @@ currently has the limitations described below:
 ### Dynamic FASL gaps
 
 The current implementation departs from the required single-file compilation
-boundary. `mule/compiler/driver.py` schedules uncached dependency FASLs while
-compiling the requested dynamic module. Although each output contains one module,
-the compilation request also initiates dependency compilation. SBCL's
-`compile-file` in `src/compiler/main.lisp` compiles its input file, while
-`require` in `src/code/module.lisp` loads requested modules. Mule must instead
-compile one source module independently and resolve imports at load or execution
-time, without consulting the running image.
+boundary and SBCL runtime independence in several ways:
+
+- **Transitive dependency compilation and synchronous interface resolution:**
+  `mule/compiler/driver.py` (`build_dynamic_module`, `prepare_import_graph`,
+  and `discover`) schedules uncached dependency FASLs and parent packages while
+  compiling the requested dynamic module, and `resolve_import_interface`
+  synchronously compiles non-cyclic imported modules before `ir1_phases` so
+  their `.mule.interface` (`exported_types`, `exported_targets`,
+  `borrowed_parameters`, `entry_parameter_types`, `storage_methods`) can be
+  baked into the caller's generated code. SBCL's `compile-file` in
+  `src/compiler/main.lisp` compiles its input file, while `require` in
+  `src/code/module.lisp` loads requested modules. Mule must instead compile one
+  source module independently and resolve imports at load or execution time,
+  without consulting the running image.
+- **Host CPython subprocess dependency and live-image state injection
+  (`mule/compiler/driver.py`, `mule/runtime/imports.rs`):** `Build.main`
+  embeds `sys.executable` (the host CPython interpreter), `clang`,
+  `f"{rustc}\n{mule_hash()}"`, and `optimize` into non-LTO binaries via
+  `mule_set_image_toolchain`. On a FASL cache miss, `ensure_artifact` queries
+  live in-memory package `__path__` state (`loaded_module_paths`) and spawns
+  `sys.executable -m mule.compiler --dynamic-module` with `--root` and
+  `--package-path <parent>=<dir>` flags, which `build_dynamic_module` injects
+  into `compiler.modules`. This makes native executables depend on the host
+  CPython installation and passes live-image module lists into compilation,
+  violating `AGENTS.md`.
+- **`--lto` breaks all dynamic FASL loading (including cache hits):**
+  `Build.main` gates `program.toolchain_info` on `if not self.toolchain.lto:`.
+  In `--lto` executables, `image().toolchain` in `imports.rs` is `None`, and
+  `ensure_artifact` returns `None` before checking `fasl_cache_path`, breaking
+  all dynamic FASL hits and misses under `--lto`. `program.toolchain_info` also
+  omits `--arch` and `--opt`.
+- **Unsound FASL cache key and step-cache validation gaps:** The FASL cache key
+  in `fasl_cache_path` / `_fasl_cache_path` hashes only the single `.py` file's
+  bytes (with `_fasl_cache_path` bypassing `inputs.py` version tracking and
+  using a byte-by-byte Python loop), omitting `clang`, `rustc`, `--arch`,
+  `--opt`, `stdlib` protocols, and imported `.mule.interface` hashes. In the
+  step cache, `Build.builtins` omits `str(STDLIB)` from `settings` and passes
+  `validate=lambda entry: True`, and `prepare_import_graph` attaches imported
+  module steps via `Step.add_dependency` (which is excluded from `Step.key`),
+  so transitive re-export changes do not invalidate upstream `unit.ll` cache
+  entries.
+- **Duplicate compilation and orphaned CLI module:** `build()` compiles the
+  main module a second time from scratch via `emit_llvm()` ->
+  `compile_program()` whenever `--emit-llvm` is passed, and `compile_program()`
+  runs `build.builtins()` twice in separate `Graph(1)` instances. `mule/cli.py`
+  (475 lines) is completely unreferenced by `mule/__main__.py` and
+  `mule/compiler/__main__.py`.
 
 `mule/runtime/imports.rs` currently suppresses failures at the dynamic loading
 boundary:

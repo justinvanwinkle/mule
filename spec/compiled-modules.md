@@ -1043,15 +1043,31 @@ requested, `compile` returns that converted `_ast.AST` tree; otherwise it
 validates load/store/del target contexts and returns a `code` object retaining
 the validated `_ast.AST` node and mode. `compile` also accepts an already
 constructed `_ast.AST` tree (including synthetic trees with non-identifier
-`ast.Name` nodes used by test-runner expression matchers). The `eval` builtin
-evaluates expression-mode `code` objects or source strings through a compiled
-AST expression walker (`_ExpressionEvaluator`), following SBCL
-`src/code/eval.lisp`'s `simple-eval-in-lexenv` tree-walk evaluator for runtime
-forms before a resident native JIT is linked into standalone executables.
-The compiler continues consuming its owned nodes directly for all static modules
-and functions. No host parser, bytecode interpreter or CPython linkage is used.
-The standard `mule` package exposes the same parser/AST implementation sources;
-numeric annotation imports remain compiler declarations.
+`ast.Name` nodes used by test-runner expression matchers). The `eval` and `exec` builtins currently route through `_ExpressionEvaluator`
+(`evaluate` and `execute` in `stdlib/_ast_parse.py:1201-2070`), which has
+expanded beyond SBCL `src/code/eval.lisp`'s `simple-eval-in-lexenv` into an
+870-line full Python AST tree-walking interpreter supporting statements
+(`for`, `while`, `try`/`except`, `with`, `raise`, `assert`, `import`),
+interpreted function closures (`_dynamic_function` using `_ReturnSignal`),
+interpreted class definitions (`_exec_class_def`), and comprehensions. In SBCL,
+`simple-eval-in-lexenv` handles only trivial expressions and bindings and
+delegates `defun`, loops (`tagbody`), closures, and complex forms to
+`%compile`; `_ExpressionEvaluator`'s statement/function/class interpreter is an
+unapproved departure that must be replaced by compilation once native dynamic
+compilation is self-hosted.
+
+Furthermore, `linked_imports` in `mule/compiler/interfaces.py:985-1006`
+currently contradicts the static import linking rules in [Computed import
+dependencies](#computed-import-dependencies) in both directions: for `__main__`
+(`module is None`), it returns every module requested during AST conversion
+without dead-branch pruning; for `stdlib/` and `site-packages/` (`is_library`),
+it drops all function-local imports (`lambda_.kind is not FunctionalKind.TOPLEVEL`),
+forcing function-local stdlib imports onto the runtime `--dynamic-module`
+host-CPython subprocess bridge (which fails in `--lto` builds and standalone
+deployments). The compiler continues consuming its owned nodes directly for all
+static modules and functions. The standard `mule` package exposes the same
+parser/AST implementation sources; numeric annotation imports remain compiler
+declarations.
 
 Standard streams (`sys.stdin`, `sys.stdout`, `sys.stderr`) and their binary
 buffers support buffered `read`, `readline`, `readlines`, line iteration, and

@@ -422,11 +422,44 @@ Serialization preserves these content facts and requires all fields.
 
 #### Known analysis gaps
 
-- **Inferred instance field types (resolved):** `_update_class_field_types` in
-  `locall.py` no longer infers instance field types from stores. Undeclared
-  fields have type `UNKNOWN`, and only declared class-body field annotations
-  populate `ClassFacts.fields`, following SBCL's `defstruct` `dsd-type` and
+- **Inferred instance field types (partially unresolved):** Although
+  `_update_class_field_types` in `locall.py` no longer infers instance field
+  types from stores, `_InstanceFieldType` in `constraint_domain.py` and
+  `_predicted_field_result` in `constraint.py` still infer mutable instance
+  attribute types across methods and attach `element_contracts[node]` on
+  `%getattr`. Only declared class-body field annotations (`ClassFacts.fields`)
+  should supply slot types, following SBCL's `defstruct` `dsd-type` and
   `slot-access-transform` (Section 3.6).
+- **Mutable-container flow facts and `escape.py` (active SBCL departure):**
+  Despite Section 3.6's rule that element types come only from representation
+  and declarations, `ListType(element)`, `DictType(key, value, proven)`, and
+  `SetType(..., element, proven)` in `ctype.py` still carry flow-sensitive
+  element/key/value types (`flow_getitem_type`, `flow_iterate_type`,
+  `with_element`, `with_entry`) that `_propagate_append_argument`,
+  `_propagate_extend_arguments`, and `_propagate_setitem` in `constraint.py`
+  mutate in place, gated by the 1,565-line `escape.py` interprocedural solver.
+- **Unsound `%tuple_from_list` arity-1 derivation (`constraint.py`):**
+  `_propagate_tuple_from_list` returns `_tuple_fact(1, (elem_type,))`
+  (`TupleType(arity=1, elements=(elem_type,))`) whenever a local list has a
+  known `elem_type` and more than one `Set`, falsely proving exact length `1`
+  for any tuple built from a non-empty list of unknown length.
+- **Unsound single-`Ref` `LambdaVar` container flow facts
+  (`constraint_propagate.py`):** `_Propagation.visit_LambdaVar` calls
+  `fact.conservative()` only when `len(leaf.refs) > 1`. A variable with a
+  single `Ref` (including inside a loop or after an aliasing call that mutates
+  the container) retains stale mutable-container element facts.
+- **Non-SBCL relational difference-bound matrix, midpoint solver, side tables,
+  and component cloning:** `State.relations` in `constraint_propagate.py`
+  maintains an all-pairs difference-bound matrix `u - v <= off` with synthetic
+  keys `(_SEQ_LEN, var)` and `(_RANGE_STOP, range_state)`, paired with
+  `_SequenceProducerLength` and `_LinearUpdate` (including binary-search
+  midpoint extraction `(u + v) >> 1` and `(u + v) // 2`). `check_in_bounds_access`
+  mutates `relations[idx_var, seq_key]` even when returning `False`. `Body` in
+  `constraint_domain.py` stores out-of-band side tables (`lvar_contracts`,
+  `var_contracts`, `iter_contracts`, `element_contracts`, `in_bounds_nodes`,
+  `tuple_list_origins`) instead of IR1 `Cast` nodes, and
+  `_derive_user_lambda_call` in `constraint_propagate.py` clones whole IR1
+  components via `clone_lambda_component` in `ir1util.py`.
 - **`TYPE_CHECKING` import folding (resolved):** `fold_type_checking_constants`
   has been removed from `main.py` and `locall.py` (`eebe93d`), so imported
   `typing.TYPE_CHECKING` bindings follow ordinary dominance, execution-order,

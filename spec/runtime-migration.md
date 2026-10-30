@@ -199,17 +199,22 @@ the compiler needs four systems-programming capabilities (analogous to SBCL's
 
 ## 4. Phased Rust-to-Mule Migration Roadmap
 
-Five main areas of language-level code remain in `mule/runtime/*.rs`. They
+Six main areas of language-level code remain in `mule/runtime/*.rs`. They
 should be migrated into compiled Mule Python (`stdlib/_*.py`) and IR1/IR2
 lowering in order from most self-contained to deepest structural change:
 
 | Priority | Rust file(s) | Lines to migrate | What currently lives in Rust | Target home in Mule |
 | --- | --- | --- | --- | --- |
 | **1. First** | `mule/runtime/builtins.rs` | ~600 lines | `mule_import_star` (`from m import *`), `input()`, `len()`, `int()`/`float()` string and underscore parsing, `sys.modules` lookup hooks | `stdlib/_sequences.py`, `stdlib/_object.py` |
-| **2. Second** | `mule/runtime/sequences.rs` (`:784–1382`) | ~600 lines | Duplicate Rust implementations of `str.find`, `str.split`, `str.partition`, `str.startswith`/`endswith` (`mule_text_find`, `mule_text_split`, `mule_text_partition_into`, `mule_text_affix`) | `stdlib/_str.py` + IR1 transforms in `mule/compiler/seqtran.py` |
-| **3. Third** | `mule/runtime/object.rs` (`:1720–2540`) | ~820 lines | `dispatch_binary` (`__add__`/`__radd__`/`__iadd__`), `compare_slow_inner`, `contains`, `compare_sequence_storage`, and `formatted_value`/`quoted` (`repr` quoting fallback) | `stdlib/_sequences.py`, `stdlib/_format.py` |
-| **4. Fourth** | `mule/runtime/process.rs` | ~1,200 lines | `_time` and `_posix` argument validation, tuple/list construction, and `sleep`/`localtime`/`gmtime` wrappers around `libc` | `stdlib/time.py`, `stdlib/posix.py` |
-| **5. Fifth** | `mule/runtime/classes.rs` | ~3,500 lines | C3 MRO linearization, class construction, descriptor and attribute lookup order, `isinstance`/`issubclass` | `stdlib/_object.py`, `stdlib/_native_class.py` |
+| **2. Second** | `mule/runtime/sequences.rs` (`:851–1672, 2063–2650`) | ~1,400 lines | Duplicate Rust implementations of `str.find`, `str.split`, `str.partition`, `str.startswith`/`endswith`, slice equality (`mule_text_slice_eq*`), and hardcoded positional field inspection of `RangeIterator`, `StorageIterator`, `_generator`, and `bytearray` (`mule_fast_next_item`, `mule_fast_iterate*`, `mule_fast_unpack*`) | `stdlib/_str.py`, `stdlib/_sequences.py` + IR1 transforms in `mule/compiler/seqtran.py` |
+| **3. Third** | `mule/runtime/object.rs` (`:1845–3165`) | ~1,300 lines | `call`/`call_with_receiver`, `truth`/`length_result`, `dispatch_binary` (`__add__`/`__radd__`/`__iadd__`), `compare_slow_inner`, `contains`, `compare_sequence_storage`, and `formatted_value`/`quoted` (`repr` quoting fallback) | `stdlib/_sequences.py`, `stdlib/_format.py` |
+| **4. Fourth** | `mule/runtime/process.rs` (`:1456–1606` and wrappers) | ~1,200 lines | `os_walk` directory tree traversal (`os.walk` and `os.fspath` dispatch in Rust), plus `_time` and `_posix` argument validation, tuple/list construction, and `sleep`/`localtime`/`gmtime` wrappers around `libc` | `stdlib/os.py`, `stdlib/time.py`, `stdlib/posix.py` |
+| **5. Fifth** | `mule/runtime/classes.rs` | ~3,500 lines | C3 MRO linearization, class construction, descriptor and attribute lookup order, `mule_resolve_super_method`, `isinstance`/`issubclass` | `stdlib/_object.py`, `stdlib/_native_class.py` |
+| **6. Sixth** | `mule/runtime/capi.rs` | ~7,500 lines | `PyType_FromModuleAndSpec` / `PyType_FromSpecWithBases`, `c_callable_entry` slot/method/member trampolines, `PyObject_Call`, `PyDict_Next`, `PyErr_*`, `PyUnicode_FromFormatV`, `mule_VaParseTupleAndKeywords`, `Py_VaBuildValue` (claimed to be in `stdlib/_capi.py`, which does not exist) | `stdlib/_capi.py` |
+
+*(In addition, 26 functions across `mule/runtime/object.rs`, `sequences.rs`,
+`value_buffer.rs`, `classes.rs`, `gc.rs`, and `faults.rs` still carry
+`#[inline(always)]`, violating the inlining policy in `AGENTS.md`.)*
 
 ### Priority 1 breakdown: `mule/runtime/builtins.rs`
 

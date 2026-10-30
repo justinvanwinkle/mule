@@ -136,14 +136,25 @@ the object's lifetime.
   supported, and extensions must be built against Mule's headers.
 
 The headers are `mule/include/Python.h` and `structmember.h`. They contain
-declarations and macros only. C API entry points are Rust shims in
-`mule/runtime/capi.rs` that translate references and the error indicator;
-the operations themselves (attribute access, calls, arithmetic, comparison,
-class construction from `PyType_Spec`, generic attribute lookup through
-`tp_dictoffset`) are compiled Mule Python in `stdlib/_capi.py`. A C type becomes
-a Mule class whose namespace holds compiled wrappers for its slots, methods,
-getsets and members, as CPython's `add_operators` and `type_new` slot wrappers
-do.
+declarations and macros only. C API entry points are supposed to be thin Rust
+shims in `mule/runtime/capi.rs` that translate references and the error
+indicator while the language-level operations themselves (attribute access,
+calls, arithmetic, comparison, class construction from `PyType_Spec`, generic
+attribute lookup through `tp_dictoffset`, and slot/method/getset/member
+wrappers) live in compiled Mule Python in `stdlib/_capi.py`.
+
+**Current implementation defect:** `stdlib/_capi.py` does not exist yet.
+Instead, `mule/runtime/capi.rs` is an 8,496-line Rust implementation that
+performs all C-API type construction (`PyType_FromModuleAndSpec`,
+`PyType_FromSpecWithBases`), method/slot trampoline dispatch
+(`c_callable_entry` multiplexing `METH_*` flags, `PyMemberDef` offsets, and 30+
+`Slot*` kinds), object/number/sequence/mapping operations (`PyObject_Call`,
+`PyDict_Next`, `PyErr_NormalizeException`, `PyErr_NewException`,
+`PyUnicode_FromFormatV`, `mule_VaParseTupleAndKeywords`, `Py_VaBuildValue`),
+and process-global mutex side-table tracking (`CapiState` in `capi.rs`, hooked
+into `object::destroy` and `classes.rs` attribute lookup) directly in Rust.
+Migrating this language-level C-API implementation out of `capi.rs` into
+compiled Mule Python is required to satisfy the runtime boundary in `AGENTS.md`.
 
 Mule programs run one thread. Extensions see a build with a global interpreter
 lock: `Py_GIL_DISABLED` is not defined and critical-section macros are plain

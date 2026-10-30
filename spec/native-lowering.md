@@ -1157,6 +1157,53 @@ retain optimization level 3.
 
 ## Remaining work and verification
 
+### Active SBCL architecture departures and soundness defects to resolve
+
+- **Whole-unit interprocedural escape and container-origin solver
+  (`mule/compiler/escape.py`):** `escape.py` (1,565 lines) implements a bespoke
+  fixed-point solver (`_Solver`, `EscapeFacts`, `_UseClassifier`,
+  `_ContainerOrigin`, `_SafeDictKeyType`, `LocalEnvironments`) with no SBCL
+  counterpart, splitting escape into `_escaping` and `_allocation_escaping` to
+  preserve mutable-container flow facts Prohibited by `AGENTS.md`. Scope and
+  extent analysis must instead follow SBCL's `src/compiler/envanal.lisp` and
+  `find-lvar-dynamic-extents` without flow-sensitive mutable container element
+  types.
+- **Non-SBCL IR1 loop-invariant code motion (`mule/compiler/loop.py`):**
+  SBCL's `src/compiler/loop.lisp` only computes dominators and loop nesting;
+  `loop.py` adds a 750-line IR1 LICM and preheader CSE pass
+  (`hoist_loop_invariants`) with hardcoded primitive lists (`_text_length`,
+  `_storage_length`, `_list_append`, `_storage_grow`, `_storage_set_length`).
+- **AST-level comprehension/generator fusion and whole-module `match` pre-scans
+  (`mule/compiler/ir1tran*.py`):** `fuse_comprehension_call` in
+  `ir1tran_expr.py` and `_GeneratorFusion` in `ir1tran_scope.py` open-code
+  `list`, `set`, `tuple`, `frozenset`, `sorted`, `dict`, `any`, `all`, `sum`,
+  `min`, and `max` over generator expressions during AST translation rather
+  than IR1 `deftransform`. `_IsRejectedSumStart` in `ir1tran_scope.py` checks
+  whether `sum(genexpr, start)` has a `str`/`bytes`/`bytearray` `start` only
+  syntactically, miscompiling variable `start` values into concatenation
+  instead of raising `TypeError`. `_ClassHierarchyScan` in `ir1tran_scope.py`
+  scans the module AST for `setattr`/`delattr` to inline `match` class patterns
+  during AST conversion.
+- **Unsound slice-length folding and cross-block operand capture
+  (`mule/compiler/seqtran_length.py`, `mule/compiler/seqtran.py`):**
+  `_transform_getslice_text` lowers `s[start:stop]` to `_text_slice(s, start, stop)`
+  for any fixnum `start` and `stop`, and `_transform_known_length_primitive`
+  rewrites `_text_length(_text_slice(s, start, stop))` to `stop - start`
+  without clamping to `[0, len(s)]` or proving `0 <= start <= stop <= len(s)`.
+  `_match_sequence_producer` and `_capture_producer_operand` also capture
+  operands across basic blocks into a new `LambdaVar` without checking that the
+  producer block dominates the consumer block.
+- **Narrow benchmark-tailored IR1 pattern matchers:** `byteops.py`
+  (`_transform_bytes_join_comprehension`, matching an exact 8-block CFG),
+  `wordops.py` (`optimize_word_vectors`, rewriting `[0] * n` across a whole
+  lambda), `seqtran.py` (`_transform_unpack` special-casing multi-block
+  `for i, x in enumerate(...)` loops and `_transform_text_slice_compare*`),
+  `seqtran_length.py` (`transform_text_codepoint_producer` /
+  `transform_text_codepoint_compare`), and `containtran.py`
+  (`_transform_bitmask_membership` and `_transform_setitem_self_augassign`)
+  pattern-match specific multi-node/multi-block shapes rather than composing
+  general SBCL `deftransform` / `seqtran` rules.
+
 This stage does not assign raw float signatures to unknown calls, store floats
 in native class fields, or perform SBCL's full local-call and constraint
 transformations. A native plan remains all or nothing, with coercions only at
