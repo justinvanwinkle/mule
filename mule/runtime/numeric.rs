@@ -4,7 +4,6 @@ use crate::gmp::BigInt;
 use crate::object::{self, Data, Value};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::ffi::{CStr, c_char};
 use std::ptr::null_mut;
 
 pub(crate) const MIN: i64 = -(1_i64 << 62);

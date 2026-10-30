@@ -21,7 +21,7 @@ type Allocate = unsafe extern "C" fn(usize) -> *mut c_void;
 type Reallocate = unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void;
 type Free = unsafe extern "C" fn(*mut c_void, usize);
 
-#[link(name = "gmp")]
+#[link(name = "libgmp.so.10", modifiers = "+verbatim")]
 unsafe extern "C" {
     static __gmp_bits_per_limb: c_int;
     fn __gmp_get_memory_functions(

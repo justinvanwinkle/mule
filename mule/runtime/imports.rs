@@ -231,16 +231,28 @@ unsafe fn resolve_candidate(name: &str, search_roots: &[String]) -> Candidate {
         (search_roots.to_vec(), PathBuf::from(name))
     };
 
+    #[cfg(target_arch = "aarch64")]
+    const EXT_SUFFIXES: [&str; 2] = [
+        "mule-314-aarch64-linux-gnu.so",
+        "mule-314-x86_64-linux-gnu.so",
+    ];
+    #[cfg(not(target_arch = "aarch64"))]
+    const EXT_SUFFIXES: [&str; 2] = [
+        "mule-314-x86_64-linux-gnu.so",
+        "mule-314-aarch64-linux-gnu.so",
+    ];
     let mut namespace_paths = Vec::new();
     for dir in &dirs {
         let base = Path::new(dir).join(&relative);
-        let init_so = base.join("__init__.mule-314-x86_64-linux-gnu.so");
-        if init_so.is_file() {
-            return Candidate::CExtension(init_so);
-        }
-        let mod_so = PathBuf::from(format!("{}.mule-314-x86_64-linux-gnu.so", base.display()));
-        if mod_so.is_file() {
-            return Candidate::CExtension(mod_so);
+        for suffix in EXT_SUFFIXES {
+            let init_so = base.join(format!("__init__.{suffix}"));
+            if init_so.is_file() {
+                return Candidate::CExtension(init_so);
+            }
+            let mod_so = PathBuf::from(format!("{}.{suffix}", base.display()));
+            if mod_so.is_file() {
+                return Candidate::CExtension(mod_so);
+            }
         }
         let init_py = base.join("__init__.py");
         if init_py.is_file() {

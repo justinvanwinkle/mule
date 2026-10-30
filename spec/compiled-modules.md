@@ -314,11 +314,11 @@ nonfinite values return false without invoking subclass conversion hooks.
 physical metadata fields. No Rust `File` or `OwnedFd` is constructed from a
 possibly invalid descriptor, and no descriptor ownership is acquired or released.
 SBCL `src/code/unix.lisp`, `unix-fstat`, uses its `fstat_wrapper` OS boundary;
-Mule declares the Linux x86-64 stat ABI in Rust instead of adding a C wrapper.
-The current generator runtime already requires x86-64. The fixed ABI layout is
-checked at compile time, and compiled `posix` constructs `stat_result` and
-ordinary errno-bearing exceptions. This preserves descriptor lifetime and
-kernel `EBADF` behavior without adding an extra validation/duplication syscall.
+Mule declares the Linux x86-64 and AArch64 stat ABIs in Rust instead of adding
+a C wrapper. Each target's fixed ABI layout is checked at compile time, and
+compiled `posix` constructs `stat_result` and ordinary errno-bearing exceptions.
+This preserves descriptor lifetime and kernel `EBADF` behavior without adding
+an extra validation/duplication syscall.
 
 The compiled `posix`, `_csv`, and math implementation modules use the explicit
 builtin-implementation traceback declaration. Python builtin APIs omit these

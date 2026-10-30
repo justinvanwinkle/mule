@@ -7,7 +7,6 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_char};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::DirBuilderExt;
-use std::os::unix::io::FromRawFd;
 use std::ptr::null_mut;
 
 #[derive(Clone, Copy)]
@@ -868,6 +867,7 @@ unsafe extern "C" fn posix_stat(_: Value, args: Value) -> Value {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 struct DescriptorStat {
     device: u64,
@@ -887,9 +887,38 @@ struct DescriptorStat {
     reserved: [i64; 3],
 }
 
+#[cfg(target_arch = "x86_64")]
 const _: () = {
     assert!(std::mem::size_of::<DescriptorStat>() == 144);
     assert!(std::mem::offset_of!(DescriptorStat, mode) == 24);
+    assert!(std::mem::offset_of!(DescriptorStat, accessed) == 72);
+};
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+struct DescriptorStat {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    links: u32,
+    uid: u32,
+    gid: u32,
+    special_device: u64,
+    pad1: u64,
+    size: i64,
+    block_size: i32,
+    pad2: i32,
+    blocks: i64,
+    accessed: Timespec,
+    modified: Timespec,
+    changed: Timespec,
+    reserved: [i32; 2],
+}
+
+#[cfg(target_arch = "aarch64")]
+const _: () = {
+    assert!(std::mem::size_of::<DescriptorStat>() == 128);
+    assert!(std::mem::offset_of!(DescriptorStat, mode) == 16);
     assert!(std::mem::offset_of!(DescriptorStat, accessed) == 72);
 };
 
@@ -1591,7 +1620,6 @@ pub unsafe extern "C" fn mule_posix_module_init(globals: Value) -> Value {
         if object::has_error() {
             return null_mut();
         }
-        use std::os::unix::ffi::OsStrExt;
         let _ = globals;
         let exports: [(&str, Native); 51] = [
             ("sched_getaffinity_mask", posix_sched_getaffinity),

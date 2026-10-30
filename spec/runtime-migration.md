@@ -152,9 +152,9 @@ expresses—struct layouts, raw pointers, atomic instructions, `extern` calls to
 `libc`/`libgmp`/`pthread`, and module-level inline assembly (`module asm`)—can
 be emitted directly as LLVM IR by Mule:
 
-- **Generators (`mule/runtime/coroutine.rs`):** A 25-line x86-64 context switch
-  (`mule_context_switch`) plus `mmap`/`munmap`/`mprotect` calls and a state
-  struct. LLVM IR supports `module asm` directly in `codegen.py`.
+- **Generators (`mule/runtime/coroutine.rs`):** A small x86-64 and AArch64
+  context switch (`mule_context_switch`) plus `mmap`/`munmap`/`mprotect` calls
+  and a state struct. LLVM IR supports `module asm` directly in `codegen.py`.
 - **Signals (`mule/runtime/signals.rs`):** `handle_signal` is a 5-line
   `extern "C" fn(i32)` that sets an atomic bit in `PENDING_SIGNALS` and sets the
   safepoint flag.
