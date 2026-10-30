@@ -4364,17 +4364,17 @@ class _Walk:
             return UNKNOWN
         if name is None or name in self.rebound_globals or name in self.global_targets:
             return UNKNOWN
+        bootstrap_target = BOOTSTRAP_BUILTIN_TARGETS.get(name)
+        if bootstrap_target is not None:
+            derived = bootstrap_target.derive_return_type(arg_types, keywords)
+            if derived is not UNKNOWN:
+                return derived
         if self.builtin_targets is not None:
             target = self.builtin_targets.get(name)
             if target is not None:
                 derived = target.derive_return_type(arg_types, keywords)
                 if derived is not UNKNOWN:
                     return derived
-        bootstrap_target = BOOTSTRAP_BUILTIN_TARGETS.get(name)
-        if bootstrap_target is not None:
-            derived = bootstrap_target.derive_return_type(arg_types, keywords)
-            if derived is not UNKNOWN:
-                return derived
         if not keywords and self.builtin_return_types is not None:
             return self.builtin_return_types.get(name, UNKNOWN)
         return UNKNOWN
@@ -5112,6 +5112,17 @@ def _derive_builtin_max(
     return UNKNOWN
 
 
+def _derive_builtin_abs(
+    arg_types: tuple[ValueType, ...],
+    keywords: tuple[str | None, ...] = (),
+    *,
+    receiver_type: ValueType | None = None,
+) -> ValueType:
+    if len(arg_types) == 1 and not keywords:
+        return fndb.derive_abs_type(arg_types[0])
+    return UNKNOWN
+
+
 def _derive_builtin_enumerate(
     arg_types: tuple[ValueType, ...],
     keywords: tuple[str | None, ...] = (),
@@ -5242,6 +5253,10 @@ BOOTSTRAP_BUILTIN_TARGETS: dict[str, ClassConstructorTarget | ForeignCallTarget]
     "max": ForeignCallTarget(
         return_type=UNKNOWN,
         derive_fn=_derive_builtin_max,
+    ),
+    "abs": ForeignCallTarget(
+        return_type=UNKNOWN,
+        derive_fn=_derive_builtin_abs,
     ),
     "enumerate": ForeignCallTarget(
         return_type=IteratorType(TupleType(2)),

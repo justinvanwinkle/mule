@@ -637,6 +637,22 @@ def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
     return left.join(right).widen_constant()
 
 
+def derive_abs_type(value: ValueType) -> ValueType:
+    if value is BOTTOM:
+        return BOTTOM
+    if value.fits(PYTHON_INTEGER) and not value.may_be_unbound:
+        lo, hi = value.minimum, value.maximum
+        if lo is not None and lo >= 0:
+            return IntegerType(lo, hi)
+        if hi is not None and hi <= 0:
+            return IntegerType(-hi, -lo if lo is not None else None)
+        res_hi = max(-lo, hi) if (lo is not None and hi is not None) else None
+        return IntegerType(0, res_hi)
+    if value is FLOAT:
+        return FLOAT
+    return UNKNOWN
+
+
 MIN2 = defknown(
     "%min2",
     "foldable",

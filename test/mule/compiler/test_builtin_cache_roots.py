@@ -19,13 +19,18 @@ def test_builtin_cache_uses_each_checkout_protocols_and_invalidates_edits(
         def to_json(self):
             return "{}"
 
+    class DummyUnit:
+        def __init__(self, text):
+            self.text = text
+            self.interface_bytes = None
+
     def compile_protocols():
         runs.append(driver.STDLIB)
-        return read_source(driver.STDLIB / "_str.py"), {}
+        return DummyUnit(read_source(driver.STDLIB / "_str.py")), {}
 
     monkeypatch.setattr(driver, "compile_builtins", compile_protocols)
     monkeypatch.setattr(driver, "builtins_interface", lambda unit, modules: Interface())
-    monkeypatch.setattr(driver, "generate", lambda unit: unit)
+    monkeypatch.setattr(driver, "generate", lambda unit: unit.text)
 
     def output(root):
         monkeypatch.setattr(driver, "STDLIB", root)

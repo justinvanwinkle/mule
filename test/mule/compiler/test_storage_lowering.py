@@ -326,9 +326,11 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         ListType,
         TupleType,
     )
-    from mule.compiler.sequence_protocol import stdlib_type_summary
+    from mule.compiler.driver import cached_builtins_interface
 
-    exported_types, storage_methods, _ = stdlib_type_summary()
+    interface = cached_builtins_interface()
+    exported_types = interface.exported_types
+    storage_methods = interface.storage_methods
     assert storage_methods.get(("_Table", "_indices")) == ListType(
         element=IntegerType(-2, (1 << 60) - 1)
     )

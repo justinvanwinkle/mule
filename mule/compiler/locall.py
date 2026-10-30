@@ -3001,24 +3001,22 @@ def analyze(
             storage_methods is None
             or imported_function_types is None
             or builtin_return_types is None
+            or imported_targets is None
+            or builtin_targets is None
         ):
-            from .sequence_protocol import stdlib_type_summary
+            from .driver import cached_builtins_interface
 
-            exported, methods, builtins = stdlib_type_summary()
+            interface = cached_builtins_interface()
             if imported_function_types is None:
-                imported_function_types = exported
+                imported_function_types = interface.exported_types
             if storage_methods is None:
-                storage_methods = methods
+                storage_methods = interface.storage_methods
             if builtin_return_types is None:
-                builtin_return_types = builtins
-        if imported_targets is None or builtin_targets is None:
-            from .sequence_protocol import stdlib_target_summary
-
-            exp_targets, b_targets = stdlib_target_summary()
+                builtin_return_types = interface.builtin_return_types
             if imported_targets is None:
-                imported_targets = exp_targets
+                imported_targets = interface.exported_targets
             if builtin_targets is None:
-                builtin_targets = b_targets
+                builtin_targets = interface.builtin_targets
     else:
         if imported_targets is None:
             from .protocols import NATIVE_MODULE_TARGETS

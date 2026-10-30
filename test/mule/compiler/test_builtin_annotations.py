@@ -79,7 +79,7 @@ def test_builtin_int_accepts_bool_without_replacing_the_object(
 @pytest.mark.parametrize(
     "body",
     (
-        "@optimize(safety=3)\ndef consume(value: int):\n print(value)\nconsume(str(42))\n",
+        "@optimize(safety=3)\ndef consume(value: int):\n print(value)\nconsume(getattr(int, '__name__'))\n",
         "@optimize(safety=3)\ndef consume() -> int:\n return str(42)\nprint(consume())\n",
         "@optimize(safety=3)\ndef consume():\n value: int = 1\n value = str(42)\nconsume()\n",
     ),
