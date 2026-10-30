@@ -7,11 +7,11 @@
 )]
 
 use crate::classes::{self, Builtin};
-use crate::object::{self, Data, FunctionKind, Native, Object, Value};
+use crate::object::{self, Data, Value};
 use crate::sequences::mule_protocol_globals;
 use std::collections::HashMap;
 use std::ffi::{
-    CStr, CString, c_char, c_double, c_float, c_int, c_long, c_longlong, c_short, c_uchar, c_uint,
+    CStr, CString, c_char, c_double, c_int, c_long, c_longlong, c_uchar, c_uint,
     c_ulong, c_ulonglong, c_ushort, c_void,
 };
 use std::path::Path;
@@ -5867,7 +5867,6 @@ pub unsafe extern "C" fn PyType_FromModuleAndSpec(
             }
         }
 
-        let mut dictoffset: Py_ssize_t = (*py_type).tp_dictoffset;
         let mut slot_ptr = (*spec).slots;
         while !slot_ptr.is_null() && (*slot_ptr).slot != 0 {
             let slot_id = (*slot_ptr).slot;
@@ -5898,8 +5897,7 @@ pub unsafe extern "C" fn PyType_FromModuleAndSpec(
                     while !mem_ptr.is_null() && !(*mem_ptr).name.is_null() {
                         let mem_name = CStr::from_ptr((*mem_ptr).name).to_str().unwrap_or("");
                         if mem_name == "__dictoffset__" {
-                            dictoffset = (*mem_ptr).offset;
-                            (*py_type).tp_dictoffset = dictoffset;
+                            (*py_type).tp_dictoffset = (*mem_ptr).offset;
                         } else if mem_name != "__weaklistoffset__" {
                             let leaked_mem: &'static str =
                                 Box::leak(mem_name.to_owned().into_boxed_str());
@@ -6933,9 +6931,10 @@ pub unsafe extern "C" fn PyModule_AddFunctions(
 }
 
 // ===========================================================================
-// SysV x86_64 Variadic Support (PyArg_ParseTuple, Py_BuildValue, etc.)
+// SysV x86_64 and AAPCS64 Variadic Support (PyArg_ParseTuple, Py_BuildValue, etc.)
 // ===========================================================================
 
+#[cfg(target_arch = "x86_64")]
 #[repr(C)]
 pub struct VaListImpl {
     pub gp_offset: u32,
@@ -6944,6 +6943,7 @@ pub struct VaListImpl {
     pub reg_save_area: *mut u8,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl VaListImpl {
     unsafe fn next_gp<T: Copy>(&mut self) -> T {
         unsafe {
@@ -6970,6 +6970,51 @@ impl VaListImpl {
                 self.overflow_arg_area = self.overflow_arg_area.add(8);
                 *p
             }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct VaListImpl {
+    pub stack: *mut u8,
+    pub gr_top: *mut u8,
+    pub vr_top: *mut u8,
+    pub gr_offs: i32,
+    pub vr_offs: i32,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl VaListImpl {
+    unsafe fn next_gp<T: Copy>(&mut self) -> T {
+        unsafe {
+            let offs = self.gr_offs;
+            if offs < 0 {
+                self.gr_offs = offs + 8;
+                if offs <= -8 {
+                    let p = self.gr_top.offset(offs as isize) as *const T;
+                    return *p;
+                }
+            }
+            let p = self.stack as *const T;
+            self.stack = self.stack.add(8);
+            *p
+        }
+    }
+
+    unsafe fn next_fp64(&mut self) -> f64 {
+        unsafe {
+            let offs = self.vr_offs;
+            if offs < 0 {
+                self.vr_offs = offs + 16;
+                if offs <= -16 {
+                    let p = self.vr_top.offset(offs as isize) as *const f64;
+                    return *p;
+                }
+            }
+            let p = self.stack as *const f64;
+            self.stack = self.stack.add(8);
+            *p
         }
     }
 }
@@ -7678,6 +7723,7 @@ pub unsafe extern "C" fn mule_VaSNPrintf(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     r#"
 .macro MULE_VA_TRAMPOLINE name, target, gp_offset, rdi_Setup=""
@@ -7803,6 +7849,100 @@ PyArg_ParseTupleAndKeywords:
 .type _PyArg_ParseTupleAndKeywords_SizeT, @function
 _PyArg_ParseTupleAndKeywords_SizeT:
     jmp PyArg_ParseTupleAndKeywords
+"#
+);
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+.macro MULE_VA_TRAMPOLINE name, target, gr_offs, varg_reg
+.globl \name
+.type \name, %function
+\name:
+    sub sp, sp, #240
+    stp x29, x30, [sp, #224]
+    stp x0, x1, [sp, #160]
+    stp x2, x3, [sp, #176]
+    stp x4, x5, [sp, #192]
+    stp x6, x7, [sp, #208]
+    stp q0, q1, [sp, #32]
+    stp q2, q3, [sp, #64]
+    stp q4, q5, [sp, #96]
+    stp q6, q7, [sp, #128]
+    add x9, sp, #240
+    str x9, [sp, #0]
+    add x9, sp, #224
+    str x9, [sp, #8]
+    add x9, sp, #160
+    str x9, [sp, #16]
+    mov w9, #\gr_offs
+    str w9, [sp, #24]
+    mov w9, #-128
+    str w9, [sp, #28]
+    mov \varg_reg, sp
+    bl \target
+    ldp x29, x30, [sp, #224]
+    add sp, sp, #240
+    ret
+.endm
+
+MULE_VA_TRAMPOLINE PyUnicode_FromFormat, PyUnicode_FromFormatV, -56, x1
+MULE_VA_TRAMPOLINE PyErr_Format, PyErr_FormatV, -48, x2
+MULE_VA_TRAMPOLINE _PyErr_FormatFromCause, PyErr_FormatV, -48, x2
+MULE_VA_TRAMPOLINE Py_BuildValue, Py_VaBuildValue, -56, x1
+MULE_VA_TRAMPOLINE _Py_BuildValue_SizeT, Py_VaBuildValue, -56, x1
+MULE_VA_TRAMPOLINE PyTuple_Pack, mule_VaPack, -56, x1
+MULE_VA_TRAMPOLINE PyObject_CallFunctionObjArgs, mule_VaCallFunctionObjArgs, -56, x1
+MULE_VA_TRAMPOLINE PyObject_CallMethodObjArgs, mule_VaCallMethodObjArgs, -48, x2
+MULE_VA_TRAMPOLINE PyObject_CallFunction, mule_VaCallFunction, -48, x2
+MULE_VA_TRAMPOLINE _PyObject_CallFunction_SizeT, mule_VaCallFunction, -48, x2
+MULE_VA_TRAMPOLINE PyObject_CallMethod, mule_VaCallMethod, -40, x3
+MULE_VA_TRAMPOLINE _PyObject_CallMethod_SizeT, mule_VaCallMethod, -40, x3
+MULE_VA_TRAMPOLINE PyOS_snprintf, mule_VaSNPrintf, -40, x3
+MULE_VA_TRAMPOLINE PyArg_UnpackTuple, mule_VaUnpackTuple, -32, x4
+MULE_VA_TRAMPOLINE PyArg_ParseTupleAndKeywords, mule_VaParseTupleAndKeywords, -32, x4
+
+.globl PyArg_ParseTuple
+.type PyArg_ParseTuple, %function
+PyArg_ParseTuple:
+    sub sp, sp, #240
+    stp x29, x30, [sp, #224]
+    stp x0, x1, [sp, #160]
+    stp x2, x3, [sp, #176]
+    stp x4, x5, [sp, #192]
+    stp x6, x7, [sp, #208]
+    stp q0, q1, [sp, #32]
+    stp q2, q3, [sp, #64]
+    stp q4, q5, [sp, #96]
+    stp q6, q7, [sp, #128]
+    add x9, sp, #240
+    str x9, [sp, #0]
+    add x9, sp, #224
+    str x9, [sp, #8]
+    add x9, sp, #160
+    str x9, [sp, #16]
+    mov w9, #-48
+    str w9, [sp, #24]
+    mov w9, #-128
+    str w9, [sp, #28]
+    mov x2, x1
+    mov x1, xzr
+    mov x3, xzr
+    mov x4, sp
+    bl mule_VaParseTupleAndKeywords
+    ldp x29, x30, [sp, #224]
+    add sp, sp, #240
+    ret
+
+.globl _PyArg_ParseTuple_SizeT
+.type _PyArg_ParseTuple_SizeT, %function
+_PyArg_ParseTuple_SizeT:
+    b PyArg_ParseTuple
+
+.globl _PyArg_ParseTupleAndKeywords_SizeT
+.type _PyArg_ParseTupleAndKeywords_SizeT, %function
+_PyArg_ParseTupleAndKeywords_SizeT:
+    b PyArg_ParseTupleAndKeywords
 "#
 );
 

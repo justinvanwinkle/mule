@@ -83,7 +83,7 @@ __all__ = [
     "read_elf_interface",
 ]
 
-LINK_LIBRARIES = ("-lgmp", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
+LINK_LIBRARIES = ("-l:libgmp.so.10", "-lutil", "-lrt", "-lpthread", "-lm", "-ldl")
 BUILTINS_SHARDS = 16
 OBJECT_SHARD_THRESHOLD = 2 << 20
 

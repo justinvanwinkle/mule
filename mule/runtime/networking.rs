@@ -312,7 +312,7 @@ unsafe extern "C" fn address_text(_: Value, args: Value) -> Value {
         let Some([family, address]) = operands(args) else { return null_mut(); };
         let (Some(family), Some(address)) = (integer(family), buffer(address)) else { return null_mut(); };
         if address.len() != (if family == 2 { 4 } else { 16 }) { object::error("ValueError", "invalid packed address length"); return null_mut(); }
-        let mut output = [0i8; 128];
+        let mut output = [0 as c_char; 128];
         if inet_ntop(family, address.as_ptr(), output.as_mut_ptr(), output.len() as u32).is_null() { return failure(); }
         let text = CStr::from_ptr(output.as_ptr()).to_string_lossy();
         result(0, object::new_value(Data::Text(Text::from_rust_str(&text), null_mut(), null_mut())))
@@ -321,7 +321,7 @@ unsafe extern "C" fn address_text(_: Value, args: Value) -> Value {
 unsafe extern "C" fn host_name(_: Value, args: Value) -> Value {
     unsafe {
         let Some([]) = operands(args) else { return null_mut(); };
-        let mut output = [0i8; 256];
+        let mut output = [0 as c_char; 256];
         if gethostname(output.as_mut_ptr(), output.len()) < 0 { return failure(); }
         output[255] = 0;
         let text = CStr::from_ptr(output.as_ptr()).to_string_lossy();

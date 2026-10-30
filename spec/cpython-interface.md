@@ -164,7 +164,7 @@ Mule loads an extension module the same way: `dlopen` with
 that the import system, not an explicit call, finds the library: CPython's
 `ExtensionFileLoader` contract (PEP 489) requires `import name` to find
 `name<EXT_SUFFIX>` before `name.py` and run single- or multi-phase
-initialization. `mule/runtime/imports.rs` resolves `<name>.mule-314-x86_64-linux-gnu.so`
+initialization. `mule/runtime/imports.rs` resolves `<name>.mule-314-<arch>-linux-gnu.so`
 ahead of source files; it never loads `.cpython-*.so` or `.abi3.so` files,
 whose object layout differs. Creation and execution follow the existing
 create/execute split of compiled modules: `PyModuleDef_Init` results run

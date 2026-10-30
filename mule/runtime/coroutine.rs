@@ -10,7 +10,7 @@
 //!
 //! SBCL has no generators; its threads are the nearest runtime mechanism,
 //! and this is the same OS-level service: a stack, a saved register context
-//! and a switch. The context switch saves the System V AMD64 callee-saved
+//! and a switch. The context switch saves the target ABI's callee-saved
 //! registers and the floating-point control state.
 use crate::object::{self, Data, Value};
 use std::cell::{Cell, RefCell};
@@ -19,8 +19,8 @@ use std::io::Write;
 use std::ptr::null_mut;
 use std::sync::Mutex;
 
-#[cfg(not(target_arch = "x86_64"))]
-compile_error!("Mule generators currently implement the x86-64 context switch only");
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("Mule generators currently implement x86-64 and AArch64 context switches only");
 
 const STACK_SIZE: usize = 8 << 20;
 const GUARD_SIZE: usize = 4096;
@@ -53,6 +53,7 @@ const MAP_FAILED: *mut c_void = !0usize as *mut c_void;
 // the callee-saved state on the current stack, stores the stack pointer
 // through `save`, and resumes the context whose stack pointer is `target`.
 // A new context starts in mule_coroutine_start with the coroutine in r12.
+#[cfg(target_arch = "x86_64")]
 std::arch::global_asm!(
     ".globl mule_context_switch",
     ".type mule_context_switch,@function",
@@ -86,6 +87,55 @@ std::arch::global_asm!(
     "and rsp, -16",
     "call {main}",
     "ud2",
+    ".size mule_coroutine_start, . - mule_coroutine_start",
+    main = sym coroutine_main,
+);
+
+// mule_context_switch(save: *mut *mut u8 [x0], target: *mut u8 [x1]) saves
+// the AAPCS64 callee-saved registers (x19..x30, d8..d15) and fpcr on the
+// current stack, stores the stack pointer through `save`, and resumes the
+// context whose stack pointer is `target`. A new context starts in
+// mule_coroutine_start with the coroutine in x19.
+#[cfg(target_arch = "aarch64")]
+std::arch::global_asm!(
+    ".globl mule_context_switch",
+    ".type mule_context_switch,%function",
+    "mule_context_switch:",
+    "stp x29, x30, [sp, #-176]!",
+    "stp x19, x20, [sp, #16]",
+    "stp x21, x22, [sp, #32]",
+    "stp x23, x24, [sp, #48]",
+    "stp x25, x26, [sp, #64]",
+    "stp x27, x28, [sp, #80]",
+    "stp d8, d9, [sp, #96]",
+    "stp d10, d11, [sp, #112]",
+    "stp d12, d13, [sp, #128]",
+    "stp d14, d15, [sp, #144]",
+    "mrs x9, fpcr",
+    "str x9, [sp, #160]",
+    "mov x9, sp",
+    "str x9, [x0]",
+    "mov sp, x1",
+    "ldr x9, [sp, #160]",
+    "msr fpcr, x9",
+    "ldp d14, d15, [sp, #144]",
+    "ldp d12, d13, [sp, #128]",
+    "ldp d10, d11, [sp, #112]",
+    "ldp d8, d9, [sp, #96]",
+    "ldp x27, x28, [sp, #80]",
+    "ldp x25, x26, [sp, #64]",
+    "ldp x23, x24, [sp, #48]",
+    "ldp x21, x22, [sp, #32]",
+    "ldp x19, x20, [sp, #16]",
+    "ldp x29, x30, [sp], #176",
+    "ret",
+    ".size mule_context_switch, . - mule_context_switch",
+    ".globl mule_coroutine_start",
+    ".type mule_coroutine_start,%function",
+    "mule_coroutine_start:",
+    "mov x0, x19",
+    "bl {main}",
+    "brk #0x1",
     ".size mule_coroutine_start, . - mule_coroutine_start",
     main = sym coroutine_main,
 );
@@ -258,25 +308,41 @@ impl Coroutine {
                 locals_ptr: null_mut(),
                 locals_len: 0,
             });
-            // The initial frame mule_context_switch restores: control words,
-            // r15..r12 (r12 carries the coroutine), rbx, rbp and the start address.
             let top = (stack as usize + STACK_SIZE) & !15;
-            let frame = (top - 9 * 8) as *mut u64;
-            let control: u64 = 0x1F80 | (0x037F << 32);
-            let words = [
-                control,
-                0,
-                0,
-                0,
-                &mut *coroutine as *mut Coroutine as u64,
-                0,
-                0,
-                mule_coroutine_start as *const () as u64,
-            ];
-            for (index, word) in words.iter().enumerate() {
-                *frame.add(index) = *word;
+            #[cfg(target_arch = "x86_64")]
+            {
+                // The initial frame mule_context_switch restores: control words,
+                // r15..r12 (r12 carries the coroutine), rbx, rbp and the start address.
+                let frame = (top - 9 * 8) as *mut u64;
+                let control: u64 = 0x1F80 | (0x037F << 32);
+                let words = [
+                    control,
+                    0,
+                    0,
+                    0,
+                    &mut *coroutine as *mut Coroutine as u64,
+                    0,
+                    0,
+                    mule_coroutine_start as *const () as u64,
+                ];
+                for (index, word) in words.iter().enumerate() {
+                    *frame.add(index) = *word;
+                }
+                coroutine.context = frame.cast();
             }
-            coroutine.context = frame.cast();
+            #[cfg(target_arch = "aarch64")]
+            {
+                // The initial frame mule_context_switch restores: x29, x30 (start address),
+                // x19..x28 (x19 carries the coroutine), d8..d15 and fpcr.
+                let frame = (top - 22 * 8) as *mut u64;
+                let mut words = [0u64; 22];
+                words[1] = mule_coroutine_start as *const () as u64;
+                words[2] = &mut *coroutine as *mut Coroutine as u64;
+                for (index, word) in words.iter().enumerate() {
+                    *frame.add(index) = *word;
+                }
+                coroutine.context = frame.cast();
+            }
             Some(coroutine)
         }
     }
