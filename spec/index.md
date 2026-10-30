@@ -32,7 +32,7 @@ frontend coverage does not establish complete Python compatibility.
 - [Dependency policy](dependencies.md): prohibited CPython linking and library approvals.
 - [SBCL compiler](sbcl-compiler.md): source-backed baseline architecture.
 - [Python and LLVM changes](python-changes.md): retained analysis and required adaptations.
-- [Remaining compiler and IR1 transform gaps](compiler-gaps.md): suite-wide SBCL parity status, implemented builtin conformance and compiler specializations (Sections 0A–0D, 1A–1B, 3, 4, 5 parts, 6A–6C, 6E, 6G, 6J, 6L), and roadmap for remaining SBCL parity gaps (Sections 1C–1D, 2, 5, 6D, 6F, 6H–6I, 6K, 6M–6R).
+- [Remaining compiler and IR1 transform gaps](compiler-gaps.md): suite-wide SBCL parity status, implemented builtin conformance and compiler specializations (Sections 0A–0D, 1A–1B, 3, 4, 5 parts, 6A–6C, 6E, 6G, 6J, 6L–6M, 6V), and roadmap for remaining SBCL parity gaps (Sections 1C–1D, 2, 5, 6D, 6F, 6H–6I, 6K, 6N–6U).
 - [Runtime migration](runtime-migration.md): Rust-to-Mule migration roadmap, C23 evaluation, and pure-Mule runtime requirements.
 - [CPython C interface](cpython-interface.md): extension build/runtime compatibility.
 

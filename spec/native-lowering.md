@@ -1203,6 +1203,13 @@ retain optimization level 3.
   (`_transform_bitmask_membership` and `_transform_setitem_self_augassign`)
   pattern-match specific multi-node/multi-block shapes rather than composing
   general SBCL `deftransform` / `seqtran` rules.
+- **Object-oriented dispatch violations in `mule/compiler/`:** `driver.py:244`
+  calls `isinstance(opts, str)` (violating the zero-match requirement in
+  `AGENTS.md`), `return_checks.py:619, 622` and `seqtran.py:616` probe objects
+  with `hasattr(...)`, `locall.py:1976-1977` probes with
+  `getattr(param, "fixed_slots", ())`, and `interfaces.py:580-596` ranks builtin
+  methods by substring matching against mangled LLVM symbol names
+  (`"fn_ListStorage."`, `"fn_TextStorage."`, etc.).
 
 This stage does not assign raw float signatures to unknown calls, store floats
 in native class fields, or perform SBCL's full local-call and constraint

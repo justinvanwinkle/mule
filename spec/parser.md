@@ -63,6 +63,36 @@ These operations use node behavior rather than runtime AST-class checks.
 Tokens retain lexical `kind` categories; operator and parameter enums describe
 grammar roles. Tokens and positions expose `source_start()` for span construction.
 
+### Known parser defects
+
+- **`NamedExpression.require_dict_key` crashes with `AttributeError`
+  (`mule/ast.py:596-600`, `mule/parser/core.py:213-220`):** An unparenthesized
+  named expression used as a dictionary key (`{x := 1: 2}`) calls
+  `parser.error("Invalid assignment expression target or context", self.source_start())`,
+  passing a `Position` where `Parser.error` expects a `Token | None` and
+  accesses `token.start.line`, raising `AttributeError` instead of
+  `SyntaxError`.
+- **Empty tuple `()` omitted from `Parser.grouped` (`mule/parser/expressions.py:375-378`,
+  `mule/ast.py:747-748`):** `atom()` returns `ast.Tuple([])` for `()` without
+  adding it to `self.grouped`, so `del ()` invokes
+  `Tuple.delete_operands(grouped=False)` and produces `ast.Delete(targets=[])`
+  instead of `ast.Delete(targets=[ast.Tuple([])])`.
+- **Parenthesized `with` item lookahead rejects `with (a + b), c:`
+  (`mule/parser/statements.py:338`):** `_with_item_parentheses` treats a
+  closing `)` followed by `","` as a parenthesized `with`-item group, causing a
+  grouped first context expression followed by a second item (`with (a + b), c:`)
+  to fail with `SyntaxError`.
+- **`type` statement lookahead accepts hard keywords as alias names
+  (`mule/parser/statements.py:131-136`):** Statement dispatch checks
+  `text == "type" and self.peek().kind == "NAME" and self.peek(2).text in {"[", "="}`
+  without excluding hard keywords (`in`, `is`, `and`, `or`, `not`, `if`,
+  `else`), misclassifying valid expressions such as `type in [1, 2]` as type
+  alias statements.
+- **Unpacked slice bounds accepted by `slice_item`
+  (`mule/parser/expressions.py:239-242`):** `slice_item` parses the lower slice
+  bound with `star_expression()`, accepting invalid starred slice bounds such as
+  `a[*b:c]`.
+
 ## Evidence
 
 - `mule/parser/core.py`: `parse`, shared state, and diagnostic construction.

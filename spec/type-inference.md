@@ -448,17 +448,39 @@ Serialization preserves these content facts and requires all fields.
   `fact.conservative()` only when `len(leaf.refs) > 1`. A variable with a
   single `Ref` (including inside a loop or after an aliasing call that mutates
   the container) retains stale mutable-container element facts.
-- **Non-SBCL relational difference-bound matrix, midpoint solver, side tables,
+- **Unchecked element reads from declared mutable-container contracts
+  (`constraint.py`, `constraint_propagate.py`, `return_checks.py`,
+  `mule/runtime/annotations.rs`):** `walk.local_contracts`,
+  `walk.element_contracts`, and `_InstanceDeclaredField` trust `list[T]`,
+  `dict[K, V]`, and `set[T]` annotations to yield unchecked `T` / `K` / `V`
+  values on every read and iteration, even when `safety > 0`. However, Python's
+  `list`, `dict`, and `set` have no element-specialized runtime representation:
+  boundary checks (`ParameterContract` and `DeclaredFieldContract` via
+  `mule_value_kind` in `annotations.rs:54-84`) validate only the outer container
+  tag in $O(1)$ without checking elements, and mutations through aliases
+  (`alias = self.items; alias.append(bad)`) bypass `_lookup_container_field` in
+  `return_checks.py:656-664` (which matches only single-use
+  `_GETATTR_FIELD_ORIGIN` temporaries). Trusting mutable-container element reads
+  without a representation guarantee (`WordVectorType`) violates SBCL's
+  representation-based array typing (`AGENTS.md`).
+- **Mutable-list sequence-length tracking on variable assignment
+  (`constraint_propagate.py:883-885, 1016-1055`):** Although `has_vector_length`
+  (`constraint_propagate.py:516-522`) restricts `seq_len_keys` reads to simple
+  sequences (`str`, `bytes`, `tuple`, `WordVectorType`),
+  `_update_seq_len_on_set` unconditionally assigns `seq_len_keys` facts and
+  tightens `State.relations` when a variable is assigned `[x] * n` or `[]` via
+  `_SequenceProducerLength`, without checking `has_vector_length`.
+- **Non-SBCL relational difference constraints, midpoint solver, side tables,
   and component cloning:** `State.relations` in `constraint_propagate.py`
-  maintains an all-pairs difference-bound matrix `u - v <= off` with synthetic
+  maintains difference bounds `u - v <= off` with synthetic
   keys `(_SEQ_LEN, var)` and `(_RANGE_STOP, range_state)`, paired with
   `_SequenceProducerLength` and `_LinearUpdate` (including binary-search
   midpoint extraction `(u + v) >> 1` and `(u + v) // 2`). `check_in_bounds_access`
-  mutates `relations[idx_var, seq_key]` even when returning `False`. `Body` in
+  mutates `relations` even when returning `False`. `Body` in
   `constraint_domain.py` stores out-of-band side tables (`lvar_contracts`,
   `var_contracts`, `iter_contracts`, `element_contracts`, `in_bounds_nodes`,
   `tuple_list_origins`) instead of IR1 `Cast` nodes, and
-  `_derive_user_lambda_call` in `constraint_propagate.py` clones whole IR1
+  `_derive_user_lambda_call` in `locall.py` clones whole IR1
   components via `clone_lambda_component` in `ir1util.py`.
 - **`TYPE_CHECKING` import folding (resolved):** `fold_type_checking_constants`
   has been removed from `main.py` and `locall.py` (`eebe93d`), so imported

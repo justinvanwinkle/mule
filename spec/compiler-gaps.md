@@ -22,13 +22,12 @@ slice-comparison/int-parse transforms (Section 6C), symbolic sequence-length
 constraints and dead-allocation flushing (Section 6E), general tuple delivery
 with per-store liveness (Section 6G), general fixed-slot layout access and
 singleton-list fill (Section 6J), pre-representation calling-convention
-selection and inline Latin-1 string equality (Section 6L), and `SetType`
+selection and inline Latin-1 string equality (Section 6L), `SetType`
 lattice, IR1 set/dict transforms, and pre-sized `_Table` set operations
-(Section 6M); **proposed** for
+(Section 6M), and SBCL conservative container types, word vectors, and declared
+instance fields (Section 6V); **proposed** for
 Sections 1C, 2, the remaining items in Sections 1D and 5, Sections 6D, 6F, 6H, 6I, 6K, and the remaining SBCL parity gaps identified in the
-24-workload and `pyperformance` suite reviews (Sections 6N–6R); **in progress**
-for SBCL conservative container types, word vectors, and declared instance
-fields (Section 6V).
+24-workload and `pyperformance` suite reviews (Sections 6N–6U).
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`,
@@ -473,8 +472,9 @@ down into four groups:
          `right_type.maximum < 0`) with possibly negative `left_type`, emits
          inline branchless sign-adjusted `sdiv i64` / `srem i64` via
          `gen.native_result`.
-     - `_binary_helper` (`mule/compiler/vops.py`) marks `@mule.fast.binary.*`
-       and `@mule.fixnum.binary.*` `alwaysinline` and omits the unused
+     - `_binary_helper` (`mule/compiler/vops_numeric.py`) emits `@mule.fast.binary.*`
+       and `@mule.fixnum.binary.*` with `internal fastcc` (without `alwaysinline`,
+       leaving inlining decisions to LLVM per `AGENTS.md`) and omits the unused
        `sdiv` quotient and redundant `_RANGE` check from `op == 5` (`%`).
      - `_borrows_operand` (`mule/compiler/ir2tran.py`) includes
        `binary-modulo` and `inplace-modulo` when `lhs` is proven `REAL`, and
@@ -1212,7 +1212,7 @@ describe the Python mutation and ownership adaptations to SBCL.
     only the 16-bit `(len << 8) | kind_tag` header for `""` and the header plus
     `words[0]` for single-character literals without materializing a borrowed
     text slot or synthesizing fake `inline.text` SSA names), and general `str`
-    equality uses the `alwaysinline` `@mule.fast.text.eq` /
+    equality uses the `internal fastcc` `@mule.fast.text.eq` /
     `@mule.fast.text.ne` helpers before falling back to `@mule_text_eq`.
 
 ### 6M. `SetType` lattice, IR1 set/dict transforms, and pre-sized `_Table` set operations (`target-hash-table.lisp` / `containtran.py`) — Implemented

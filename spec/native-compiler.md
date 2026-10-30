@@ -149,6 +149,11 @@ boundary:
   malformed ELF or interface metadata. Its handwritten JSON string scan does
   not handle escapes. Invalid metadata can therefore appear to contain no
   dependencies instead of reporting the artifact error.
+- `resolve_candidate` (`mule/runtime/imports.rs:267-276`) searches both
+  `mule-314-aarch64-linux-gnu.so` and `mule-314-x86_64-linux-gnu.so` on every
+  architecture. If a foreign-architecture `.so` is present ahead of a `.py`
+  fallback, the loader selects the incompatible `.so` instead of the source
+  module.
 
 These failure paths follow from source inspection; corrupt-artifact and failed
 compiler executions have not been reproduced. SBCL's `load` dispatches FASLs
@@ -156,6 +161,50 @@ through `load-as-fasl` and propagates load errors in
 `src/code/target-load.lisp`. Mule must report loading and compilation failures
 with their causes and must not record a failed load or compilation as success
 or absence.
+
+### Runtime ownership and cycle-collection defects
+
+Several ownership and garbage-collection invariants in `mule/runtime/` currently
+violate the runtime contracts:
+
+- **Unretained `Data::Function.globals` pointer (`mule/runtime/object.rs:316,
+  503-505`):** `Data::Function` stores `globals: Value` without retaining it,
+  and `Data::visit_owned_values` omits `globals`. If a dynamic namespace
+  (`exec(..., globals_dict)`) or a failed/replaced module namespace is collected
+  while a function created in it survives, calling the function dereferences
+  freed memory.
+- **Generator and coroutine cycles are invisible to `gc.rs`
+  (`mule/runtime/object.rs:508, 539`, `mule/runtime/coroutine.rs:248-267`):**
+  `Coroutine` owns heap `Value`s (`function`, `arguments`, `transfer`,
+  `handlers`, `yield_from`, and suspended stack `locals_ptr[..locals_len]`), yet
+  `Data::visit_owned_values`, `Data::may_cycle`, and `Data::cycle_candidate` all
+  ignore `Data::Coroutine(_)`, leaking any reference cycle involving a suspended
+  generator or coroutine.
+- **Untracked `Data::List` allocations break trial-deletion cycle collection
+  (`mule/runtime/sequences.rs:1513`, `mule/runtime/object.rs:516, 987, 3472`,
+  `mule/runtime/gc.rs:120-210`):** `mule_text_split` allocates `Data::List` via
+  `new_untracked_value` (`tracked = false`), and `mule_storage_push` /
+  `mule_list_fast_setitem` write elements without calling `track_if_needed`.
+  Because `Data::may_cycle` returns `true` for every `Data::List` regardless of
+  `(*value).tracked`, an outer container holding that list becomes tracked while
+  the list itself is absent from `gc::SHARDS`. During `gc::collect()`, internal
+  references held by the untracked list are never subtracted during trial
+  deletion, keeping dead reference cycles alive.
+- **Borrowed `KeyboardInterrupt` released on `SIGINT`
+  (`mule/runtime/signals.rs:140-147`):** `deliver_pending_signals` obtains
+  `KeyboardInterrupt` via `object::lookup(globals, "KeyboardInterrupt")` (which
+  returns a borrowed reference), passes it to `mule_raise_pending(class)` (which
+  retains it), and then calls `object::release(class)`, corrupting
+  `KeyboardInterrupt`'s reference count on every default `SIGINT` delivery.
+- **Owned bound-method leaks in `repr()` / `str()` and C-API descriptor checks
+  (`mule/runtime/object.rs:3019, 3097`, `mule/runtime/capi.rs:1318-1322`):**
+  `classes::special_bound_on_class` returns an owned `Value`, but those callers
+  test `!...is_null()` without releasing the returned value.
+- **Thread-local weakref registry (`mule/runtime/weakref.rs:19-22, 31-52`):**
+  `weakref::REGISTRY` is `thread_local!` while reference counts are atomic
+  across threads. Dropping the last strong reference to a referent on a thread
+  other than the one that registered its `WeakHandle` fails to clear the handle,
+  leaving a dangling `referent` pointer.
 
 The FASL cache key includes the requested source metadata and compiler digest,
 but not dependency interfaces. Compilation consumes those interfaces for

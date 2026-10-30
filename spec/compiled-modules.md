@@ -1211,6 +1211,16 @@ fatal handlers are installed. It does not link another implementation library.
 The current single compiled thread is supported; delayed timeout scheduling
 and additional user-signal registrations are not yet implemented.
 
+**Current fault-handler and traceback path defect:** Despite the contract above
+that signal delivery acquires no allocator or locks, `faults::dump`
+(`mule/runtime/faults.rs:47-71`) calls
+`EXE_DIR.try_lock().ok().and_then(|guard| guard.clone())`, invoking heap
+allocation (`String::clone`) inside the `SIGSEGV`/`SIGABRT` signal handler and
+rewriting every activation frame's path (including `stdlib/` frames) to
+`<exe_dir>/<basename>`. `CodeInfo::filename` (`mule/runtime/traceback.rs:75-100`)
+likewise substitutes `<exe_dir>/<basename>` whenever a file with the same
+basename exists in the executable's directory.
+
 Live frame metadata follows the active coroutine stack. Switching into a
 generator attaches its saved activation records above the resumer's records;
 yielding detaches and retains those records with their globals. A suspended

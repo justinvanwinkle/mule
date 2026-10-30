@@ -15,6 +15,22 @@ Identifier tokens are normalized to Unicode NFKC when consumed as identifiers
 by the parser. Hard keywords cannot be consumed as identifiers; soft keyword
 syntax is interpreted in its grammatical context.
 
+**Current lexical defects:**
+
+- **Comment-only `# type: ignore` lines emit a duplicate `NEWLINE` token
+  (`mule/parser/lexer.py:377-395`, `mule/parser/core.py:72-86`):** When
+  `type_comments=True`, a line containing only `# type: ignore` sets
+  `line_has_code = True` in `lexer.py:382` and emits an extra `NEWLINE` token at
+  the end of the line. `Parser.__init__` then strips `TYPE_COMMENT` tokens that
+  begin with `ignore` (`core.py:76-82`) without removing that `NEWLINE`, leaving
+  two consecutive `NEWLINE` tokens that cause `suite()`, `if`/`elif`/`else`,
+  `try`/`except`/`finally`, `match`/`case`, and `@decorator` headers to fail
+  with `SyntaxError` or `IndentationError`.
+- **Escaped closing braces inside format specifiers
+  (`mule/parser/lexer.py:228-251`):** `scan_format` returns immediately on the
+  first `}` at nesting depth 0 without skipping `}}` escaped closing braces in
+  f-string and template-string format specifiers.
+
 ## Standard-library tokenizer
 
 The standard-library `_tokenize.TokenizerIter` is independent of the compiler

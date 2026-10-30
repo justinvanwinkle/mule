@@ -38,6 +38,18 @@ Do not substitute CPython AST byte offsets for these character coordinates.
 Span behavior for particular grammar constructs is protected by targeted tests,
 including compound statements and match cases.
 
+**Current coordinate and visitor defects:**
+
+- Single-element parenthesized expressions `(a)` in `mule/parser/expressions.py:372-415`
+  keep the inner expression's `Span` rather than extending `Span` to the
+  enclosing parentheses (unlike tuples, `()`, and parenthesized patterns in
+  `patterns.py`), so outer expressions such as `(a) + b` and `a + (b)` exclude
+  the opening or closing parenthesis from their spans.
+- `Visitor.__init_subclass__` (`mule/ast.py:1547-1577`) rewrites subclass method
+  tables from `_AST_VISITOR_FALLBACKS` and routes statements through an
+  intermediate `visit_Statement` method rather than forwarding unhandled methods
+  directly to `visit_Node`.
+
 ## Traversal
 
 Each concrete node explicitly implements `children()`, yielding its owned syntax
