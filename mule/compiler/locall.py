@@ -108,7 +108,6 @@ from .fndb import (
     TEXT_SLICE_COMPARE,
     UNARY,
     UNPACK_REF,
-    flow_propagation,
 )
 from .ir1tran import _IS_FINAL_ANNOTATION
 from .ir1util import (
@@ -3860,48 +3859,45 @@ def analyze(
         active_derivations.add(active_key)
         try:
             proven_globals = _proven_globals_for(target_lam)
-            with flow_propagation():
-                body = propagate(
-                    target_lam,
-                    global_targets[target_lam.namespace],
-                    param_types,
-                    _resolve_deriver_call,
-                    AnnotationLedger(),
-                    graph=graph,
-                    proven_globals=proven_globals,
-                    rebound_globals=rebound_by_namespace.get(
-                        target_lam.namespace, frozenset()
-                    ),
-                    global_constants=global_constants_by_ns.get(target_lam.namespace),
-                    imported_returns=(
-                        imported_returns_by_ns.get(target_lam.namespace)
-                        if target_lam.policy.safety < 3
-                        else None
-                    ),
-                    imported_targets=(
-                        imported_targets_by_ns.get(target_lam.namespace)
-                        if target_lam.policy.safety < 3
-                        else None
-                    ),
-                    module_returns=(
-                        imported_function_types
-                        if target_lam.policy.safety < 3
-                        else None
-                    ),
-                    module_targets=(
-                        imported_targets if target_lam.policy.safety < 3 else None
-                    ),
-                    storage_methods=storage_methods,
-                    builtin_return_types=builtin_return_types,
-                    builtin_targets=builtin_targets,
-                    class_facts=class_facts,
-                    recursive_targets=recursive_targets_by_caller.get(
-                        target_lam, frozenset()
-                    ),
-                    unique_targets=frozenset(unique_global_lambdas),
-                    is_specialized_context=True,
-                    for_return_derivation=True,
-                )
+            body = propagate(
+                target_lam,
+                global_targets[target_lam.namespace],
+                param_types,
+                _resolve_deriver_call,
+                AnnotationLedger(),
+                graph=graph,
+                proven_globals=proven_globals,
+                rebound_globals=rebound_by_namespace.get(
+                    target_lam.namespace, frozenset()
+                ),
+                global_constants=global_constants_by_ns.get(target_lam.namespace),
+                imported_returns=(
+                    imported_returns_by_ns.get(target_lam.namespace)
+                    if target_lam.policy.safety < 3
+                    else None
+                ),
+                imported_targets=(
+                    imported_targets_by_ns.get(target_lam.namespace)
+                    if target_lam.policy.safety < 3
+                    else None
+                ),
+                module_returns=(
+                    imported_function_types if target_lam.policy.safety < 3 else None
+                ),
+                module_targets=(
+                    imported_targets if target_lam.policy.safety < 3 else None
+                ),
+                storage_methods=storage_methods,
+                builtin_return_types=builtin_return_types,
+                builtin_targets=builtin_targets,
+                class_facts=class_facts,
+                recursive_targets=recursive_targets_by_caller.get(
+                    target_lam, frozenset()
+                ),
+                unique_targets=frozenset(unique_global_lambdas),
+                is_specialized_context=True,
+                for_return_derivation=True,
+            )
             if len(deriver_cache) > 4096:
                 deriver_cache.clear()
             deriver_cache[cache_key] = body
@@ -4160,49 +4156,46 @@ def analyze(
                 else:
                     consulted.clear()
                     proven_globals = _proven_globals_for(lambda_)
-                    with flow_propagation():
-                        body = propagate(
-                            lambda_,
-                            global_targets[lambda_.namespace],
-                            expected,
-                            resolve,
-                            annotations,
-                            graph=graphs[lambda_],
-                            proven_globals=proven_globals,
-                            rebound_globals=rebound_by_namespace.get(
-                                lambda_.namespace, frozenset()
-                            ),
-                            global_constants=global_constants_by_ns.get(
-                                lambda_.namespace
-                            ),
-                            imported_returns=(
-                                imported_returns_by_ns.get(lambda_.namespace)
-                                if lambda_.policy.safety < 3
-                                else None
-                            ),
-                            imported_targets=(
-                                imported_targets_by_ns.get(lambda_.namespace)
-                                if lambda_.policy.safety < 3
-                                else None
-                            ),
-                            module_returns=(
-                                imported_function_types
-                                if lambda_.policy.safety < 3
-                                else None
-                            ),
-                            module_targets=(
-                                imported_targets if lambda_.policy.safety < 3 else None
-                            ),
-                            storage_methods=storage_methods,
-                            builtin_return_types=builtin_return_types,
-                            builtin_targets=builtin_targets,
-                            class_facts=class_facts,
-                            recursive_targets=recursive_targets_by_caller.get(
-                                lambda_, frozenset()
-                            ),
-                            unique_targets=frozenset(unique_global_lambdas),
-                            is_specialized_context=(ctx_name != "general"),
-                        )
+                    body = propagate(
+                        lambda_,
+                        global_targets[lambda_.namespace],
+                        expected,
+                        resolve,
+                        annotations,
+                        graph=graphs[lambda_],
+                        proven_globals=proven_globals,
+                        rebound_globals=rebound_by_namespace.get(
+                            lambda_.namespace, frozenset()
+                        ),
+                        global_constants=global_constants_by_ns.get(lambda_.namespace),
+                        imported_returns=(
+                            imported_returns_by_ns.get(lambda_.namespace)
+                            if lambda_.policy.safety < 3
+                            else None
+                        ),
+                        imported_targets=(
+                            imported_targets_by_ns.get(lambda_.namespace)
+                            if lambda_.policy.safety < 3
+                            else None
+                        ),
+                        module_returns=(
+                            imported_function_types
+                            if lambda_.policy.safety < 3
+                            else None
+                        ),
+                        module_targets=(
+                            imported_targets if lambda_.policy.safety < 3 else None
+                        ),
+                        storage_methods=storage_methods,
+                        builtin_return_types=builtin_return_types,
+                        builtin_targets=builtin_targets,
+                        class_facts=class_facts,
+                        recursive_targets=recursive_targets_by_caller.get(
+                            lambda_, frozenset()
+                        ),
+                        unique_targets=frozenset(unique_global_lambdas),
+                        is_specialized_context=(ctx_name != "general"),
+                    )
                     bodies[key] = body
                     if (
                         lambda_.kind is FunctionalKind.TOPLEVEL

@@ -378,43 +378,6 @@ down into four groups:
      + `loop.analyze` on the cloned component for that entry context's IR2/LLVM
      emission, and restore the canonical IR1 component afterward.
 
-### Worker-local derivation mode
-
-Status: implemented; focused isolation and derivation checks completed.
-
-During `constraint.propagate`, operand-dependent `fndb` hooks defer result
-derivation to the pass's current flow facts. Outside that dynamic scope, the
-ordinary IR1 derivation hooks run normally. This mode belongs to the synchronous
-analysis running on one compiler worker, not the whole process. Its owner is a
-plain `threading.local` subclass with an unslotted `active` attribute initialized
-to false for each thread. `flow_propagation()` saves that thread's previous value
-and restores it in `finally`, including nested scopes and exceptions. Every
-mode-dependent hook reads the same thread-local state object. This does not
-serialize compilation or change a derivation rule.
-
-SBCL `src/compiler/constraint.lisp`, `find-and-propagate-constraints` and
-`constraint-propagate`, dynamically binds constraint-pass state with `LET`;
-`src/code/target-thread.lisp`, `start-thread`, initializes thread-local storage
-for new workers. Python module globals do not provide those dynamic thread-local
-bindings, so the compiler uses the standard-library local-storage facility.
-Compiler analyses are synchronous within each worker; this contract does not
-claim isolation for interleaving asynchronous analyses on one thread.
-
-A plain `ContextVar` would require an additional worker-boundary reset: on the
-free-threaded Python 3.15 host, new threads inherit contexts by default, and the
-graph scheduler creates workers without an explicit empty context. A worker
-created within active propagation must instead start in ordinary derivation
-mode. This state therefore must not use subclass slots, which are shared across
-threads rather than stored in each thread's local dictionary. The compiler host
-uses its own standard-library `threading.local`; Mule's vendored `threading`
-also exposes the Python `_threading_local` implementation for eventual
-self-hosting, without establishing native OS-thread creation support.
-
-Event-synchronized checks observe actual known-operation derivation, including
-overlapping scopes with out-of-order exits and restoration after both workers
-finish. These checks establish state isolation, not the cause of a particular
-suite failure or performance measurement.
-
 ### 1C. Sequence, string, and container transforms (`seqtran.py` vs `seqtran.lisp`) (partially implemented)
 
 - **SBCL reference**: `src/compiler/seqtran.lisp` (3,371 lines in SBCL vs

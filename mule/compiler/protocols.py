@@ -41,7 +41,7 @@ from .ctype import (
     ValueType,
     union_type,
 )
-from .fndb import _DERIVATION_MODE, _arg_type, defknown
+from .fndb import _arg_type, defknown
 from .ir1opt import bound_constant_literal
 from .knownfun import defconstrain, defpropagate, deftransform
 from .main import compile_toplevel, ir1_phases
@@ -195,7 +195,7 @@ _TEXT_LITERAL_LENGTH = _TextLiteralLength()
 
 
 def _derive_storage_length(node) -> ValueType:
-    if not _DERIVATION_MODE.active and len(node.args) == 1:
+    if len(node.args) == 1:
         seq_type = _arg_type(node.args[0])
         if seq_type is BOTTOM:
             return BOTTOM
@@ -211,7 +211,7 @@ def _derive_storage_length(node) -> ValueType:
 
 
 def _derive_text_length(node) -> ValueType:
-    if not _DERIVATION_MODE.active and len(node.args) == 1:
+    if len(node.args) == 1:
         text_type = _arg_type(node.args[0])
         if text_type is BOTTOM:
             return BOTTOM
@@ -444,7 +444,7 @@ def _propagate_storage_read(visitor, node) -> ValueType | None:
 
 
 @defpropagate("_storage_length")
-def _propagate_storage_length(visitor, node) -> ValueType | None:
+def _propagate_storage_length(visitor, node) -> ValueType:
     args = node.args
     if len(args) == 1:
         seq_type = visitor.type_of(args[0])
@@ -455,12 +455,14 @@ def _propagate_storage_length(visitor, node) -> ValueType | None:
             exact_len = lit.accept(_STORAGE_LITERAL_LENGTH)
         if exact_len is not None:
             return IntegerType(exact_len, exact_len)
-        return visitor.sequence_length_type(args[0])
-    return None
+        seq_len = visitor.sequence_length_type(args[0])
+        if seq_len is not None:
+            return seq_len
+    return IntegerType(0, (1 << 60) - 1)
 
 
 @defpropagate("_text_length")
-def _propagate_text_length(visitor, node) -> ValueType | None:
+def _propagate_text_length(visitor, node) -> ValueType:
     args = node.args
     if len(args) == 1:
         text_type = visitor.type_of(args[0])
@@ -472,8 +474,10 @@ def _propagate_text_length(visitor, node) -> ValueType | None:
             exact_len = lit.accept(_TEXT_LITERAL_LENGTH)
         if exact_len is not None:
             return IntegerType(exact_len, exact_len)
-        return visitor.sequence_length_type(args[0])
-    return None
+        seq_len = visitor.sequence_length_type(args[0])
+        if seq_len is not None:
+            return seq_len
+    return IntegerType(0, (1 << 58) - 1)
 
 
 @defpropagate("_type_of")
