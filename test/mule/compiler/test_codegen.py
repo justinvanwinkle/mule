@@ -153,3 +153,51 @@ def test_text_char_index_and_compare_fusion_preserves_semantics(tmp_path):
         "IndexError string index out of range\n"
         "IndexError string index out of range\n"
     )
+
+
+_UNWIND_OCCUPANCY_SOURCE = """\
+def step(x):
+    if x < 0:
+        raise ValueError("neg")
+    return [x, x + 1]
+
+
+def run(items):
+    out = []
+    for a in items:
+        try:
+            out.append(step(a)[0] + step(a + 1)[1])
+        except ValueError:
+            out.append(-1)
+    for b in items:
+        try:
+            out.append(step(b * 2)[0] + step(b * 2 + 1)[1])
+        except ValueError:
+            out.append(-2)
+    return out
+
+
+print(run([1, -1, 2]))
+"""
+
+
+def test_unwind_blocks_only_release_slots_occupied_in_handler_region(tmp_path):
+    llvm = emit_llvm(_UNWIND_OCCUPANCY_SOURCE, "unwind_occupancy.py")
+    body = llvm.split('define internal ptr @"mule_fn_run.body"', 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    unwind_sections = [
+        section.split("\n  br label %", 1)[0] for section in body.split("\nunwind.")[1:]
+    ]
+    assert unwind_sections
+    for section in unwind_sections:
+        released_slots = [
+            line.split("ptr %", 1)[1]
+            for line in section.splitlines()
+            if "store ptr null, ptr %" in line
+        ]
+        assert len(released_slots) <= 2
+
+    result = run_native(tmp_path, _UNWIND_OCCUPANCY_SOURCE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "[4, -1, 6, 6, -2, 10]\n"
