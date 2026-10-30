@@ -34,7 +34,7 @@ from dataclasses import dataclass, field, replace
 from functools import cache
 from typing import TYPE_CHECKING
 
-from mule import ast
+from mule import ast, procedures
 from mule.diagnostics import phase
 
 from . import argument_layout, fndb, vops
@@ -419,10 +419,7 @@ def _parsed_helpers(
     helper_defs: list[tuple[str, str]] = []
     current_symbol = None
     current_lines: list[str] = []
-    for emitter, helper_text in (
-        ("mule/compiler/vops.py", vops.helpers(bootstrap=bootstrap)),
-        ("mule/compiler/argument_layout.py", argument_layout.helpers()),
-    ):
+    for emitter, helper_text in procedures.all_procedures():
         for line in helper_text.splitlines():
             if current_symbol is not None:
                 current_lines.append(line)
