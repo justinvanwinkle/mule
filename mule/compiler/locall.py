@@ -414,11 +414,31 @@ class _SpecializesBody(NodeVisitor):
         candidate: dict[object, ValueType],
         general_targets: dict[object, Lambda] | None = None,
         candidate_targets: dict[object, Lambda] | None = None,
+        results: dict[Lambda, LambdaFacts] | None = None,
+        parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]] | None = None,
     ):
         self.general = general
         self.candidate = candidate
         self.general_targets = general_targets or {}
         self.candidate_targets = candidate_targets or {}
+        self.results = results
+        self.parameters = parameters
+
+    def _callee_entry_parameters(
+        self, callee: Lambda
+    ) -> tuple[tuple[ValueType, ...], ...]:
+        if self.results is not None and callee in self.results:
+            return tuple(
+                variant.parameters for variant in self.results[callee].variants
+            )
+        if self.parameters is not None:
+            entries = []
+            for key, params in self.parameters.items():
+                lam, ctx = key
+                if lam is callee and ctx != "general":
+                    entries.append(params)
+            return tuple(entries)
+        return ()
 
     def visit_Node(self, node):
         return False
@@ -438,35 +458,80 @@ class _SpecializesBody(NodeVisitor):
     def visit_Combination(self, node):
         cand_type = self.candidate.get(node, UNKNOWN)
         gen_type = self.general.get(node, UNKNOWN)
-        if (
-            cand_type != gen_type
-            and cand_type is not UNKNOWN
-            and not gen_type.fits(cand_type)
+        if (cand_type.is_fixnum and not gen_type.is_fixnum) or (
+            cand_type.has_float_specialization()
+            and not gen_type.has_float_specialization()
         ):
             return True
-        call_key = node
-        if node.kind in (CallKind.FULL, CallKind.GUARDED) and len(node.fun.uses) == 1:
-            call_key = node.fun.uses[0]
-        target = self.candidate_targets.get(call_key)
+        call_key = None
+        call_args = ()
+        if node.kind in (CallKind.FULL, CallKind.GUARDED):
+            call_key = node.fun.uses[0] if len(node.fun.uses) == 1 else node
+            call_args = node.args
+        elif (
+            node.kind is CallKind.KNOWN and node.fun_info is CALL_RESOLVED and node.args
+        ):
+            call_key = node
+            resolved = node.args[0]
+            if len(resolved.uses) == 1 and resolved.uses[0].args:
+                call_args = (resolved.uses[0].args[0], *node.args[1:])
+            else:
+                call_args = node.args[1:]
+        target = self.candidate_targets.get(call_key) if call_key is not None else None
         if (
             target is not None
-            and target.as_lambda() is not None
+            and (callee_lam := target.as_lambda()) is not None
             and self.general_targets.get(call_key) is target
+            and callee_lam is not node.home_lambda
         ):
             # Forwarding a narrower argument can select a useful callee entry
             # even when a generic return fallback keeps the result unknown.
-            for argument in node.args:
-                if len(argument.uses) != 1:
-                    continue
-                source = argument.uses[0]
-                candidate = self.candidate.get(source, UNKNOWN)
-                general = self.general.get(source, UNKNOWN)
-                if (
-                    candidate not in (UNKNOWN, BOTTOM)
-                    and candidate != general
-                    and not general.fits(candidate)
-                ):
-                    return True
+            keywords = node.info.keywords if node.info is not None else ()
+            order = callee_lam.call_order(keywords, len(call_args))
+            callee_entries = self._callee_entry_parameters(callee_lam)
+            if order is not None and callee_entries:
+                for param_idx, arg_idx in enumerate(order):
+                    if arg_idx < 0 or arg_idx >= len(call_args):
+                        continue
+                    argument = call_args[arg_idx]
+                    if len(argument.uses) != 1:
+                        continue
+                    source = argument.uses[0]
+                    candidate = self.candidate.get(source, UNKNOWN)
+                    general = self.general.get(source, UNKNOWN)
+                    if (
+                        candidate in (UNKNOWN, BOTTOM)
+                        or candidate == general
+                        or general.fits(candidate)
+                    ):
+                        continue
+                    for entry_params in callee_entries:
+                        if param_idx >= len(entry_params):
+                            continue
+                        expected = entry_params[param_idx]
+                        if expected is UNKNOWN:
+                            continue
+                        if candidate.may_dispatch_fit(
+                            expected
+                        ) != general.may_dispatch_fit(
+                            expected
+                        ) or candidate.dispatch_fits(expected) != general.dispatch_fits(
+                            expected
+                        ):
+                            return True
+            elif self.results is None and self.parameters is None:
+                for argument in call_args:
+                    if len(argument.uses) != 1:
+                        continue
+                    source = argument.uses[0]
+                    candidate = self.candidate.get(source, UNKNOWN)
+                    general = self.general.get(source, UNKNOWN)
+                    if (
+                        candidate not in (UNKNOWN, BOTTOM)
+                        and candidate != general
+                        and not general.fits(candidate)
+                    ):
+                        return True
         numeric_args = (
             node.info.arguments
             if node.fun_info is RANGE_PREPARE
@@ -559,22 +624,58 @@ class _SpecializesBody(NodeVisitor):
                     cand_recv != gen_recv
                     and cand_recv is not UNKNOWN
                     and not gen_recv.fits(cand_recv)
-                    and (
-                        node.fun_info
-                        not in (
-                            BINARY[ast.BinaryOperator.BIT_AND],
-                            BINARY[ast.BinaryOperator.BIT_OR],
-                            BINARY[ast.BinaryOperator.SUBTRACT],
-                            BINARY[ast.BinaryOperator.BIT_XOR],
-                            INPLACE_BINARY[ast.BinaryOperator.BIT_AND],
-                            INPLACE_BINARY[ast.BinaryOperator.BIT_OR],
-                            INPLACE_BINARY[ast.BinaryOperator.SUBTRACT],
-                            INPLACE_BINARY[ast.BinaryOperator.BIT_XOR],
-                        )
-                        or cand_recv.fits_set()
-                    )
                 ):
-                    return True
+                    if node.fun_info in (GETATTR, SETATTR):
+                        if node.info is not None and cand_recv.fixed_slot_index(
+                            node.info.name
+                        ) != gen_recv.fixed_slot_index(node.info.name):
+                            return True
+                    elif node.fun_info is RESOLVE_METHOD:
+                        if (
+                            cand_recv.is_exact_list
+                            or cand_recv.fits_dict()
+                            or cand_recv.fits_set()
+                            or cand_recv.fits_text(TEXT_TYPE)
+                            or cand_recv.fits_bytes(BYTES_TYPE)
+                            or cand_recv.fits_bytearray()
+                            or cand_recv.is_byte_storage
+                        ):
+                            return True
+                    elif node.fun_info in (
+                        BINARY[ast.BinaryOperator.BIT_AND],
+                        BINARY[ast.BinaryOperator.BIT_OR],
+                        BINARY[ast.BinaryOperator.SUBTRACT],
+                        BINARY[ast.BinaryOperator.BIT_XOR],
+                        INPLACE_BINARY[ast.BinaryOperator.BIT_AND],
+                        INPLACE_BINARY[ast.BinaryOperator.BIT_OR],
+                        INPLACE_BINARY[ast.BinaryOperator.SUBTRACT],
+                        INPLACE_BINARY[ast.BinaryOperator.BIT_XOR],
+                    ):
+                        if cand_recv.fits_set():
+                            return True
+                    elif node.fun_info in (
+                        GETITEM,
+                        GETSLICE,
+                        SETITEM,
+                        DELITEM,
+                        ITERATE,
+                        COMPARE[ast.ComparisonOperator.IN],
+                        COMPARE[ast.ComparisonOperator.NOT_IN],
+                    ):
+                        if (
+                            cand_recv.is_exact_list
+                            or cand_recv.is_exact_tuple
+                            or cand_recv.fits_dict()
+                            or cand_recv.fits_set()
+                            or cand_recv.fits_text(TEXT_TYPE)
+                            or cand_recv.fits_bytes(BYTES_TYPE)
+                            or cand_recv.fits_bytearray()
+                            or cand_recv.is_byte_storage
+                            or cand_recv.fits_iterator()
+                        ):
+                            return True
+                    else:
+                        return True
         if (
             node.kind in (CallKind.FULL, CallKind.GUARDED)
             and len(node.fun.uses) == 1
@@ -603,6 +704,8 @@ def _specializes_body(
     candidate: dict[object, ValueType],
     general_targets: dict[object, Lambda] | None = None,
     candidate_targets: dict[object, Lambda] | None = None,
+    results: dict[Lambda, LambdaFacts] | None = None,
+    parameters: dict[tuple[Lambda, str], tuple[ValueType, ...]] | None = None,
 ) -> bool:
     # A context whose argument types resolve calls the general body cannot
     # resolve (methods of a typed receiver) specializes those calls.
@@ -615,7 +718,14 @@ def _specializes_body(
         )
     ):
         return True
-    visitor = _SpecializesBody(general, candidate, general_targets, candidate_targets)
+    visitor = _SpecializesBody(
+        general,
+        candidate,
+        general_targets,
+        candidate_targets,
+        results,
+        parameters,
+    )
     for block in graph.blocks:
         for node in graph.block_nodes[block]:
             if node.accept(visitor):
@@ -3308,7 +3418,12 @@ def analyze(
     declared_entry_lambdas: set[Lambda] = set()
     for lambda_ in lambdas:
         signature = lambda_.signature
-        if lambda_.vars and not signature.variadic:
+        if (
+            lambda_.vars
+            and not signature.variadic
+            and lambda_.name != "__annotate__"
+            and not lambda_.name.endswith(".__annotate__")
+        ):
             gen_params = [
                 _ParameterUse(var, storage_methods).general_type(
                     lambda_.local_annotations.get(var.name)
@@ -4680,7 +4795,7 @@ def analyze(
         state_cache.get("parameters", {}) if state_cache is not None else {}
     )
     results: dict[Lambda, LambdaFacts] = {}
-    for lambda_ in lambdas:
+    for lambda_ in ordered_lambdas:
         obs_ctxs = _observed_context_names(lambda_, parameters)
         prev_obs_ctxs = _observed_context_names(lambda_, prev_parameters_ref)
         if (
@@ -4750,6 +4865,8 @@ def analyze(
                     candidate_types,
                     facts.targets,
                     body.targets(),
+                    results,
+                    parameters,
                 )
                 and ret_type == facts.return_type
             ):
@@ -4774,6 +4891,8 @@ def analyze(
                     candidate_types,
                     facts.targets,
                     body.targets(),
+                    results,
+                    parameters,
                 )
                 and ret_type == facts.return_type
             ):
@@ -4792,6 +4911,8 @@ def analyze(
                         bodies[lambda_, "fixnum"].types(),
                         facts.targets,
                         bodies[lambda_, "fixnum"].targets(),
+                        results,
+                        parameters,
                     )
                 )
                 and (
@@ -4834,6 +4955,8 @@ def analyze(
                             candidate_types,
                             bodies[lambda_, "fixnum"].targets(),
                             body.targets(),
+                            results,
+                            parameters,
                         )
                         and ret_type == summaries[lambda_, "fixnum"].normalized_bottom()
                     )
