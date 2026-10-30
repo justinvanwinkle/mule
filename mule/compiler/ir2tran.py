@@ -162,8 +162,6 @@ _BORROWING_VOPS = frozenset(
         "protocol-getitem",
         "protocol-getslice",
         "protocol-setitem",
-        "protocol-dict_len",
-        "protocol-table_len",
         "protocol-set_add",
         "protocol-set_discard",
         "protocol-set_remove",

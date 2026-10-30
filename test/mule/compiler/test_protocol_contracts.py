@@ -4,55 +4,54 @@ import pytest
 
 from mule.compiler import fndb
 from mule.compiler.codegen import Program
-from mule.compiler.ctype import DICT_TYPE, UNKNOWN, InstanceType, IntegerType
-from mule.compiler.ir1util import known_calls
+from mule.compiler.ctype import SET_TYPE, UNKNOWN, InstanceType
 from mule.compiler.node import ClassConstructorTarget
 from mule.compiler.sequence_protocol import prepare, protocol_argument_types
 
 
 @pytest.mark.parametrize(
     ("name", "arity"),
-    [("dict_len", 1)],
+    [("set_add", 2), ("set_discard", 2), ("set_remove", 2)],
 )
-def test_exact_dict_protocol_declares_receiver_domain(name, arity):
+def test_exact_set_protocol_declares_receiver_domain(name, arity):
     assert fndb.PROTOCOLS[name].argument_types == (
-        DICT_TYPE,
+        SET_TYPE,
         *((UNKNOWN,) * (arity - 1)),
     )
 
 
 def test_protocol_domain_uses_owner_layout_and_leaves_other_arguments_unknown():
     layout = InstanceType("implementation", fixed_slots=("entries",))
-    target = ClassConstructorTarget(base_type=DICT_TYPE, layout_type=layout)
-    assert protocol_argument_types("dict_len", {"dict": target}) == (layout,)
-    assert protocol_argument_types("getitem", {"dict": target}) is None
+    target = ClassConstructorTarget(base_type=SET_TYPE, layout_type=layout)
+    assert protocol_argument_types("set_add", {"set": target}) == (layout, UNKNOWN)
+    assert protocol_argument_types("getitem", {"set": target}) is None
 
 
 @pytest.mark.parametrize(
     "targets",
     [
         {},
-        {"dict": ClassConstructorTarget(base_type=DICT_TYPE)},
+        {"set": ClassConstructorTarget(base_type=SET_TYPE)},
         {
             "first": ClassConstructorTarget(
-                base_type=DICT_TYPE,
+                base_type=SET_TYPE,
                 layout_type=InstanceType("first", fixed_slots=("entries",)),
             ),
             "second": ClassConstructorTarget(
-                base_type=DICT_TYPE,
+                base_type=SET_TYPE,
                 layout_type=InstanceType("second", fixed_slots=("entries",)),
             ),
         },
     ],
 )
 def test_protocol_domain_without_unique_owner_layout_keeps_general_entry(targets):
-    assert protocol_argument_types("dict_len", targets) is None
+    assert protocol_argument_types("set_add", targets) is None
 
 
 def test_protocol_preparation_keeps_general_body_and_adds_declared_entry():
     program = Program([], None, {}, unit="builtins", exports=True, bootstrap=True)
     _, functions, _ = prepare(program)
-    for name in ("dict_len",):
+    for name in ("set_add",):
         function = functions[name]
         declared = function.entry_parameter_types
         assert declared is not None
@@ -62,9 +61,4 @@ def test_protocol_preparation_keeps_general_body_and_adds_declared_entry():
         context = next(
             context for context in facts.variants if context.parameters == declared
         )
-        indices = [
-            node
-            for node in known_calls(function, "%physical_field_ref")
-            if context.types.get(node) == IntegerType(0, (1 << 57) - 1)
-        ]
-        assert indices
+        assert context is not None

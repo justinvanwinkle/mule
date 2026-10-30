@@ -1245,9 +1245,7 @@ describe the Python mutation and ownership adaptations to SBCL.
        - `s.add(x)`, `s.discard(x)`, `s.remove(x)` on mutable `SetType` ->
          `set_add`, `set_discard`, `set_remove`
        - `s & other`, `s | other`, `s - other`, `s ^ other` on `SetType` ->
-         `set_and`, `set_or`, `set_sub`, `set_xor`
-       - `len(d)` on `DictType` -> `dict_len` and `len(s)` on `SetType` ->
-         `table_len` (reading `_instance_field(table, "_used")` directly).
+         `set_and`, `set_or`, `set_sub`, `set_xor`.
   3. **Fast `_Table` set helpers and pre-sized known-hash binary set operations
      (`stdlib/_dict.py`, `stdlib/_sequences.py`)**:
      - Eliminated the `try ... except TypeError:` handler frame from the hot path

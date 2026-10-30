@@ -1120,8 +1120,6 @@ _ALLOCATION = _Allocation()
 _LOCAL_CONTAINER_READERS = frozenset(
     (
         fndb.LEN,
-        fndb.PROTOCOLS["dict_len"],
-        fndb.PROTOCOLS["table_len"],
         fndb.PROTOCOLS["getitem"],
         fndb.PROTOCOLS["setitem"],
         fndb.PROTOCOLS["unpack"],

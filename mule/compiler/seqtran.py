@@ -26,10 +26,8 @@ from .ctype import (
     UNKNOWN,
     ByteArrayType,
     BytesType,
-    DictType,
     IntegerType,
     ListType,
-    SetType,
     TextType,
     TupleType,
     ValueType,
@@ -1332,16 +1330,6 @@ class _KnownLengthPrimitive(ValueTypeVisitor):
         if fact.may_be_unbound:
             return None
         return KNOWN["_storage_length"]
-
-    def visit_DictType(self, fact: DictType) -> FunInfo | None:
-        if not fact.proven or fact.may_be_unbound:
-            return None
-        return fndb.PROTOCOLS["dict_len"]
-
-    def visit_SetType(self, fact: SetType) -> FunInfo | None:
-        if not fact.proven or fact.may_be_unbound:
-            return None
-        return fndb.PROTOCOLS["table_len"]
 
 
 _KNOWN_LENGTH_PRIMITIVE = _KnownLengthPrimitive()

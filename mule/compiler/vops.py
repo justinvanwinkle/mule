@@ -3662,8 +3662,6 @@ _SUSPENSION_PROTOCOLS = frozenset(
 
 _BORROWED_PROTOCOL_NAMES = frozenset(
     {
-        "dict_len",
-        "table_len",
         "set_add",
         "set_discard",
         "set_remove",

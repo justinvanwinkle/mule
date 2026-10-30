@@ -748,14 +748,6 @@ def getitem(value, index):
     return _getitem_general(value, index)
 
 
-def dict_len(table):
-    return _instance_field(table, "_used")
-
-
-def table_len(table):
-    return _instance_field(table, "_used")
-
-
 def empty_set():
     return _empty_table(set)
 

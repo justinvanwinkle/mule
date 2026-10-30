@@ -592,8 +592,6 @@ PROTOCOL_NAMESPACE = "$mule.protocols"
 
 _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
     {
-        "dict_len",
-        "table_len",
         "set_add",
         "set_discard",
         "set_remove",

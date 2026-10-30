@@ -2986,20 +2986,6 @@ for _set_op_name, _set_op_enum in (
     defpropagate(_set_op_name)(_make_binary_propagator(_set_op_enum))
 
 
-@defpropagate("%dict_len")
-@defpropagate("%table_len")
-def _propagate_table_len(visitor: _Propagation, node: Combination):
-    if len(node.args) != 1:
-        return _SEQ_LEN_BOUND_FACT
-    table_type = visitor.type_of(node.args[0])
-    if table_type is BOTTOM:
-        return NO_FACT
-    exact_len = table_type.exact_length()
-    if exact_len is not None:
-        return _fact(IntegerType(exact_len, exact_len))
-    return _SEQ_LEN_BOUND_FACT
-
-
 @defpropagate("%range_prepare")
 def _propagate_range_prepare(visitor: _Propagation, node: Combination):
     state = linked(node.info, node, "info")

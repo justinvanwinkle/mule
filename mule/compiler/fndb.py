@@ -18,7 +18,6 @@ from .ctype import (
     BOTTOM,
     BYTEARRAY_TYPE,
     BYTES_TYPE,
-    DICT_TYPE,
     EMPTY_LIST_TYPE,
     EMPTY_SET_TYPE,
     FLOAT,
@@ -711,8 +710,6 @@ PROTOCOL_DERIVE_TYPES = {
         lvar_type(node.args[1])
     ),
     "setitem": lambda node: NONE_TYPE,
-    "dict_len": lambda node: IntegerType(0, (1 << 60) - 1),
-    "table_len": lambda node: IntegerType(0, (1 << 60) - 1),
     "empty_set": lambda node: EMPTY_SET_TYPE,
     "set_add": lambda node: NONE_TYPE,
     "set_discard": lambda node: NONE_TYPE,
@@ -739,8 +736,6 @@ NON_INTEGER_FIRST_PROTOCOLS = frozenset(
         "iterate",
         "next_item",
         "unpack",
-        "dict_len",
-        "table_len",
         "set_add",
         "set_discard",
         "set_remove",
@@ -753,8 +748,6 @@ NON_INTEGER_FIRST_PROTOCOLS = frozenset(
 INDEX_SECOND_PROTOCOLS = frozenset({"getitem", "setitem", "delitem"})
 
 PROTOCOL_ARGUMENT_TYPES = {
-    "dict_len": (DICT_TYPE,),
-    "table_len": (SET_TYPE,),
     "set_add": (SET_TYPE, UNKNOWN),
     "set_discard": (SET_TYPE, UNKNOWN),
     "set_remove": (SET_TYPE, UNKNOWN),
@@ -784,12 +777,6 @@ PROTOCOL_FLUSHABLE_TESTS = {
     "_list_fill": flushable_list_fill,
     "make_slice": flushable_make_slice,
     "empty_set": lambda node: not node.args,
-    "dict_len": lambda node: (
-        len(node.args) == 1 and not lvar_type(node.args[0]).may_be_unbound
-    ),
-    "table_len": lambda node: (
-        len(node.args) == 1 and not lvar_type(node.args[0]).may_be_unbound
-    ),
 }
 
 # Compiled stdlib protocols, keyed by the name the sequence module exports.
@@ -809,8 +796,6 @@ PROTOCOLS = {
     )
     for name in (
         "_list_fill",
-        "dict_len",
-        "table_len",
         "empty_set",
         "set_add",
         "set_discard",
