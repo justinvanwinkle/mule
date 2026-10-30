@@ -282,11 +282,9 @@ class _Solver:
         self.depends_on: dict[LambdaVar, list[LambdaVar]] = {}
         self.dependents: dict[LambdaVar, list[LambdaVar]] = {}
         self.incoming_args: dict[LambdaVar, list[Lvar]] = {}
-        self.default_args: dict[LambdaVar, list[Lvar]] = {}
         self.defaulted_params: set[LambdaVar] = set()
         self.pending: list[LambdaVar] = []
         self.allocation_pending: list[LambdaVar] = []
-        self._active_type_vars: set[LambdaVar] = set()
         self.uses = _UseClassifier(self)
 
     def proven_callee(self, node: Combination):
@@ -297,73 +295,14 @@ class _Solver:
             function
         ) or _all_uses_are_direct_summary_calls(function, self.analyzed_lambdas)
 
-    def effective_lvar_type(self, lvar: Lvar) -> ValueType:
+    def lvar_type(self, lvar: Lvar) -> ValueType:
         if len(lvar.uses) == 1:
             override = self.node_types.get(lvar.use(), UNKNOWN)
             if override is not UNKNOWN:
                 return override
-        direct = lvar_type(lvar)
-        if direct is not UNKNOWN or len(lvar.uses) != 1:
-            return direct
-        var = lvar.use().accept(_LOCAL_BINDING).var
-        if var is None or var in self._active_type_vars:
-            return direct
-        if var in var.home.vars:
-            if not var.sets:
-                idx = var.home.vars.index(var)
-                if idx < len(var.home.signature.annotations):
-                    ann = var.home.signature.annotations[idx]
-                    if ann is not None and ann.checked_type is not UNKNOWN:
-                        return ann.checked_type
-            if not self.is_summary_local_function(var.home):
-                return direct
-            sources = [
-                *(
-                    assignment.value
-                    for assignment in var.sets
-                    if assignment.value is not None
-                ),
-                *self.incoming_args.get(var, ()),
-                *(
-                    self.default_args.get(var, ())
-                    if var in self.defaulted_params
-                    else ()
-                ),
-            ]
-        else:
-            if any(assignment.value is None for assignment in var.sets):
-                return direct
-            sources = [
-                assignment.value
-                for assignment in var.sets
-                if assignment.value is not None
-            ]
-        if not sources:
-            return direct
-        self._active_type_vars.add(var)
-        try:
-            joined = BOTTOM
-            for source_lvar in sources:
-                stype = self.effective_lvar_type(source_lvar)
-                if stype is UNKNOWN:
-                    return UNKNOWN
-                joined = joined.join(stype)
-            return UNKNOWN if joined is BOTTOM else joined
-        finally:
-            self._active_type_vars.remove(var)
+        return lvar_type(lvar)
 
     def record_call_inputs(self, node) -> None:
-        maker = node.accept(_ALLOCATION)
-        if maker is not None and maker.fun_info is fndb.MAKE_FUNCTION:
-            fn = made_lambda(maker)
-            defaults = fn.signature.default_parameters
-            if len(maker.args) == 1 + len(defaults):
-                for def_arg, param_idx in zip(maker.args[1:], defaults, strict=True):
-                    if 0 <= param_idx < len(fn.vars):
-                        self.default_args.setdefault(fn.vars[param_idx], []).append(
-                            def_arg
-                        )
-            return
         callee = node.accept(_CALL_NODE)
         if callee is None:
             return
@@ -499,7 +438,7 @@ class _UseClassifier(NodeVisitor):
             if self._is_text_slice_source():
                 self.solver.allocation_only_escape(self.source)
             return
-        op_type = self.solver.effective_lvar_type(self.operand)
+        op_type = self.solver.lvar_type(self.operand)
         if op_type.accept(_BUILTIN_CONTAINER_TYPE) or not op_type.may_run_user_code:
             self.solver.allocation_only_escape(self.source)
             return
@@ -569,10 +508,8 @@ class _UseClassifier(NodeVisitor):
                 fndb.PROTOCOLS["delitem"],
             )
             and len(node.args) >= 2
-            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
-            and _borrows_subscript_index(
-                self.solver.effective_lvar_type(node.args[0]), info
-            )
+            and not self.solver.lvar_type(node.args[1]).may_run_user_code
+            and _borrows_subscript_index(self.solver.lvar_type(node.args[0]), info)
         ):
             self.solver.allocation_only_escape(self.source)
             return
@@ -580,10 +517,8 @@ class _UseClassifier(NodeVisitor):
             index == 0
             and info is fndb.PROTOCOLS["delitem"]
             and len(node.args) == 2
-            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
-            and self.solver.effective_lvar_type(node.args[0]).accept(
-                _BUILTIN_CONTAINER_TYPE
-            )
+            and not self.solver.lvar_type(node.args[1]).may_run_user_code
+            and self.solver.lvar_type(node.args[0]).accept(_BUILTIN_CONTAINER_TYPE)
         ):
             self.solver.allocation_only_escape(self.source)
             return
@@ -595,7 +530,7 @@ class _UseClassifier(NodeVisitor):
                 if self._is_text_slice_source():
                     self.solver.allocation_only_escape(self.source)
                 return
-            op_type = self.solver.effective_lvar_type(self.operand)
+            op_type = self.solver.lvar_type(self.operand)
             if op_type.accept(_BUILTIN_CONTAINER_TYPE) or not op_type.may_run_user_code:
                 self.solver.allocation_only_escape(self.source)
                 return
@@ -615,8 +550,7 @@ class _UseClassifier(NodeVisitor):
             info in _VALUE_COMPARISONS
             and len(node.args) == 2
             and all(
-                not self.solver.effective_lvar_type(arg).may_run_user_code
-                for arg in node.args
+                not self.solver.lvar_type(arg).may_run_user_code for arg in node.args
             )
         ):
             if (
@@ -627,8 +561,7 @@ class _UseClassifier(NodeVisitor):
                     fndb.COMPARE[ast.ComparisonOperator.NOT_EQUAL],
                 )
                 and all(
-                    self.solver.effective_lvar_type(arg).fits_text(TEXT_TYPE)
-                    for arg in node.args
+                    self.solver.lvar_type(arg).fits_text(TEXT_TYPE) for arg in node.args
                 )
             ):
                 return
@@ -645,10 +578,8 @@ class _UseClassifier(NodeVisitor):
                 fndb.PROTOCOLS["set_remove"],
             )
             and len(node.args) == 2
-            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
-            and self.solver.effective_lvar_type(node.args[0]).accept(
-                _SAFE_DICT_KEY_TYPE
-            )
+            and not self.solver.lvar_type(node.args[1]).may_run_user_code
+            and self.solver.lvar_type(node.args[0]).accept(_SAFE_DICT_KEY_TYPE)
         ):
             self.solver.allocation_only_escape(self.source)
             return
@@ -656,17 +587,15 @@ class _UseClassifier(NodeVisitor):
             index == 0
             and info is fndb.PROTOCOLS["set_add"]
             and len(node.args) == 2
-            and not self.solver.effective_lvar_type(node.args[1]).may_run_user_code
-            and self.solver.effective_lvar_type(node.args[0]).accept(
-                _SAFE_DICT_KEY_TYPE
-            )
+            and not self.solver.lvar_type(node.args[1]).may_run_user_code
+            and self.solver.lvar_type(node.args[0]).accept(_SAFE_DICT_KEY_TYPE)
         ):
             self.solver.allocation_only_escape(self.source)
             return
         if (
             info is fndb.MATH_SQRT
             and len(node.args) == 1
-            and not self.solver.effective_lvar_type(node.args[0]).may_run_user_code
+            and not self.solver.lvar_type(node.args[0]).may_run_user_code
         ):
             self.solver.allocation_only_escape(self.source)
             return
@@ -717,9 +646,7 @@ class _UseClassifier(NodeVisitor):
     def _is_reflexive_fixed_container_membership(self, node: Combination) -> bool:
         if (
             len(node.args) != 2
-            or not self.solver.effective_lvar_type(
-                node.args[0]
-            ).has_reflexive_equality()
+            or not self.solver.lvar_type(node.args[0]).has_reflexive_equality()
         ):
             return False
         container_arg = node.args[1]
@@ -733,7 +660,7 @@ class _UseClassifier(NodeVisitor):
                 origin.fun_info not in (fndb.BUILD_LIST, fndb.BUILD_TUPLE)
                 or not (1 <= len(origin.args) <= 8)
                 or not all(
-                    self.solver.effective_lvar_type(arg).has_reflexive_equality()
+                    self.solver.lvar_type(arg).has_reflexive_equality()
                     for arg in origin.args
                 )
             ):
@@ -1044,7 +971,7 @@ def _borrows_resolved_method_receiver(
     call_node = resolve_node.lvar.dest.accept(_CALL_RESOLVED_NODE)
     if call_node is None or call_node.args[0] is not resolve_node.lvar:
         return False
-    recv_type = solver.effective_lvar_type(resolve_node.args[0])
+    recv_type = solver.lvar_type(resolve_node.args[0])
     name = resolve_node.info.name
     args = call_node.args[1:]
     arity = len(args)
@@ -1059,42 +986,35 @@ def _borrows_resolved_method_receiver(
             "endswith",
         ):
             return 1 <= arity <= 3 and all(
-                not solver.effective_lvar_type(a).may_run_user_code for a in args
+                not solver.lvar_type(a).may_run_user_code for a in args
             )
         if name in ("split", "rsplit"):
             return 0 <= arity <= 2 and all(
-                not solver.effective_lvar_type(a).may_run_user_code for a in args
+                not solver.lvar_type(a).may_run_user_code for a in args
             )
         if name in ("partition", "rpartition"):
-            return (
-                arity == 1 and not solver.effective_lvar_type(args[0]).may_run_user_code
-            )
+            return arity == 1 and not solver.lvar_type(args[0]).may_run_user_code
     if recv_type.is_exact_list:
         if name == "append":
             return arity == 1
         if name == "pop":
             return 0 <= arity <= 1 and all(
-                not solver.effective_lvar_type(a).may_run_user_code for a in args
+                not solver.lvar_type(a).may_run_user_code for a in args
             )
         if name == "clear":
             return arity == 0
     if recv_type.fits_bytearray(BYTEARRAY_TYPE):
         if name == "append":
-            return (
-                arity == 1 and not solver.effective_lvar_type(args[0]).may_run_user_code
-            )
+            return arity == 1 and not solver.lvar_type(args[0]).may_run_user_code
         if name == "pop":
             return 0 <= arity <= 1 and all(
-                not solver.effective_lvar_type(a).may_run_user_code for a in args
+                not solver.lvar_type(a).may_run_user_code for a in args
             )
         if name == "clear":
             return arity == 0
     if recv_type.fits_dict(DICT_TYPE):
         if name in ("get", "pop"):
-            return (
-                1 <= arity <= 2
-                and not solver.effective_lvar_type(args[0]).may_run_user_code
-            )
+            return 1 <= arity <= 2 and not solver.lvar_type(args[0]).may_run_user_code
         if name == "clear":
             return arity == 0
     return False
@@ -1113,7 +1033,7 @@ def _classify_resolved_method_argument(
     resolve_node = call_node.args[0].use().accept(_RESOLVE_METHOD_NODE)
     if resolve_node is None or resolve_node.lvar is not call_node.args[0]:
         return None
-    recv_type = solver.effective_lvar_type(resolve_node.args[0])
+    recv_type = solver.lvar_type(resolve_node.args[0])
     name = resolve_node.info.name
     args = call_node.args[1:]
     arity = len(args)
@@ -1130,19 +1050,19 @@ def _classify_resolved_method_argument(
                 "endswith",
             )
             and 1 <= arity <= 3
-            and all(not solver.effective_lvar_type(a).may_run_user_code for a in args)
+            and all(not solver.lvar_type(a).may_run_user_code for a in args)
         ):
             return "borrow"
         if (
             name in ("split", "rsplit")
             and 0 <= arity <= 2
-            and all(not solver.effective_lvar_type(a).may_run_user_code for a in args)
+            and all(not solver.lvar_type(a).may_run_user_code for a in args)
         ):
             return "borrow"
         if (
             name in ("partition", "rpartition")
             and arity == 1
-            and not solver.effective_lvar_type(args[0]).may_run_user_code
+            and not solver.lvar_type(args[0]).may_run_user_code
         ):
             return "borrow"
     if (
@@ -1150,7 +1070,7 @@ def _classify_resolved_method_argument(
         and name == "pop"
         and arity == 1
         and index == 1
-        and not solver.effective_lvar_type(args[0]).may_run_user_code
+        and not solver.lvar_type(args[0]).may_run_user_code
     ):
         return "borrow"
     if (
@@ -1158,14 +1078,14 @@ def _classify_resolved_method_argument(
         and name in ("append", "pop")
         and arity == 1
         and index == 1
-        and not solver.effective_lvar_type(args[0]).may_run_user_code
+        and not solver.lvar_type(args[0]).may_run_user_code
     ):
         return "borrow"
     if (
         recv_type.fits_dict(DICT_TYPE)
         and name in ("get", "pop")
         and 1 <= arity <= 2
-        and not solver.effective_lvar_type(args[0]).may_run_user_code
+        and not solver.lvar_type(args[0]).may_run_user_code
     ):
         if index == 1 and recv_type.accept(_SAFE_DICT_KEY_TYPE):
             return "borrow"
