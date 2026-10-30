@@ -1,8 +1,9 @@
 """Nested functions capture enclosing variables with Python's cell semantics."""
 
 import re
+import subprocess
 
-from mule.compiler import emit_llvm
+from mule.compiler import build, emit_llvm
 from mule.compiler.main import compile_toplevel
 from test.mule.compiler.test_modules import execute
 
@@ -13,6 +14,49 @@ MIXED_CAPTURE = """def factory(value):
         count += 1
         return value, count
     return update
+"""
+
+# Each function reads a captured container after code on the other side of
+# the closure boundary changed its contents, including element types.
+CAPTURED_CONTAINER_MUTATION = """def observed(steps: int) -> tuple[int, int]:
+    total = 0
+    audit = [0, 0]
+    def observe(value: int) -> None:
+        audit[0] += 1
+        audit[1] += value
+    for step in range(steps):
+        observe(step)
+        total += step
+    events = audit[0] + audit[1]
+    return total, events
+
+def observed_contents(steps: int) -> list[int]:
+    audit = [0, 0]
+    def observe(value: int) -> None:
+        audit[0] += 1
+        audit[1] += value
+    for step in range(steps):
+        observe(step)
+    return audit
+
+def closure_reads_frame_write(value):
+    labels = [0]
+    def read():
+        return labels[0] * 2
+    labels[0] = value
+    return read()
+
+def frame_reads_closure_write(items, value):
+    def replace():
+        items[0] = 'text'
+    items[0] = value
+    replace()
+    return items[0] * 2
+
+print(observed(10))
+print(observed_contents(10))
+print(closure_reads_frame_write('ab'))
+print(frame_reads_closure_write([0], 3))
 """
 
 
@@ -183,6 +227,18 @@ except ValueError as error:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "1 1\n1\n11\nNone\ncell 5\nCell is empty\n"
+
+
+def test_captured_container_contents_survive_closure_boundary(tmp_path):
+    # LLVM optimization acts on the compiler's container facts, so a stale
+    # fact changes results only in an optimized build.
+    source = tmp_path / "captured.py"
+    source.write_text(CAPTURED_CONTAINER_MUTATION)
+    executable = build(source, tmp_path / "captured", optimize=1, workers=1)
+    result = subprocess.run(
+        [executable], capture_output=True, text=True, check=True, timeout=10
+    )
+    assert result.stdout == "(45, 55)\n[10, 45]\nabab\ntexttext\n"
 
 
 def test_lambdas_bind_defaults_early_and_keep_their_own_scope(tmp_path):

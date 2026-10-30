@@ -4316,7 +4316,9 @@ def analyze(
             # closures can use it without an environment-specific guard: an
             # escaping function exposes its cells to arbitrary external writes.
             joined = (
-                parameters[var.home, "general"][var.home.vars.index(var)]
+                parameters[var.home, "general"][
+                    var.home.vars.index(var)
+                ].widen_mutable_containers()
                 if parameter
                 else BOTTOM
             )
@@ -4327,8 +4329,14 @@ def analyze(
                 if store.value is None:
                     joined = joined.join(UNBOUND)
                 else:
+                    # The fact describes the container when it was stored.
+                    # A closure may read it after the defining frame or
+                    # another closure mutated it, so only the binding's
+                    # identity facts survive, not its contents.
                     joined = joined.join(
-                        home_body.facts.get(store.value.use(), NO_FACT).type
+                        home_body.facts.get(
+                            store.value.use(), NO_FACT
+                        ).type.widen_mutable_containers()
                     )
             if joined != var.optimistic_type:
                 var_changes[var] += 1

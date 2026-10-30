@@ -1411,6 +1411,10 @@ class _Propagation(NodeVisitor, LeafVisitor):
         return self.walk.builtin_target(node.fun)
 
     def invalidate(self):
+        # Closures created in this frame read its captured variables, so any
+        # code the call may run can mutate the containers they hold.
+        for var in self.walk.captured:
+            self.widen_escaped_container(var)
         if not self.globals_invalidated and self.walk.invalidated:
             state = self.state
             has_handler = self.has_handler
@@ -3853,6 +3857,10 @@ class LambdaGraph:
     back_edges: frozenset
     global_names: tuple
     indirect: tuple
+    # Variables nested functions read but only this frame binds, whether
+    # held in cells or copied into closures. Closures may still mutate the
+    # containers they hold whenever user code runs.
+    captured: tuple
     volatile_keys: tuple
     call_nodes: tuple
     thresholds: tuple[int, ...] = _BASE_WIDENING_THRESHOLDS
@@ -3964,6 +3972,13 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         *((_GLOBAL, name) for name in global_names),
         *indirect,
     )
+    rebound = frozenset(indirect)
+    captured = tuple(
+        var
+        for var in lambda_.locals
+        if var not in rebound
+        and any(ref.home_lambda is not lambda_ for ref in var.refs)
+    )
     return LambdaGraph(
         blocks=blocks,
         block_nodes=block_nodes,
@@ -3976,6 +3991,7 @@ def build_lambda_graph(lambda_: Lambda) -> LambdaGraph:
         back_edges=back_edges,
         global_names=global_names,
         indirect=indirect,
+        captured=captured,
         volatile_keys=volatile_keys,
         call_nodes=call_nodes,
         thresholds=thresholds,
@@ -4083,6 +4099,7 @@ class _Walk:
         self.back_edges = graph.back_edges
         self.global_names = graph.global_names
         self.indirect = graph.indirect
+        self.captured = graph.captured
         self.volatile_keys = graph.volatile_keys
         self.thresholds = graph.thresholds
         self.local_vars_tuple = tuple(var for var in lambda_.locals if not var.indirect)
