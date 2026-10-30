@@ -748,30 +748,6 @@ def getitem(value, index):
     return _getitem_general(value, index)
 
 
-# Entry points for a receiver the compiler proved to be an exact ``dict``:
-# the compiled code calls them directly, without resolving a method,
-# binding arguments, or testing the receiver's class. An exact dict has no
-# ``__missing__``, ``__getitem__`` override, or other hook.
-def dict_get(table, key, default):
-    code = _storage_hash(key)
-    if code is None:
-        code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
-    perturb = code & _TABLE_PERTURB_MASK
-    slot = perturb & mask
-    while True:
-        entry = _storage_read(_instance_field(table, "_indices"), slot)
-        if entry >= 0:
-            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(table, "_keys"), entry)
-                if existing is key or existing == key:
-                    return _storage_read(_instance_field(table, "_values"), entry)
-        elif entry is _TABLE_EMPTY:
-            return default
-        perturb >>= 5
-        slot = (slot * 5 + perturb + 1) & mask
-
-
 def dict_getitem(table, key):
     code = _storage_hash(key)
     if code is None:
@@ -840,46 +816,6 @@ def dict_setitem(table, key, value):
     next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
     _set_instance_field(table, "_used", next_used)
     del next_used
-
-
-def dict_contains(table, key):
-    code = _storage_hash(key)
-    if code is None:
-        code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
-    perturb = code & _TABLE_PERTURB_MASK
-    slot = perturb & mask
-    while True:
-        entry = _storage_read(_instance_field(table, "_indices"), slot)
-        if entry >= 0:
-            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(table, "_keys"), entry)
-                if existing is key or existing == key:
-                    return True
-        elif entry is _TABLE_EMPTY:
-            return False
-        perturb >>= 5
-        slot = (slot * 5 + perturb + 1) & mask
-
-
-def dict_not_contains(table, key):
-    code = _storage_hash(key)
-    if code is None:
-        code = _table_hash_fallback(key)
-    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
-    perturb = code & _TABLE_PERTURB_MASK
-    slot = perturb & mask
-    while True:
-        entry = _storage_read(_instance_field(table, "_indices"), slot)
-        if entry >= 0:
-            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(table, "_keys"), entry)
-                if existing is key or existing == key:
-                    return False
-        elif entry is _TABLE_EMPTY:
-            return True
-        perturb >>= 5
-        slot = (slot * 5 + perturb + 1) & mask
 
 
 def dict_len(table):
@@ -1003,46 +939,6 @@ def set_remove(table, key):
                     return
         elif entry is _TABLE_EMPTY:
             raise KeyError(key)
-        perturb >>= 5
-        slot = (slot * 5 + perturb + 1) & mask
-
-
-def set_contains(table, key):
-    code = _storage_hash(key)
-    if code is None:
-        return _set_lookup(table, key) >= 0
-    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
-    perturb = code & _TABLE_PERTURB_MASK
-    slot = perturb & mask
-    while True:
-        entry = _storage_read(_instance_field(table, "_indices"), slot)
-        if entry >= 0:
-            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(table, "_keys"), entry)
-                if existing is key or existing == key:
-                    return True
-        elif entry is _TABLE_EMPTY:
-            return False
-        perturb >>= 5
-        slot = (slot * 5 + perturb + 1) & mask
-
-
-def set_not_contains(table, key):
-    code = _storage_hash(key)
-    if code is None:
-        return _set_lookup(table, key) < 0
-    mask = (_storage_length(_instance_field(table, "_indices")) - 1) & _TABLE_MASK_LIMIT
-    perturb = code & _TABLE_PERTURB_MASK
-    slot = perturb & mask
-    while True:
-        entry = _storage_read(_instance_field(table, "_indices"), slot)
-        if entry >= 0:
-            if _storage_read(_instance_field(table, "_hashes"), entry) == code:
-                existing = _storage_read(_instance_field(table, "_keys"), entry)
-                if existing is key or existing == key:
-                    return False
-        elif entry is _TABLE_EMPTY:
-            return True
         perturb >>= 5
         slot = (slot * 5 + perturb + 1) & mask
 
@@ -2629,6 +2525,16 @@ class _OrderedSequence:
         iterator.index = 0
         iterator.exhausted = False
         return iterator
+
+    def __contains__(self, item):
+        count = _storage_length(self)
+        index = 0
+        while index < count:
+            existing = _storage_read(self, index)
+            if existing is item or existing == item:
+                return True
+            index += 1
+        return False
 
     def count(self, value):
         found = 0
@@ -4227,55 +4133,7 @@ def _optional_special(value, name):
 
 
 def _iterate(value, membership):
-    cls = _type_of(value)
-    if cls is dict:
-        return dict.__iter__(value)
-    if cls is set or cls is frozenset:
-        return set.__iter__(value)
-    if cls is list or cls is tuple:
-        iter_cls = TupleIterator if cls is tuple else StorageIterator
-        iterator = _allocate_instance(iter_cls)
-        iterator.sequence = value
-        iterator.index = 0
-        iterator.exhausted = False
-        return iterator
-    if cls is str:
-        iterator = _allocate_instance(TextIterator)
-        iterator.text = value
-        iterator.index = 0
-        return iterator
-    if cls is bytes:
-        iterator = _allocate_instance(BytesIterator)
-        iterator.sequence = value
-        iterator.index = 0
-        iterator.exhausted = False
-        return iterator
-    if cls is bytearray:
-        iterator = _allocate_instance(StorageIterator)
-        iterator.sequence = value
-        iterator.index = 0
-        iterator.exhausted = False
-        return iterator
-    if cls is range:
-        iterator = _allocate_instance(RangeIterator)
-        iterator.current = value.start
-        iterator.stop = value.stop
-        iterator.step = value.step
-        iterator.exhausted = False
-        return iterator
-    missing = _binding_missing()
-    method = _optional_special(value, "__iter__")
-    if method is not missing:
-        if method is None:
-            return _iteration_error(value, membership)
-        iterator = method()
-        if class_lookup_default(_type_of(iterator), "__next__", missing) is missing:
-            raise TypeError("__iter__ returned a non-iterator")
-        return iterator
-    method = _optional_special(value, "__getitem__")
-    if method is not missing and method is not None:
-        return SequenceIterator(value)
-    return _iteration_error(value, membership)
+    return value.__iter__()
 
 
 def _iteration_error(value, membership):
@@ -4286,151 +4144,15 @@ def _iteration_error(value, membership):
 
 
 def contains(container, item):
-    owner = _type_of(container)
-    if owner is dict:
-        return _table_lookup(container, item) >= 0
-    if owner is set or owner is frozenset:
-        return _set_lookup(container, item) >= 0
-    if owner is str:
-        return TextStorage.__contains__(container, item)
-    if owner is bytearray:
-        return _bytes_find(container.values, item, 0, None) >= 0
-    if owner is list or owner is tuple:
-        count = _storage_length(container)
-        index = 0
-        while index < count:
-            existing = _storage_read(container, index)
-            if existing is item or existing == item:
-                return True
-            index += 1
-        return False
-    missing = _binding_missing()
-    method = _optional_special(container, "__contains__")
-    if method is not missing:
-        if method is None:
-            raise TypeError(f"'{owner.__name__}' object is not a container")
-        return bool(method(item))
-    iterator = _iterate(container, True)
-    while True:
-        try:
-            existing = next_item(iterator)
-        except StopIteration:
-            return False
-        if existing is item or existing == item:
-            return True
+    return container.__contains__(item)
 
 
 def not_contains(container, item):
     return not contains(container, item)
 
 
-def text_contains(text, item):
-    """``item in text`` with both operands proven exact ``str``."""
-    end = _text_length(text)
-    size = _text_length(item)
-    if size > end:
-        return False
-    if size <= 0:
-        return True
-    first = _text_codepoint(item, 0)
-    position = 0
-    if size <= 1:
-        while position < end:
-            if _text_codepoint(text, position) == first:
-                return True
-            position += 1
-        return False
-    limit = end - size + 1
-    while position < limit:
-        if _text_codepoint(text, position) == first:
-            offset = 1
-            while offset < size:
-                if _text_codepoint(text, position + offset) != _text_codepoint(
-                    item, offset
-                ):
-                    break
-                offset += 1
-            if offset == size:
-                return True
-        position += 1
-    return False
-
-
-def text_not_contains(text, item):
-    return not text_contains(text, item)
-
-
 def next_item(value):
-    cls = _type_of(value)
-    if cls is StorageIterator or cls is TupleIterator or cls is BytesIterator:
-        if value.exhausted:
-            raise StopIteration
-        index = value.index
-        sequence = value.sequence
-        if index >= _storage_length(sequence):
-            value.exhausted = True
-            raise StopIteration
-        item = _storage_read(sequence, index)
-        value.index = index + 1
-        return item
-    if cls is TextIterator:
-        index = value.index
-        text = value.text
-        if index >= _text_length(text):
-            raise StopIteration
-        value.index = index + 1
-        return _text_character(text, index)
-    if cls is RangeIterator:
-        current = value.current
-        step = value.step
-        if (
-            value.exhausted
-            or (step > 0 and current >= value.stop)
-            or (step < 0 and current <= value.stop)
-        ):
-            value.exhausted = True
-            raise StopIteration
-        value.current = current + step
-        return current
-    if cls is Enumerate:
-        item = next_item(value.iterator)
-        index = value.index
-        value.index = index + 1
-        return (index, item)
-    if cls is _generator:
-        return _coroutine_next(value)
-    if cls is map:
-        first = value.first
-        if first is not None:
-            second = value.second
-            if second is None:
-                return value.function(next_item(first))
-            return value.function(next_item(first), next_item(second))
-        return value.function(*next_item(value.items))
-    if cls is filter:
-        func = value.function
-        iterator = value.iterator
-        if func is None:
-            while True:
-                item = next_item(iterator)
-                if item:
-                    return item
-        while True:
-            item = next_item(iterator)
-            if func(item):
-                return item
-    if cls is zip:
-        first = value.first
-        if first is not None:
-            second = value.second
-            if second is None:
-                return (next_item(first),)
-            return (next_item(first), next_item(second))
-        return _zip_next(value)
-    method = _next_method(value)
-    if method is None:
-        raise TypeError("object is not an iterator")
-    return method()
+    return value.__next__()
 
 
 def unpack(value, count):

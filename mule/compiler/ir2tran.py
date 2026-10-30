@@ -46,7 +46,6 @@ from .ctype import (
     TEXT_TYPE,
     UNKNOWN,
     IntegerType,
-    NoneType,
     TupleType,
     ValueType,
     ValueTypeVisitor,
@@ -163,17 +162,11 @@ _BORROWING_VOPS = frozenset(
         "protocol-getitem",
         "protocol-getslice",
         "protocol-setitem",
-        "protocol-dict_contains",
-        "protocol-dict_not_contains",
         "protocol-dict_len",
         "protocol-table_len",
         "protocol-set_add",
         "protocol-set_discard",
         "protocol-set_remove",
-        "protocol-set_contains",
-        "protocol-set_not_contains",
-        "protocol-text_contains",
-        "protocol-text_not_contains",
         "protocol-set_and",
         "protocol-set_or",
         "protocol-set_sub",
@@ -331,26 +324,12 @@ def _borrows_operand(vop: VOP, ref: TNRef, source) -> bool:
             or source.leaf is None
             or info.reuse_local != source.leaf.name
         )
-    if name in ("compare-in", "compare-not_in") and len(vop.args) == 2:
-        rhs_type = vop.args[1].tn.type or UNKNOWN
-        return rhs_type.fits_dict() or rhs_type.fits_set()
     if name in ("full-call", "local-extent-call") and vop.args:
         site = linked(vop.codegen_info, vop, "call site")
         offset = 1 if site.callee_required else 0
         return (site.callee_required and ref is vop.args[0]) or any(
             ref is vop.args[index + offset] for index in site.borrowable_arguments
         )
-    if name == "call-resolved":
-        info = vop.codegen_info
-        if info is not None and (
-            info.exact_text_find
-            or info.exact_text_split
-            or info.exact_text_partition
-            or info.exact_text_affix
-            or info.exact_dict_get
-            or info.exact_bytearray_append
-        ):
-            return True
     if name == "range-prepare":
         info = vop.codegen_info
         if info is not None and (info.direct or info.fused):
@@ -465,64 +444,18 @@ class _ObjectFreeFinalUse(NodeVisitor):
 @dataclass(frozen=True, slots=True)
 class MethodResolution:
     name: str
-    exact_list_append: bool = False
-    exact_list_pop: bool = False
-    exact_text_find: bool = False
-    exact_text_split: bool = False
-    exact_text_partition: bool = False
-    exact_text_affix: bool = False
-    exact_text_method: bool = False
-    exact_dict_get: bool = False
-    exact_bytearray_append: bool = False
-
-    @property
-    def is_exact(self) -> bool:
-        return (
-            self.exact_list_append
-            or self.exact_list_pop
-            or self.exact_text_find
-            or self.exact_text_split
-            or self.exact_text_partition
-            or self.exact_text_affix
-            or self.exact_text_method
-            or self.exact_dict_get
-            or self.exact_bytearray_append
-        )
 
 
 @dataclass(frozen=True, slots=True)
 class MethodCall:
     keywords: tuple
     name: str
-    exact_list_append: bool = False
-    exact_list_pop: bool = False
-    exact_text_find: bool = False
-    exact_text_split: bool = False
-    exact_text_partition: bool = False
-    exact_text_affix: bool = False
-    exact_text_method: bool = False
-    exact_dict_get: bool = False
-    exact_bytearray_append: bool = False
     # The method the receiver's class resolves the name to, when analysis
     # typed the receiver; code generation guards the resolved function's
     # identity and calls this method's body directly.
     target: Lambda | None = None
     # The receiver's analyzed type, for selecting the target's entry context.
     receiver_type: ValueType = UNKNOWN
-
-    @property
-    def is_exact(self) -> bool:
-        return (
-            self.exact_list_append
-            or self.exact_list_pop
-            or self.exact_text_find
-            or self.exact_text_split
-            or self.exact_text_partition
-            or self.exact_text_affix
-            or self.exact_text_method
-            or self.exact_dict_get
-            or self.exact_bytearray_append
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -703,12 +636,6 @@ def select_tuple_delivery(component, arities, method_targets):
                         and target.signature.return_annotation is None
                     ):
                         call = producer
-                elif (
-                    producer.info is vops.CALL_RESOLVED
-                    and producer.codegen_info.exact_text_partition
-                    and arity == 3
-                ):
-                    call = producer
             if assertion is not None and call is None:
                 continue
             start = producer if call is not None else unpack
@@ -780,8 +707,6 @@ def select_tuple_delivery(component, arities, method_targets):
                 continue
             if call.info is vops.CALL_RESOLVED:
                 info = call.codegen_info
-                if info.is_exact:
-                    continue
                 target = info.target
                 count = len(call.args) - 2
                 direct = (
@@ -899,22 +824,6 @@ def _codepoint_comparison_constant(
     return _single_char_constant_vop(other_ref.tn, reads, writes)
 
 
-def _codepoint_contains_constant(
-    reader_vop: VOP, reader_ref: TNRef, reads, writes
-) -> tuple[VOP, str] | None:
-    if (
-        reader_vop.info.name
-        not in ("protocol-text_contains", "protocol-text_not_contains")
-        or len(reader_vop.args) != 2
-        or reader_ref is not reader_vop.args[1]
-    ):
-        return None
-    haystack_ref = reader_vop.args[0]
-    if haystack_ref.tn is reader_ref.tn:
-        return None
-    return _text_constant_vop(haystack_ref.tn, reads, writes)
-
-
 def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
     """Fuse ``text[i]`` with 1-character literal comparisons into codepoint
     extraction and fixnum comparisons when ``text`` is proven ``str``, ``i`` is
@@ -980,10 +889,7 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
             if reader.info is vops.MOVE and reader.results[0].tn in local_tns:
                 has_active_use = True
                 continue
-            if (
-                _codepoint_comparison_constant(reader, ref, reads, writes) is not None
-                or _codepoint_contains_constant(reader, ref, reads, writes) is not None
-            ):
+            if _codepoint_comparison_constant(reader, ref, reads, writes) is not None:
                 has_active_use = True
                 continue
             return False
@@ -1050,8 +956,6 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
                     if (
                         _codepoint_comparison_constant(consumer, cref, reads, writes)
                         is not None
-                        or _codepoint_contains_constant(consumer, cref, reads, writes)
-                        is not None
                     ):
                         has_direct_comparison = True
                         continue
@@ -1117,16 +1021,6 @@ def _fuse_text_codepoint_comparisons(component: IR2Component) -> None:
                 const_tn = const_vop.results[0].tn
                 const_tn.primitive_type = FIXNUM
                 const_tn.type = IntegerType(code, code)
-                continue
-            contains_match = _codepoint_contains_constant(reader, ref, reads, writes)
-            if contains_match is not None:
-                const_vop, text = contains_match
-                reader.codegen_info = text
-                literal = linked(const_vop.codegen_info, const_vop, "constant literal")
-                const_vop.codegen_info = ast.IntegerLiteral(0, span=literal.span)
-                const_tn = const_vop.results[0].tn
-                const_tn.primitive_type = FIXNUM
-                const_tn.type = IntegerType(0, 0)
 
 
 def _enclosing_exception_target(block):
@@ -1578,19 +1472,6 @@ class _BorrowedLifetime:
                 if not _borrows_operand(reader, ref, source):
                     return (), ()
                 consumers.add(reader)
-                # Exact method resolution can forward the borrowed receiver
-                # without a new owner; its invocation must be in the region.
-                if (
-                    reader.info.name == "resolve-method"
-                    and reader.codegen_info is not None
-                    and reader.codegen_info.is_exact
-                ):
-                    bound = reader.results[1].tn
-                    uses = self.component.reads.get(bound, ())
-                    if len(uses) != 1:
-                        return (), ()
-                    pending.append(bound)
-                    consumers.add(uses[0][0])
         return aliases, consumers
 
     def protected(
@@ -4377,156 +4258,16 @@ class _Converter(NodeVisitor):
         if discard:
             self.emit_discard(node, result)
 
-    def is_exact_list_append(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.is_exact_list
-            and info.name == "append"
-            and call is not None
-            and call.accept(_EXACT_LIST_APPEND_CALL)
-        )
-
-    def is_exact_list_pop(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.is_exact_list
-            and info.name == "pop"
-            and call is not None
-            and call.accept(_EXACT_LIST_POP_CALL)
-        )
-
-    def is_exact_text_find(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.fits_text(TEXT_TYPE)
-            and info.name in ("find", "rfind")
-            and call is not None
-            and call.accept(_ExactTextFindCall(self.context))
-        )
-
-    def is_exact_text_split(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.fits_text(TEXT_TYPE)
-            and info.name == "split"
-            and call is not None
-            and call.accept(_ExactTextSplitCall(self.context))
-        )
-
-    def is_exact_text_partition(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.fits_text(TEXT_TYPE)
-            and info.name in ("partition", "rpartition")
-            and call is not None
-            and call.accept(_ExactTextPartitionCall(self.context))
-        )
-
-    def is_exact_text_affix(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.fits_text(TEXT_TYPE)
-            and info.name in ("startswith", "endswith")
-            and call is not None
-            and call.accept(_ExactTextAffixCall(self.context))
-        )
-
-    def is_exact_text_method(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        arity_bounds = _EXACT_TEXT_METHODS.get(info.name)
-        return (
-            arity_bounds is not None
-            and receiver.fits_text(TEXT_TYPE)
-            and not receiver.may_be_unbound
-            and call is not None
-            and call.accept(_ExactTextMethodCall(*arity_bounds))
-        )
-
-    def is_exact_dict_get(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.fits_dict()
-            and info.name == "get"
-            and call is not None
-            and call.accept(_EXACT_DICT_GET_CALL)
-        )
-
-    def is_exact_bytearray_append(self, resolve: Combination, call) -> bool:
-        if resolve.fun_info is not fndb.RESOLVE_METHOD:
-            return False
-        receiver = self.context.type_of(resolve.args[0].use())
-        info = linked(resolve.info, resolve, "method info")
-        return (
-            receiver.fits_bytearray()
-            and info.name == "append"
-            and call is not None
-            and call.accept(_EXACT_LIST_APPEND_CALL)
-        )
-
     def convert_resolve_method(self, node: Combination):
         args = tuple(self.lvar_tn(arg) for arg in node.args)
         lvar = node.lvar
         if lvar is None:
             raise ValueError("a resolved method is always consumed by its call")
-        exact_list_append = self.is_exact_list_append(node, lvar.dest)
-        exact_list_pop = self.is_exact_list_pop(node, lvar.dest)
-        exact_text_find = self.is_exact_text_find(node, lvar.dest)
-        exact_text_split = self.is_exact_text_split(node, lvar.dest)
-        exact_text_partition = self.is_exact_text_partition(node, lvar.dest)
-        exact_text_affix = self.is_exact_text_affix(node, lvar.dest)
-        exact_text_method = (
-            not exact_text_find
-            and not exact_text_split
-            and not exact_text_partition
-            and not exact_text_affix
-            and self.is_exact_text_method(node, lvar.dest)
-        )
-        exact_dict_get = self.is_exact_dict_get(node, lvar.dest)
-        exact_bytearray_append = self.is_exact_bytearray_append(node, lvar.dest)
         method = self.lvar_tn(lvar)
         bound = self.component.tn(T, name="receiver")
         info = linked(node.info, node, "method info")
-        resolution = MethodResolution(
-            info.name,
-            exact_list_append,
-            exact_list_pop,
-            exact_text_find,
-            exact_text_split,
-            exact_text_partition,
-            exact_text_affix,
-            exact_text_method,
-            exact_dict_get,
-            exact_bytearray_append,
-        )
-        if resolution.is_exact:
-            method.type = NoneType()
-            bound.type = args[0].type
-        else:
-            bound.type = UNKNOWN
+        resolution = MethodResolution(info.name)
+        bound.type = UNKNOWN
         linked(lvar.info, lvar, "LTN annotation").locs.append(bound)
         self.emit(
             node.template,
@@ -4541,21 +4282,6 @@ class _Converter(NodeVisitor):
         method, bound = linked(resolved.info, resolved, "LTN annotation").locs
         resolve = resolved.use().accept(_MethodResolution(resolved))
         info = linked(node.info, node, "call info")
-        exact_list_append = self.is_exact_list_append(resolve, node)
-        exact_list_pop = self.is_exact_list_pop(resolve, node)
-        exact_text_find = self.is_exact_text_find(resolve, node)
-        exact_text_split = self.is_exact_text_split(resolve, node)
-        exact_text_partition = self.is_exact_text_partition(resolve, node)
-        exact_text_affix = self.is_exact_text_affix(resolve, node)
-        exact_text_method = (
-            not exact_text_find
-            and not exact_text_split
-            and not exact_text_partition
-            and not exact_text_affix
-            and self.is_exact_text_method(resolve, node)
-        )
-        exact_dict_get = self.is_exact_dict_get(resolve, node)
-        exact_bytearray_append = self.is_exact_bytearray_append(resolve, node)
         result, discard = self.result_tn(node)
         self.emit(
             node.template,
@@ -4565,15 +4291,6 @@ class _Converter(NodeVisitor):
             info=MethodCall(
                 info.keywords,
                 linked(resolve.info, resolve, "method info").name,
-                exact_list_append,
-                exact_list_pop,
-                exact_text_find,
-                exact_text_split,
-                exact_text_partition,
-                exact_text_affix,
-                exact_text_method,
-                exact_dict_get,
-                exact_bytearray_append,
                 self.context.targets.get(node),
                 self.context.type_of(resolve.args[0].use())
                 if len(resolve.args[0].uses) == 1

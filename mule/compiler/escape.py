@@ -637,10 +637,6 @@ class _UseClassifier(NodeVisitor):
         if (
             info
             in (
-                fndb.PROTOCOLS["dict_contains"],
-                fndb.PROTOCOLS["dict_not_contains"],
-                fndb.PROTOCOLS["set_contains"],
-                fndb.PROTOCOLS["set_not_contains"],
                 fndb.PROTOCOLS["set_discard"],
                 fndb.PROTOCOLS["set_remove"],
             )

@@ -372,7 +372,6 @@ def test_annotated_dict_get_and_list_element_borrow_specialize_in_ir2():
     body_start = llvm.index('define internal ptr @"mule_fn_dot_and_lookup.spec.0"')
     body_end = llvm.index("\n}", body_start)
     body = llvm[body_start:body_end]
-    assert '@"mule.protocol.dict_get"' in body
-    assert "@mule_resolve_method" not in body
+    assert "@mule.attr.method(" in body
     assert "@mule_list_getitem_borrow" in body
     assert "@mule_list_getitem(" not in body

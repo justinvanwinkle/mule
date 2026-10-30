@@ -1526,14 +1526,20 @@ pub fn intern_decoded_text(decoded: Text) -> Value {
             unreachable!("interned text bucket holds only Text objects");
         };
         if existing == &decoded {
-            return unsafe { retain(candidate) };
+            unsafe {
+                (*candidate)
+                    .references
+                    .store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+                (*candidate).gc_slot = 0;
+            }
+            return candidate;
         }
     }
     let value = unsafe {
         alloc_object(Object {
-            references: std::sync::atomic::AtomicUsize::new(1),
+            references: std::sync::atomic::AtomicUsize::new(usize::MAX),
             tracked: false,
-            gc_slot: TEXT_INTERNED_MORTAL,
+            gc_slot: 0,
             data: Data::Text(decoded, std::ptr::null_mut(), std::ptr::null_mut()),
         })
     };

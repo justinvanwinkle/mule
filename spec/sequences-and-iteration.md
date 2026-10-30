@@ -63,16 +63,10 @@ Contiguous immutable byte slices reuse this primitive after compiled slice
 normalization. Strided slices reuse the shared storage selection loop with the
 already normalized positions, so each bound's integer protocol runs once.
 
-Generic membership uses compiled `contains`/`not_contains` protocols. SBCL
-`src/code/seq.lisp`, `%find-position` and `find`, iterates sequences through
-compiled tests, specializing known vectors. Python additionally tries the class's
-`__contains__` first, otherwise obtains an iterator (including indexed sequence
-fallback) and tests identity before equality. Only iterator exhaustion terminates
-the search; equality/truth exceptions propagate. Explicit `__contains__ = None`
-disables membership. Optional class-table lookup takes an explicit missing-value
-sentinel, distinguishing an absent method from a stored None. Python 3.14 treats
-`AttributeError` during special-method descriptor binding as absence; other
-descriptor errors and exceptions raised by invoking the bound method propagate.
+Generic membership uses compiled `contains`/`not_contains` protocols, which
+dispatch to `container.__contains__(item)`.
+Range membership is implemented by compiled `range.__contains__`, and
+sequence membership is implemented by `_OrderedSequence.__contains__`.
 
 Status: implemented the initial sequence, iteration, and exception slice.
 

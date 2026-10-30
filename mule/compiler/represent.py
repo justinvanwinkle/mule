@@ -224,12 +224,6 @@ def _is_non_identity_list_setitem(
                 continue
             if u_name == "protocol-setitem" and use_ref is use_vop.args[0]:
                 continue
-            if (
-                u_name == "resolve-method"
-                and use_vop.codegen_info is not None
-                and use_vop.codegen_info.exact_list_append
-            ):
-                continue
             return False
     return True
 
@@ -697,14 +691,6 @@ def _operand_restriction(vop, ref, *, raw=False, convention=None):
                 and len(vop.args) == 2
                 and ref is vop.args[1]
                 and (vop.args[1].tn.type or UNKNOWN).is_fixnum
-            )
-            or (
-                not raw
-                and vop.info.name
-                in ("protocol-text_contains", "protocol-text_not_contains")
-                and vop.codegen_info is not None
-                and len(vop.args) == 2
-                and ref is vop.args[1]
             )
         )
     ):

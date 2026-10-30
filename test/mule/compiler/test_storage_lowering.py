@@ -131,7 +131,7 @@ def test_word_counting_probe_loops_do_not_query_storage_for_each_native_access(
         *(_reachable_functions(kernel, initial_functions) for kernel in kernels)
     )
     selected_protocols = set()
-    for operation in ("dict_get", "dict_setitem"):
+    for operation in ("dict_setitem",):
         wrapper = f"mule.protocol.{operation}"
         assert wrapper in initial_reachable, f"word counting must select {wrapper}"
         selected = {
@@ -228,7 +228,6 @@ def _probe_storage_accesses(functions, reachable, loop_analysis):
                 for operation in (
                     "mule_fn__table_lookup",
                     "mule_fn__table_insert",
-                    "mule_fn_dict_get.",
                     "mule_fn_dict_getitem.",
                     "mule_fn_dict_setitem.",
                 )

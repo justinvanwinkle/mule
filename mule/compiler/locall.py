@@ -2361,10 +2361,14 @@ def _update_class_field_types(
                         best_stores[recv_cls] = val_fact.type
         for recv_cls, stored_type in best_stores.items():
             cur_type = class_facts[recv_cls].fields.get(field_name, BOTTOM)
+            getattr_info = val_use.accept(_GETATTR_ON_INSTANCE)
+            same_field_getattr = (
+                getattr_info is not None and getattr_info[1] == field_name
+            )
             if (
                 stored_type is UNKNOWN
                 and cur_type is not BOTTOM
-                and val_use.accept(_GETATTR_ON_INSTANCE) is not None
+                and same_field_getattr
                 and not cur_type.fits(PYTHON_INTEGER)
             ):
                 stored_type = cur_type
@@ -2375,7 +2379,7 @@ def _update_class_field_types(
             ):
                 stored_type = EMPTY_LIST_TYPE
             if stored_type is not UNKNOWN or (
-                val_use.accept(_GETATTR_ON_INSTANCE) is None
+                not same_field_getattr
                 and not (
                     cur_type is BOTTOM
                     and val_use.accept(_DependsOnInstanceField(field_name))
@@ -4857,6 +4861,9 @@ def analyze(
                         parameters[key], facts.parameters, strict=True
                     )
                 )
+                and body.element_contracts == facts.element_contracts
+                and body.in_bounds_nodes == facts.in_bounds_nodes
+                and ret_type == facts.return_type
                 and sum(len(graph.block_nodes[b]) for b in graph.blocks) > 80
             ):
                 continue

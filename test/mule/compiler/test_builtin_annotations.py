@@ -452,13 +452,13 @@ def test_parameter_facts_specialize_callbacks_across_tuple_dict_nested_and_class
     lookup_spec = llvm.split('define internal ptr @"mule_fn_lookup_add.spec.0"(')[
         1
     ].split("\n}")[0]
-    assert '@"mule.protocol.dict_get"(' in lookup_spec
+    assert "@mule.attr.method(" in lookup_spec
     assert "@llvm.sadd.with.overflow.i64(" in lookup_spec
 
     point_spec = llvm.split('define internal ptr @"mule_fn_point_metric.spec.0"(')[
         1
     ].split("\n}")[0]
-    assert "@mule.attr.field(" in point_spec
+    assert "@mule.attr.get(" in point_spec
     assert "mule.direct.mule_fn_Point.sum_coords" in point_spec
     assert "@llvm.sadd.with.overflow.i64(" in point_spec
 

@@ -156,6 +156,18 @@ class _InstanceFieldType(ValueTypeVisitor):
             return UNKNOWN
         return self.storage_methods.get((identity, self.name), UNKNOWN)
 
+    def visit_DictType(self, fact):
+        if not fact.proven or fact.may_be_unbound:
+            return UNKNOWN
+        for cf in self.class_facts.values():
+            if cf.public_name in ("dict", "_Table"):
+                res = cf.fields.get(self.name, UNKNOWN)
+                if res is not UNKNOWN:
+                    return res
+        if self.storage_methods is not None:
+            return self.storage_methods.get(("dict", self.name), UNKNOWN)
+        return UNKNOWN
+
     def visit_SetType(self, fact):
         if not fact.proven or fact.may_be_unbound or self.name not in fact.fixed_slots:
             return UNKNOWN
@@ -3017,41 +3029,6 @@ for _set_op_name, _set_op_enum in (
     ("%set_xor", ast.BinaryOperator.BIT_XOR),
 ):
     defpropagate(_set_op_name)(_make_binary_propagator(_set_op_enum))
-
-
-def _make_table_containment_propagator(operator: ast.ComparisonOperator):
-    def _prop(visitor: _Propagation, node: Combination):
-        if len(node.args) != 2:
-            return BOOLEAN_FACT
-        table_type = visitor.type_of(node.args[0])
-        key_type = visitor.type_of(node.args[1])
-        if table_type is BOTTOM or key_type is BOTTOM:
-            return NO_FACT
-        if table_type.may_run_user_code or key_type.may_run_user_code:
-            visitor.invalidate()
-        return _fact(key_type.comparison(operator, table_type))
-
-    return _prop
-
-
-defpropagate("%dict_contains")(
-    _make_table_containment_propagator(ast.ComparisonOperator.IN)
-)
-defpropagate("%dict_not_contains")(
-    _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
-)
-defpropagate("%set_contains")(
-    _make_table_containment_propagator(ast.ComparisonOperator.IN)
-)
-defpropagate("%set_not_contains")(
-    _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
-)
-defpropagate("%text_contains")(
-    _make_table_containment_propagator(ast.ComparisonOperator.IN)
-)
-defpropagate("%text_not_contains")(
-    _make_table_containment_propagator(ast.ComparisonOperator.NOT_IN)
-)
 
 
 @defpropagate("%dict_len")

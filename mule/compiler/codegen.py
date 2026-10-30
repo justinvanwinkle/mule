@@ -593,20 +593,13 @@ PROTOCOL_NAMESPACE = "$mule.protocols"
 
 _BORROWED_SEQUENCE_PROTOCOLS = frozenset(
     {
-        "dict_get",
         "dict_getitem",
         "dict_setitem",
-        "dict_contains",
-        "dict_not_contains",
         "dict_len",
         "table_len",
         "set_add",
         "set_discard",
         "set_remove",
-        "set_contains",
-        "set_not_contains",
-        "text_contains",
-        "text_not_contains",
         "set_and",
         "set_or",
         "set_sub",
@@ -6049,112 +6042,6 @@ class FunctionGenerator:
         result_contract=None,
     ) -> str:
         """Consume receiver/arguments on direct, fallback, and rejected arms."""
-        if info.exact_list_append:
-            arg = arguments[0]
-            move_arg = self.owns_reference(arg) and arg != receiver
-            append_fn = (
-                "@mule_storage_append_move" if move_arg else "@mule_storage_append"
-            )
-            result = self.operation(f"call ptr {append_fn}(ptr {receiver}, ptr {arg})")
-            self.release(receiver)
-            if not move_arg:
-                self.release(arg)
-            self.immortal_values.add(result)
-            return result
-        if info.exact_list_pop:
-            result = self.operation(f"call ptr @mule_storage_pop(ptr {receiver})")
-            self.release(receiver)
-            return result
-        if info.exact_dict_get:
-            key = arguments[0]
-            if len(arguments) >= 2:
-                default = arguments[1]
-            else:
-                self.immortal_values.add("@mule.none")
-                default = "@mule.none"
-            result = self.sequence_call("dict_get", [receiver, key, default])
-            self.release(receiver)
-            for arg in arguments:
-                self.release(arg)
-            return result
-        if info.exact_bytearray_append:
-            arg = arguments[0]
-            result = self.operation(
-                f"call ptr @mule_bytearray_append_fast(ptr {receiver}, ptr {arg})"
-            )
-            self.release(receiver)
-            self.release(arg)
-            self.immortal_values.add(result)
-            return result
-        if info.exact_text_find:
-            sub = arguments[0]
-            start = arguments[1] if len(arguments) >= 2 else "@mule.none"
-            end = arguments[2] if len(arguments) >= 3 else "@mule.none"
-            if len(arguments) < 3:
-                self.immortal_values.add("@mule.none")
-            reverse = 1 if info.name == "rfind" else 0
-            result = self.operation(
-                f"call ptr @mule_text_find(ptr {receiver}, ptr {sub}, ptr {start}, ptr {end}, i32 {reverse})"
-            )
-            self.release(receiver)
-            for arg in arguments:
-                self.release(arg)
-            self.immortal_values.add(result)
-            return result
-        if info.exact_text_split:
-            sep = arguments[0]
-            maxsplit = arguments[1] if len(arguments) >= 2 else "null"
-            result = self.operation(
-                f"call ptr @mule_text_split(ptr {receiver}, ptr {sep}, ptr {maxsplit})"
-            )
-            self.release(receiver)
-            for arg in arguments:
-                self.release(arg)
-            return result
-        if info.exact_text_partition:
-            sep = arguments[0]
-            reverse = 1 if info.name == "rpartition" else 0
-            if unpack_arity == 3:
-                status = self.operation(
-                    f"call i32 @mule_text_partition_into(ptr {receiver}, ptr {sep}, i32 {reverse}, ptr %unpack.out)"
-                )
-                self.release(receiver)
-                self.release(sep)
-                self.immortal_values.add("@mule.none")
-                ok = self.operation(f"icmp ne i32 {status}, 0")
-                result = self.operation(f"select i1 {ok}, ptr @mule.none, ptr null")
-                self.immortal_values.add(result)
-                return result
-            result = self.operation(
-                f"call ptr @mule_text_partition(ptr {receiver}, ptr {sep}, i32 {reverse})"
-            )
-            self.release(receiver)
-            self.release(sep)
-            return result
-        if info.exact_text_affix:
-            affix = arguments[0]
-            start = arguments[1] if len(arguments) >= 2 else "@mule.none"
-            end = arguments[2] if len(arguments) >= 3 else "@mule.none"
-            if len(arguments) < 3:
-                self.immortal_values.add("@mule.none")
-            is_end = 1 if info.name == "endswith" else 0
-            result = self.operation(
-                f"call ptr @mule_text_affix(ptr {receiver}, ptr {affix}, ptr {start}, ptr {end}, i32 {is_end})"
-            )
-            self.release(receiver)
-            for arg in arguments:
-                self.release(arg)
-            self.immortal_values.add(result)
-            return result
-        if info.exact_text_method:
-            return self.call_exact_text_method(
-                info,
-                callable_value,
-                receiver,
-                arguments,
-                argument_refs,
-                result_contract=result_contract,
-            )
         module = self.module
         if (
             info.target is not None

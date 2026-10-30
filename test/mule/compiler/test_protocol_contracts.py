@@ -12,7 +12,7 @@ from mule.compiler.sequence_protocol import prepare, protocol_argument_types
 
 @pytest.mark.parametrize(
     ("name", "arity"),
-    [("dict_get", 3), ("dict_getitem", 2), ("dict_setitem", 3)],
+    [("dict_getitem", 2), ("dict_setitem", 3)],
 )
 def test_exact_dict_protocol_declares_receiver_domain(name, arity):
     assert fndb.PROTOCOLS[name].argument_types == (
@@ -24,9 +24,8 @@ def test_exact_dict_protocol_declares_receiver_domain(name, arity):
 def test_protocol_domain_uses_owner_layout_and_leaves_other_arguments_unknown():
     layout = InstanceType("implementation", fixed_slots=("entries",))
     target = ClassConstructorTarget(base_type=DICT_TYPE, layout_type=layout)
-    assert protocol_argument_types("dict_get", {"dict": target}) == (
+    assert protocol_argument_types("dict_getitem", {"dict": target}) == (
         layout,
-        UNKNOWN,
         UNKNOWN,
     )
     assert protocol_argument_types("getitem", {"dict": target}) is None
@@ -50,13 +49,13 @@ def test_protocol_domain_uses_owner_layout_and_leaves_other_arguments_unknown():
     ],
 )
 def test_protocol_domain_without_unique_owner_layout_keeps_general_entry(targets):
-    assert protocol_argument_types("dict_get", targets) is None
+    assert protocol_argument_types("dict_getitem", targets) is None
 
 
 def test_protocol_preparation_keeps_general_body_and_adds_declared_entry():
     program = Program([], None, {}, unit="builtins", exports=True, bootstrap=True)
     _, functions, _ = prepare(program)
-    for name in ("dict_get", "dict_getitem", "dict_setitem"):
+    for name in ("dict_getitem", "dict_setitem"):
         function = functions[name]
         declared = function.entry_parameter_types
         assert declared is not None

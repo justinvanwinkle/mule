@@ -1278,13 +1278,6 @@ describe the Python mutation and ownership adaptations to SBCL.
      (`mule/compiler/containtran.py`, `seqtran.py`, `fndb.py`, `codegen.py`,
      `vops.py`, `ir2tran.py`, `escape.py`)**:
      - Added known sequence-protocol intrinsics and IR1 transforms for:
-       - `key in d` / `key not in d` on `DictType` -> `dict_contains` /
-         `dict_not_contains`
-       - `key in s` / `key not in s` on `SetType` -> `set_contains` /
-         `set_not_contains`
-       - `item in text` / `item not in text` with both operands exact `str` ->
-         `text_contains` / `text_not_contains` (a substring search; neither
-         operand can override `__contains__` or raise for its type)
        - `set()` / `set` literal `{}` -> `empty_set`
        - `s.add(x)`, `s.discard(x)`, `s.remove(x)` on mutable `SetType` ->
          `set_add`, `set_discard`, `set_remove`

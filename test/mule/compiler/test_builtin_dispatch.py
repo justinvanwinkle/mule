@@ -68,10 +68,8 @@ def flags(pattern: str, flag: str) -> int:
 print(flags(sys.argv[0], sys.argv[0][:1]))
 """)
     body = function_body(llvm, '"mule_fn_flags.spec.0"')
-    assert '@"mule.protocol.text_contains"' in body
-    assert '@"mule.protocol.text_not_contains"' in body
-    assert '@"mule.protocol.contains"' not in body
-    assert '@"mule.protocol.not_contains"' not in body
+    assert '@"mule.protocol.contains"' in body
+    assert '@"mule.protocol.not_contains"' in body
 
 
 def test_text_containment_matches_python(tmp_path):

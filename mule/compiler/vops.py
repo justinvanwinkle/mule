@@ -189,12 +189,9 @@ class _BoxedConstant(ast.Visitor):
         if _is_inline_text_compare_only(self.gen, self.result.tn, node.value):
             self.gen.native_result(self.result, "null")
             return
-        if not self.result.tn.sc.owned or (self.result.tn.type or UNKNOWN).is_immortal:
-            self.gen.native_result(
-                self.result, self.gen.operation(self.gen.borrowed_constant(node))
-            )
-            return
-        self._infallible(node)
+        value = self.gen.operation(self.gen.borrowed_constant(node))
+        self.gen.immortal_values.add(value)
+        self.gen.native_result(self.result, value)
 
     def visit_BytesLiteral(self, node):
         self._infallible(node)
@@ -2400,20 +2397,9 @@ def _define_compare(operator, opcode):
         left, right = vop.args
         lhs, rhs = gen.take(left), gen.take(right)
         if opcode in (8, 9):
-            rhs_type = right.tn.type or UNKNOWN
-            is_dict = rhs_type.fits_dict()
-            is_set = rhs_type.fits_set()
-            if is_dict:
-                name = "dict_contains" if opcode == 8 else "dict_not_contains"
-            elif is_set:
-                name = "set_contains" if opcode == 8 else "set_not_contains"
-            else:
-                name = "contains" if opcode == 8 else "not_contains"
+            name = "contains" if opcode == 8 else "not_contains"
             value = gen.sequence_call(name, [rhs, lhs])
             gen.publish(result, value)
-            if is_dict or is_set:
-                gen.release(lhs)
-                gen.release(rhs)
             gen.check_pointer(value)
             gen.refine(result.tn, value)
             return
@@ -3009,11 +2995,6 @@ def resolve_method(gen, vop):
     receiver = gen.take(vop.args[0])
     method, bound = vop.results
     info = vop.codegen_info
-    if info.is_exact:
-        gen.immortal_values.add("@mule.none")
-        gen.publish(method, "@mule.none")
-        gen.publish(bound, receiver)
-        return
     cache = gen.module.attribute_cache()
     out = gen.out_pointer()
     value = gen.operation(
@@ -3594,14 +3575,18 @@ def sequence_available(gen, vop):
         status = gen.operation(
             f"call i32 {helper}(ptr {iterator}, ptr %unpack.out, ptr {out})"
         )
-    else:
-        helper = gen.module.next_item_helper()
-        status = gen.operation(f"call i32 {helper}(ptr {iterator}, ptr {out})")
-    gen.check_status(status)
-    available = gen.operation(f"icmp ne i32 {status}, 0")
-    result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
-    gen.publish(vop.results[0], result)
-    gen.refine(vop.results[0].tn, result)
+        gen.check_status(status)
+        available = gen.operation(f"icmp ne i32 {status}, 0")
+        result = gen.operation(f"select i1 {available}, ptr @mule.true, ptr @mule.false")
+        gen.publish(vop.results[0], result)
+        gen.refine(vop.results[0].tn, result)
+        return
+    owned = gen.retain(iterator)
+    item = gen.sequence_call("next_item", [owned])
+    gen.line(f"store ptr {item}, ptr {out}")
+    gen.check_pointer(item)
+    gen.publish(vop.results[0], "@mule.true")
+    gen.refine(vop.results[0].tn, "@mule.true")
 
 
 @define_vop(
@@ -3660,11 +3645,9 @@ def protocol_iterate(gen, vop):
         gen.refine(vop.results[0].tn, result)
         return
     sequence = gen.take(vop.args[0])
-    move = gen.owns_reference(sequence)
-    helper = gen.module.iterate_helper(move=move)
-    result = gen.operation(f"call ptr {helper}(ptr {sequence})")
-    if not move:
-        gen.release(sequence)
+    if not gen.owns_reference(sequence):
+        sequence = gen.retain(sequence)
+    result = gen.sequence_call("iterate", [sequence])
     gen.publish(vop.results[0], result)
     gen.check_pointer(result)
     gen.refine(vop.results[0].tn, result)
@@ -3676,20 +3659,13 @@ _SUSPENSION_PROTOCOLS = frozenset(
 
 _BORROWED_PROTOCOL_NAMES = frozenset(
     {
-        "dict_get",
         "dict_getitem",
         "dict_setitem",
-        "dict_contains",
-        "dict_not_contains",
         "dict_len",
         "table_len",
         "set_add",
         "set_discard",
         "set_remove",
-        "set_contains",
-        "set_not_contains",
-        "text_contains",
-        "text_not_contains",
         "set_and",
         "set_or",
         "set_sub",
@@ -3701,64 +3677,12 @@ _BORROWED_PROTOCOL_NAMES = frozenset(
 )
 
 
-def _emit_codepoint_contains(gen, code: str, haystack: str, *, negate: bool) -> str:
-    codes = sorted({ord(ch) for ch in haystack})
-    terms: list[str] = []
-    low_codes = [c for c in codes if c < 64]
-    high_codes = [c for c in codes if 64 <= c < 128]
-    other_codes = [c for c in codes if c >= 128]
-    if len(low_codes) == 1:
-        terms.append(gen.operation(f"icmp eq i64 {code}, {low_codes[0]}"))
-    elif len(low_codes) >= 2:
-        mask = sum(1 << c for c in low_codes)
-        in_range = gen.operation(f"icmp ult i64 {code}, 64")
-        bit = gen.operation(f"shl i64 1, {code}")
-        masked = gen.operation(f"and i64 {bit}, {mask}")
-        hit = gen.operation(f"icmp ne i64 {masked}, 0")
-        terms.append(gen.operation(f"select i1 {in_range}, i1 {hit}, i1 false"))
-    if len(high_codes) == 1:
-        terms.append(gen.operation(f"icmp eq i64 {code}, {high_codes[0]}"))
-    elif len(high_codes) >= 2:
-        mask = sum(1 << (c - 64) for c in high_codes)
-        shifted = gen.operation(f"sub i64 {code}, 64")
-        in_range = gen.operation(f"icmp ult i64 {shifted}, 64")
-        bit = gen.operation(f"shl i64 1, {shifted}")
-        masked = gen.operation(f"and i64 {bit}, {mask}")
-        hit = gen.operation(f"icmp ne i64 {masked}, 0")
-        terms.append(gen.operation(f"select i1 {in_range}, i1 {hit}, i1 false"))
-    for c in other_codes:
-        terms.append(gen.operation(f"icmp eq i64 {code}, {c}"))
-    if not terms:
-        matched = "true" if negate else "false"
-    else:
-        matched = terms[0]
-        for term in terms[1:]:
-            matched = gen.operation(f"or i1 {matched}, {term}")
-        if negate:
-            matched = gen.operation(f"xor i1 {matched}, true")
-    return gen.operation(f"select i1 {matched}, ptr @mule.true, ptr @mule.false")
-
-
 def _define_protocol(name, info):
     suspends = name in _SUSPENSION_PROTOCOLS
     borrowed = name in _BORROWED_PROTOCOL_NAMES
 
     @define_vop(f"protocol-{name}", translate=info, results=(OBJECT,))
     def protocol(gen, vop):
-        if (
-            name in ("text_contains", "text_not_contains")
-            and vop.codegen_info is not None
-        ):
-            gen.take(vop.args[0])
-            code = _decode_fixnum_operand(gen, vop.args[1])
-            boolean = _emit_codepoint_contains(
-                gen,
-                code,
-                vop.codegen_info,
-                negate=name == "text_not_contains",
-            )
-            gen.native_result(vop.results[0], boolean)
-            return
         arguments = [gen.take(value) for value in vop.args]
         if suspends:
             gen.sync_coroutine_locals()
