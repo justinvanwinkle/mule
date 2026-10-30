@@ -128,46 +128,74 @@ def test_recorded_inputs_change_when_a_new_file_would_shadow_an_import(tmp_path)
     assert not unchanged(inputs), "the earlier root now provides the module"
 
 
-def test_main_step_cache_key_includes_filename_but_not_roots(tmp_path):
+def test_main_step_cache_key_is_independent_of_paths(tmp_path):
     from mule.compiler.artifacts import Graph
-    from mule.compiler.driver import Build, Toolchain
+    from mule.compiler.driver import Build, Toolchain, fasl_cache_path
+    from mule.compiler.modules import CompiledModule
 
-    script = tmp_path / "sub" / "prog.py"
-    script.parent.mkdir()
-    script.write_text("print(42)\n")
+    script1 = tmp_path / "sub" / "prog.py"
+    script1.parent.mkdir()
+    script1.write_text("print(42)\n")
+
+    script2 = tmp_path / "other" / "prog.py"
+    script2.parent.mkdir()
+    script2.write_text("print(42)\n")
 
     with Graph(1) as g1:
         b1 = Build(g1, Toolchain(optimize=2))
         g1.run(b1.builtins())
         s1 = b1.main(
-            g1.file(script.resolve()),
+            g1.file(script1.resolve()),
             "print(42)\n",
-            str(script.resolve()),
-            (script.parent.resolve(),),
+            str(script1.resolve()),
+            (script1.parent.resolve(),),
+            None,
+        )
+        m1 = b1.module(
+            CompiledModule(
+                "pkg",
+                script1,
+                "mule_import_pkg",
+                namespace_paths=(str(script1.parent),),
+            ),
+            (script1.parent,),
             None,
         )
     with Graph(1) as g2:
         b2 = Build(g2, Toolchain(optimize=2))
         g2.run(b2.builtins())
         s2 = b2.main(
-            g2.file(script),
+            g2.file(script1),
             "print(42)\n",
             "sub/prog.py",
             (tmp_path,),
+            None,
+        )
+        m2 = b2.module(
+            CompiledModule(
+                "pkg",
+                script2,
+                "mule_import_pkg",
+                namespace_paths=(str(script2.parent),),
+            ),
+            (script2.parent,),
             None,
         )
     with Graph(1) as g3:
         b3 = Build(g3, Toolchain(optimize=2))
         g3.run(b3.builtins())
         s3 = b3.main(
-            g3.file(script),
+            g3.file(script2),
             "print(42)\n",
-            str(script.resolve()),
-            (tmp_path,),
+            str(script2.resolve()),
+            (script2.parent,),
             None,
         )
-    assert s1.key != s2.key
-    assert s1.key == s3.key
+    assert s1.key == s2.key == s3.key
+    assert m1.key == m2.key
+    assert fasl_cache_path("hash", 2, "pkg", script1) == fasl_cache_path(
+        "hash", 2, "pkg", script2
+    )
 
 
 def mule(arguments, directory, **options):

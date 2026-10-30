@@ -1,11 +1,10 @@
 """Generate compiled external-entry binding rules for Python signatures."""
 
-from pathlib import Path
-
 from mule import ast
 
 from .inputs import read_source
 from .ir1util import combinations
+from .modules import STDLIB
 from .node import CallKind, linked
 from .protocols import add_lambdas, compile_protocol
 
@@ -95,7 +94,7 @@ def prepare(program):
     ):
         return None, None
     bind_signatures(program.lambdas)
-    path = Path(__file__).resolve().parents[2] / "stdlib/_arguments.py"
+    path = STDLIB / "_arguments.py"
     compilation = compile_protocol(
         read_source(path),
         "<compiled argument protocol>",
