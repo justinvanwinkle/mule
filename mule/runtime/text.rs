@@ -227,6 +227,140 @@ impl Text {
         Self::from_codepoints(codes.into_iter()).map_err(|_| "text storage allocation failed")
     }
 
+    /// Decode standard UTF-8 (`allow_surrogates == false`) or UTF-8 with
+    /// `surrogatepass` (`allow_surrogates == true`) in a single scan without
+    /// allocating an intermediate `Vec<u32>`. Returns `Ok(None)` when the byte
+    /// slice contains an invalid sequence so the caller can invoke Python error
+    /// handling.
+    pub fn decode_utf8_bytes(
+        data: &[u8],
+        allow_surrogates: bool,
+    ) -> Result<Option<Self>, AllocationError> {
+        if data.is_ascii() {
+            return Ok(Some(Self::from_kind(latin1_kind_from_slice(data)?)));
+        }
+        let mut widest = 0u32;
+        let mut char_len = 0usize;
+        let mut offset = 0usize;
+        while offset < data.len() {
+            let first = data[offset];
+            if first < 0x80 {
+                offset += 1;
+                char_len += 1;
+                continue;
+            }
+            let (count, mut value, minimum) = match first {
+                0xc2..=0xdf => (1usize, u32::from(first & 0x1f), 0x80u32),
+                0xe0..=0xef => (2usize, u32::from(first & 0x0f), 0x800u32),
+                0xf0..=0xf4 => (3usize, u32::from(first & 0x07), 0x10000u32),
+                _ => return Ok(None),
+            };
+            offset += 1;
+            if data.len() - offset < count {
+                return Ok(None);
+            }
+            for _ in 0..count {
+                let byte = data[offset];
+                offset += 1;
+                if byte & 0xc0 != 0x80 {
+                    return Ok(None);
+                }
+                value = (value << 6) | u32::from(byte & 0x3f);
+            }
+            if value < minimum
+                || value > 0x10ffff
+                || (!allow_surrogates && (0xd800..=0xdfff).contains(&value))
+            {
+                return Ok(None);
+            }
+            widest |= value;
+            char_len += 1;
+        }
+        let kind = if widest <= 0xff {
+            if char_len <= INLINE_LATIN1_CAP {
+                let mut bytes = [0u8; INLINE_LATIN1_CAP];
+                let mut offset = 0usize;
+                for slot in &mut bytes[..char_len] {
+                    let first = data[offset];
+                    if first < 0x80 {
+                        *slot = first;
+                        offset += 1;
+                    } else {
+                        let second = data[offset + 1];
+                        *slot = ((first & 0x1f) << 6) | (second & 0x3f);
+                        offset += 2;
+                    }
+                }
+                pack_inline_latin1(&bytes[..char_len])
+            } else {
+                let mut values = reserve(char_len)?;
+                let mut offset = 0usize;
+                while offset < data.len() {
+                    let first = data[offset];
+                    if first < 0x80 {
+                        values.push(first);
+                        offset += 1;
+                    } else {
+                        let second = data[offset + 1];
+                        values.push(((first & 0x1f) << 6) | (second & 0x3f));
+                        offset += 2;
+                    }
+                }
+                Kind::Latin1(0, values)
+            }
+        } else if widest <= 0xffff {
+            let mut values = reserve(char_len)?;
+            let mut offset = 0usize;
+            while offset < data.len() {
+                let first = data[offset];
+                if first < 0x80 {
+                    values.push(u16::from(first));
+                    offset += 1;
+                } else if first < 0xe0 {
+                    let code = (u16::from(first & 0x1f) << 6) | u16::from(data[offset + 1] & 0x3f);
+                    values.push(code);
+                    offset += 2;
+                } else {
+                    let code = (u16::from(first & 0x0f) << 12)
+                        | (u16::from(data[offset + 1] & 0x3f) << 6)
+                        | u16::from(data[offset + 2] & 0x3f);
+                    values.push(code);
+                    offset += 3;
+                }
+            }
+            Kind::Ucs2(0, values)
+        } else {
+            let mut values = reserve(char_len)?;
+            let mut offset = 0usize;
+            while offset < data.len() {
+                let first = data[offset];
+                if first < 0x80 {
+                    values.push(u32::from(first));
+                    offset += 1;
+                } else if first < 0xe0 {
+                    let code = (u32::from(first & 0x1f) << 6) | u32::from(data[offset + 1] & 0x3f);
+                    values.push(code);
+                    offset += 2;
+                } else if first < 0xf0 {
+                    let code = (u32::from(first & 0x0f) << 12)
+                        | (u32::from(data[offset + 1] & 0x3f) << 6)
+                        | u32::from(data[offset + 2] & 0x3f);
+                    values.push(code);
+                    offset += 3;
+                } else {
+                    let code = (u32::from(first & 0x07) << 18)
+                        | (u32::from(data[offset + 1] & 0x3f) << 12)
+                        | (u32::from(data[offset + 2] & 0x3f) << 6)
+                        | u32::from(data[offset + 3] & 0x3f);
+                    values.push(code);
+                    offset += 4;
+                }
+            }
+            Kind::Ucs4(0, values)
+        };
+        Ok(Some(Self::from_kind(kind)))
+    }
+
     #[inline]
     pub fn from_latin1_slice(bytes: &[u8]) -> Result<Self, AllocationError> {
         Ok(Self::from_kind(latin1_kind_from_slice(bytes)?))
@@ -541,6 +675,17 @@ impl Text {
                 bytes.extend_from_slice(values);
                 return Ok(bytes);
             }
+            let non_ascii = values.iter().filter(|&&b| b >= 0x80).count();
+            let mut bytes = Vec::with_capacity(values.len() + non_ascii);
+            for &code in values {
+                if code < 0x80 {
+                    bytes.push(code);
+                } else {
+                    bytes.push(0xc0 | (code >> 6));
+                    bytes.push(0x80 | (code & 0x3f));
+                }
+            }
+            return Ok(bytes);
         }
         let mut bytes = Vec::with_capacity(self.len());
         for (index, code) in self.codepoints().enumerate() {
@@ -559,6 +704,17 @@ impl Text {
                 bytes.extend_from_slice(values);
                 return bytes;
             }
+            let non_ascii = values.iter().filter(|&&b| b >= 0x80).count();
+            let mut bytes = Vec::with_capacity(values.len() + non_ascii);
+            for &code in values {
+                if code < 0x80 {
+                    bytes.push(code);
+                } else {
+                    bytes.push(0xc0 | (code >> 6));
+                    bytes.push(0x80 | (code & 0x3f));
+                }
+            }
+            return bytes;
         }
         let mut bytes = Vec::with_capacity(self.len());
         for code in self.codepoints() {

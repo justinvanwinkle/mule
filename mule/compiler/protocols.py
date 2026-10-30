@@ -28,6 +28,7 @@ from .ctype import (
     FLOAT,
     INTEGER,
     INTERNED_TEXT_TYPE,
+    NONE_TYPE,
     OPTIONAL_FIXNUM,
     PYTHON_INTEGER,
     TEXT_TYPE,
@@ -38,6 +39,7 @@ from .ctype import (
     TupleType,
     UniqueObjectType,
     ValueType,
+    union_type,
 )
 from .fndb import _DERIVATION_MODE, _arg_type, defknown
 from .ir1opt import bound_constant_literal
@@ -100,6 +102,8 @@ _TEXT_ACCESS = {
         "_text_slice",
         "_text_join",
         "_text_from_codepoints",
+        "_text_decode_bytes",
+        "_text_encode_bytes",
         "_byte_length",
         "_read_byte",
         "_storage_hash",
@@ -240,6 +244,12 @@ _RESULT_TYPES = {
     "_text_slice": lambda node: TEXT_TYPE,
     "_text_join": lambda node: TEXT_TYPE,
     "_text_from_codepoints": lambda node: TEXT_TYPE,
+    "_text_decode_bytes": lambda node: (
+        TEXT_TYPE
+        if len(node.args) == 2 and _arg_type(node.args[1]).exact_integer() == 1
+        else union_type(TEXT_TYPE, NONE_TYPE)
+    ),
+    "_text_encode_bytes": lambda node: union_type(BYTES_TYPE, NONE_TYPE),
     "_type_name": lambda node: TEXT_TYPE,
     "_storage_tuple": lambda node: TupleType(),
     "_binding_missing": lambda node: UniqueObjectType("_binding_missing"),
@@ -259,6 +269,8 @@ _NON_INTEGER_FIRST_PRIMITIVES = frozenset(
         "_storage_tuple",
         "_byte_length",
         "_read_byte",
+        "_text_decode_bytes",
+        "_text_encode_bytes",
     }
 )
 
@@ -279,6 +291,8 @@ _BORROWED_PRIMITIVE_ARGS = {
     "_text_codepoint": frozenset({0, 1}),
     "_byte_length": frozenset({0}),
     "_read_byte": frozenset({0, 1}),
+    "_text_decode_bytes": frozenset({0, 1}),
+    "_text_encode_bytes": frozenset({0, 1}),
     "_integer_storage": frozenset({0}),
     "_storage_hash": frozenset({0}),
     "_identity_hash": frozenset({0}),
@@ -331,6 +345,8 @@ NATIVE_EXPORT_PRIMITIVES = {
     ("byte_length", 1): "_byte_length",
     ("read_byte", 2): "_read_byte",
     ("text_from_codepoints", 1): "_text_from_codepoints",
+    ("text_decode_bytes", 2): "_text_decode_bytes",
+    ("text_encode_bytes", 2): "_text_encode_bytes",
 }
 for (_export, _arity), _name in NATIVE_EXPORT_PRIMITIVES.items():
     PRIMITIVES[f"_mule_native.{_export}/{_arity}"] = PRIMITIVES[_name]
@@ -668,6 +684,8 @@ def _constrain_text_storage(visitor, node, state, truth: bool) -> bool:
 
 NATIVE_MODULE_EXPORTS: dict[tuple[str, str], ValueType] = {
     ("_mule_native", "text_from_codepoints"): TEXT_TYPE,
+    ("_mule_native", "text_decode_bytes"): union_type(TEXT_TYPE, NONE_TYPE),
+    ("_mule_native", "text_encode_bytes"): union_type(BYTES_TYPE, NONE_TYPE),
     ("_mule_native", "bytes_from_values"): BYTES_TYPE,
     ("_mule_native", "byte_copy"): BYTES_TYPE,
     ("_mule_native", "byte_length"): IntegerType(0, (1 << 48) - 1),
