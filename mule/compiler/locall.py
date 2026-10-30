@@ -4203,6 +4203,12 @@ def analyze(
                                 or vtype.may_be_unbound
                                 or vtype.has_bottom_part()
                                 or vtype.fits_none(NONE_TYPE)
+                                or not (
+                                    vtype.fits_list(LIST_TYPE)
+                                    or vtype.fits_dict(DICT_TYPE)
+                                    or vtype.fits_set()
+                                    or vtype.fits_tuple(TupleType())
+                                )
                             ):
                                 continue
                             if vtype.widen_mutable_containers() != vtype and (

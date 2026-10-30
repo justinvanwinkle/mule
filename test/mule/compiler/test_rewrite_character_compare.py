@@ -114,9 +114,14 @@ def test_character_tokenizer_and_index_boundaries_match_python(
 
 
 def test_character_tokenizer_uses_codepoints_without_character_objects(character_case):
-    # input() reaches the general body. The emitted list specialization is
-    # guarded by mule_exact_list and is not the path this program executes.
-    body = character_case.function_ir(r"^mule_fn_tokenize\.body$")
+    # input() is proven str at top-level and dispatches directly to the
+    # specialized tokenizer entry rather than a list or generic entry.
+    direct = character_case.function_ir(
+        r"^mule\.direct\.mule_fn_tokenize\.", optimized=False
+    )
+    assert "@mule_exact_list(" not in direct
+    assert '@"mule_fn_tokenize.spec.0"(' in direct
+    body = character_case.function_ir(r"^mule_fn_tokenize\.spec\.0$", optimized=False)
     assert "@mule_fast_getitem(" not in body, (
         "Runtime text scanning still constructs character objects through generic indexing"
     )

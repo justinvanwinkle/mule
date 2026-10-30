@@ -249,30 +249,66 @@ def _is_ascii(code):
     return code < 128
 
 
-def _strip_member(chars):
-    if chars is None:
-        return None
-    _require_text(chars, "strip arg must be None or str")
-    return chars
-
-
-def _stripped(code, chars):
-    if chars is None:
-        return is_space(code)
-    return _contains_codepoint(chars, code)
-
-
 def _strip(text, chars, left, right):
-    chars = _strip_member(chars)
+    length = _text_length(text)
     start = 0
-    end = _text_length(text)
-    if left:
-        while start < end and _stripped(_text_codepoint(text, start), chars):
-            start += 1
-    if right:
-        while end > start and _stripped(_text_codepoint(text, end - 1), chars):
-            end -= 1
-    if start == 0 and end == _text_length(text):
+    end = length
+    if chars is None:
+        if left:
+            while start < end:
+                code = _text_codepoint(text, start)
+                if code < 128:
+                    if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                        break
+                elif not is_space(code):
+                    break
+                start += 1
+        if right:
+            while end > start:
+                code = _text_codepoint(text, end - 1)
+                if code < 128:
+                    if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                        break
+                elif not is_space(code):
+                    break
+                end -= 1
+    else:
+        _require_text(chars, "strip arg must be None or str")
+        chars_len = _text_length(chars)
+        if chars_len == 0:
+            return text
+        if chars_len == 1:
+            only = _text_codepoint(chars, 0)
+            if left:
+                while start < end and _text_codepoint(text, start) == only:
+                    start += 1
+            if right:
+                while end > start and _text_codepoint(text, end - 1) == only:
+                    end -= 1
+        else:
+            if left:
+                while start < end:
+                    code = _text_codepoint(text, start)
+                    idx = 0
+                    while idx < chars_len:
+                        if _text_codepoint(chars, idx) == code:
+                            break
+                        idx += 1
+                    if idx == chars_len:
+                        break
+                    start += 1
+            if right:
+                while end > start:
+                    code = _text_codepoint(text, end - 1)
+                    idx = 0
+                    while idx < chars_len:
+                        if _text_codepoint(chars, idx) == code:
+                            break
+                        idx += 1
+                    if idx == chars_len:
+                        break
+                    end -= 1
+    if start == 0 and end == length:
         return text
     return _text_slice(text, start, end)
 
@@ -330,17 +366,35 @@ def _split_whitespace(text, maxsplit):
     length = _text_length(text)
     index = 0
     while maxsplit != 0:
-        while index < length and is_space(_text_codepoint(text, index)):
+        while index < length:
+            code = _text_codepoint(text, index)
+            if code < 128:
+                if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                    break
+            elif not is_space(code):
+                break
             index += 1
         if index == length:
             return result
         start = index
         index += 1
-        while index < length and not is_space(_text_codepoint(text, index)):
+        while index < length:
+            code = _text_codepoint(text, index)
+            if code < 128:
+                if code <= 32 and (code >= 28 or (9 <= code <= 13)):
+                    break
+            elif is_space(code):
+                break
             index += 1
         _storage_append(result, _text_slice(text, start, index))
         maxsplit -= 1
-    while index < length and is_space(_text_codepoint(text, index)):
+    while index < length:
+        code = _text_codepoint(text, index)
+        if code < 128:
+            if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                break
+        elif not is_space(code):
+            break
         index += 1
     if index != length:
         _storage_append(result, _text_slice(text, index, length))
@@ -351,18 +405,36 @@ def _rsplit_whitespace(text, maxsplit):
     result = []
     index = _text_length(text) - 1
     while maxsplit != 0:
-        while index >= 0 and is_space(_text_codepoint(text, index)):
+        while index >= 0:
+            code = _text_codepoint(text, index)
+            if code < 128:
+                if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                    break
+            elif not is_space(code):
+                break
             index -= 1
         if index < 0:
             _reversed(result)
             return result
         end = index + 1
         index -= 1
-        while index >= 0 and not is_space(_text_codepoint(text, index)):
+        while index >= 0:
+            code = _text_codepoint(text, index)
+            if code < 128:
+                if code <= 32 and (code >= 28 or (9 <= code <= 13)):
+                    break
+            elif is_space(code):
+                break
             index -= 1
         _storage_append(result, _text_slice(text, index + 1, end))
         maxsplit -= 1
-    while index >= 0 and is_space(_text_codepoint(text, index)):
+    while index >= 0:
+        code = _text_codepoint(text, index)
+        if code < 128:
+            if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                break
+        elif not is_space(code):
+            break
         index -= 1
     if index >= 0:
         _storage_append(result, _text_slice(text, 0, index + 1))
@@ -964,8 +1036,8 @@ def _field_value(name, fields):
     size = _text_length(name)
     index = 0
     while index < size:
-        character = _text_character(name, index)
-        if character == "." or character == "[":
+        code = _text_codepoint(name, index)
+        if code == 46 or code == 91:
             break
         index += 1
     first = _text_slice(name, 0, index)
@@ -998,13 +1070,13 @@ def _field_value(name, fields):
                 )
             value = _storage_read(fields.args, position)
     while index < size:
-        character = _text_character(name, index)
+        code = _text_codepoint(name, index)
         index += 1
         start = index
-        if character == ".":
+        if code == 46:
             while index < size:
-                next_char = _text_character(name, index)
-                if next_char == "." or next_char == "[":
+                next_code = _text_codepoint(name, index)
+                if next_code == 46 or next_code == 91:
                     break
                 index += 1
             attr = _text_slice(name, start, index)
@@ -1012,7 +1084,7 @@ def _field_value(name, fields):
                 raise ValueError("Empty attribute in format string")
             value = getattr(value, attr)
             continue
-        while index < size and _text_character(name, index) != "]":
+        while index < size and _text_codepoint(name, index) != 93:
             index += 1
         if index == size:
             raise ValueError("Missing ']' in format string")
@@ -1026,8 +1098,8 @@ def _field_value(name, fields):
         else:
             value = value[key]
         if index < size:
-            character = _text_character(name, index)
-            if character != "." and character != "[":
+            code = _text_codepoint(name, index)
+            if code != 46 and code != 91:
                 raise ValueError(
                     "Only '.' or '[' may follow ']' in format field specifier"
                 )
@@ -1040,10 +1112,10 @@ def _replacement_field(template, index, size, fields, depth):
     start = index
     nesting = 1
     while index < size:
-        character = _text_character(template, index)
-        if character == "{":
+        code = _text_codepoint(template, index)
+        if code == 123:
             nesting += 1
-        elif character == "}":
+        elif code == 125:
             nesting -= 1
             if nesting == 0:
                 break
@@ -1056,23 +1128,23 @@ def _replacement_field(template, index, size, fields, depth):
     position = 0
     bracket = False
     while position < field_size:
-        character = _text_character(field, position)
-        if character == "[":
+        code = _text_codepoint(field, position)
+        if code == 91:
             bracket = True
-        elif character == "]":
+        elif code == 93:
             bracket = False
-        elif not bracket and (character == "!" or character == ":"):
+        elif not bracket and (code == 33 or code == 58):
             break
         position += 1
     name = _text_slice(field, 0, position)
-    conversion = None
+    conversion = 0
     specification = ""
-    if position < field_size and _text_character(field, position) == "!":
+    if position < field_size and _text_codepoint(field, position) == 33:
         if position + 1 >= field_size:
             raise ValueError("end of string while looking for conversion specifier")
-        conversion = _text_character(field, position + 1)
+        conversion = _text_codepoint(field, position + 1)
         position += 2
-        if position < field_size and _text_character(field, position) != ":":
+        if position < field_size and _text_codepoint(field, position) != 58:
             raise ValueError("expected ':' after conversion specifier")
     value = _field_value(name, fields)
     if position < field_size:
@@ -1080,15 +1152,17 @@ def _replacement_field(template, index, size, fields, depth):
         if depth > 1:
             raise ValueError("Max string recursion exceeded")
         specification = _expand(specification, fields, depth + 1)
-    if conversion is not None:
-        if conversion == "r":
+    if conversion != 0:
+        if conversion == 114:
             value = _representation_protocol(value)
-        elif conversion == "s":
+        elif conversion == 115:
             value = _string_protocol(value)
-        elif conversion == "a":
+        elif conversion == 97:
             value = ascii(value)
         else:
-            raise ValueError(f"Unknown conversion specifier {conversion}")
+            raise ValueError(
+                f"Unknown conversion specifier {_text_character(field, position - 1)}"
+            )
     return _format_value_protocol(value, specification), end
 
 
@@ -1098,10 +1172,10 @@ def _expand(template, fields, depth):
     index = 0
     literal = 0
     while index < size:
-        character = _text_character(template, index)
-        if character == "{":
+        code = _text_codepoint(template, index)
+        if code == 123:
             pieces.append(_text_slice(template, literal, index))
-            if index + 1 < size and _text_character(template, index + 1) == "{":
+            if index + 1 < size and _text_codepoint(template, index + 1) == 123:
                 pieces.append("{")
                 index += 2
             else:
@@ -1112,9 +1186,9 @@ def _expand(template, fields, depth):
                 )
                 pieces.append(text)
             literal = index
-        elif character == "}":
+        elif code == 125:
             pieces.append(_text_slice(template, literal, index))
-            if index + 1 < size and _text_character(template, index + 1) == "}":
+            if index + 1 < size and _text_codepoint(template, index + 1) == 125:
                 pieces.append("}")
                 index += 2
                 literal = index
@@ -1560,7 +1634,13 @@ class TextStorage:
         index = 0
         while index < length:
             start = index
-            while index < length and not is_linebreak(_text_codepoint(self, index)):
+            while index < length:
+                code = _text_codepoint(self, index)
+                if code < 128:
+                    if code <= 30 and (10 <= code <= 13 or code >= 28):
+                        break
+                elif is_linebreak(code):
+                    break
                 index += 1
             line_end = index
             if index < length:
@@ -1792,39 +1872,139 @@ class TextStorage:
         return _text_from_codepoints(codes)
 
     def isalpha(self):
-        return _all_codepoints(self, is_alpha, False)
+        size = _text_length(self)
+        if size == 0:
+            return False
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (65 <= code <= 90 or 97 <= code <= 122):
+                    return False
+            elif not is_alpha(code):
+                return False
+            index += 1
+        return True
 
     def isdecimal(self):
-        return _all_codepoints(self, is_decimal, False)
+        size = _text_length(self)
+        if size == 0:
+            return False
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (48 <= code <= 57):
+                    return False
+            elif not is_decimal(code):
+                return False
+            index += 1
+        return True
 
     def isdigit(self):
-        return _all_codepoints(self, is_digit, False)
+        size = _text_length(self)
+        if size == 0:
+            return False
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (48 <= code <= 57):
+                    return False
+            elif not is_digit(code):
+                return False
+            index += 1
+        return True
 
     def isnumeric(self):
-        return _all_codepoints(self, is_numeric, False)
+        size = _text_length(self)
+        if size == 0:
+            return False
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (48 <= code <= 57):
+                    return False
+            elif not is_numeric(code):
+                return False
+            index += 1
+        return True
 
     def isalnum(self):
-        return _all_codepoints(self, _is_alnum, False)
+        size = _text_length(self)
+        if size == 0:
+            return False
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (48 <= code <= 57 or 65 <= code <= 90 or 97 <= code <= 122):
+                    return False
+            elif not _is_alnum(code):
+                return False
+            index += 1
+        return True
 
     def isspace(self):
-        return _all_codepoints(self, is_space, False)
+        size = _text_length(self)
+        if size == 0:
+            return False
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if code > 32 or (code < 28 and (code < 9 or code > 13)):
+                    return False
+            elif not is_space(code):
+                return False
+            index += 1
+        return True
 
     def isprintable(self):
-        return _all_codepoints(self, is_printable, True)
+        size = _text_length(self)
+        index = 0
+        while index < size:
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (32 <= code <= 126):
+                    return False
+            elif not is_printable(code):
+                return False
+            index += 1
+        return True
 
     def isascii(self):
-        return _all_codepoints(self, _is_ascii, True)
+        size = _text_length(self)
+        index = 0
+        while index < size:
+            if _text_codepoint(self, index) >= 128:
+                return False
+            index += 1
+        return True
 
     def isidentifier(self):
         length = _text_length(self)
         if length == 0:
             return False
         first = _text_codepoint(self, 0)
-        if not is_xid_start(first) and first != 95:
+        if first < 128:
+            if not (65 <= first <= 90 or 97 <= first <= 122 or first == 95):
+                return False
+        elif not is_xid_start(first):
             return False
         index = 1
         while index < length:
-            if not is_xid_continue(_text_codepoint(self, index)):
+            code = _text_codepoint(self, index)
+            if code < 128:
+                if not (
+                    48 <= code <= 57
+                    or 65 <= code <= 90
+                    or code == 95
+                    or 97 <= code <= 122
+                ):
+                    return False
+            elif not is_xid_continue(code):
                 return False
             index += 1
         return True
@@ -1835,10 +2015,16 @@ class TextStorage:
         length = _text_length(self)
         while index < length:
             code = _text_codepoint(self, index)
-            if is_upper(code) or is_titlecase(code):
-                return False
-            if not cased and is_lower(code):
-                cased = True
+            if code < 128:
+                if 65 <= code <= 90:
+                    return False
+                if not cased and 97 <= code <= 122:
+                    cased = True
+            else:
+                if is_upper(code) or is_titlecase(code):
+                    return False
+                if not cased and is_lower(code):
+                    cased = True
             index += 1
         return cased
 
@@ -1848,10 +2034,16 @@ class TextStorage:
         length = _text_length(self)
         while index < length:
             code = _text_codepoint(self, index)
-            if is_lower(code) or is_titlecase(code):
-                return False
-            if not cased and is_upper(code):
-                cased = True
+            if code < 128:
+                if 97 <= code <= 122:
+                    return False
+                if not cased and 65 <= code <= 90:
+                    cased = True
+            else:
+                if is_lower(code) or is_titlecase(code):
+                    return False
+                if not cased and is_upper(code):
+                    cased = True
             index += 1
         return cased
 
@@ -1862,18 +2054,32 @@ class TextStorage:
         length = _text_length(self)
         while index < length:
             code = _text_codepoint(self, index)
-            if is_upper(code) or is_titlecase(code):
-                if previous_cased:
-                    return False
-                previous_cased = True
-                cased = True
-            elif is_lower(code):
-                if not previous_cased:
-                    return False
-                previous_cased = True
-                cased = True
+            if code < 128:
+                if 65 <= code <= 90:
+                    if previous_cased:
+                        return False
+                    previous_cased = True
+                    cased = True
+                elif 97 <= code <= 122:
+                    if not previous_cased:
+                        return False
+                    previous_cased = True
+                    cased = True
+                else:
+                    previous_cased = False
             else:
-                previous_cased = False
+                if is_upper(code) or is_titlecase(code):
+                    if previous_cased:
+                        return False
+                    previous_cased = True
+                    cased = True
+                elif is_lower(code):
+                    if not previous_cased:
+                        return False
+                    previous_cased = True
+                    cased = True
+                else:
+                    previous_cased = False
             index += 1
         return cased
 

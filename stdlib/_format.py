@@ -160,7 +160,7 @@ def percent_decimal(pattern, values):
                 break
             index += 1
         width = 0
-        if index < size and _text_character(pattern, index) == "*":
+        if index < size and _text_codepoint(pattern, index) == 42:
             index += 1
             if mapping is not None or consumed == count:
                 raise TypeError("not enough arguments for format string")
@@ -170,14 +170,17 @@ def percent_decimal(pattern, values):
                 left = True
                 width = -width
         else:
-            while index < size and "0" <= _text_character(pattern, index) <= "9":
-                width = width * 10 + "0123456789".index(_text_character(pattern, index))
+            while index < size:
+                digit = _text_codepoint(pattern, index) - 48
+                if digit < 0 or digit > 9:
+                    break
+                width = width * 10 + digit
                 index += 1
         precision = -1
-        if index < size and _text_character(pattern, index) == ".":
+        if index < size and _text_codepoint(pattern, index) == 46:
             index += 1
             precision = 0
-            if index < size and _text_character(pattern, index) == "*":
+            if index < size and _text_codepoint(pattern, index) == 42:
                 index += 1
                 if mapping is not None or consumed == count:
                     raise TypeError("not enough arguments for format string")
@@ -186,10 +189,11 @@ def percent_decimal(pattern, values):
                 if precision < 0:
                     precision = -1
             else:
-                while index < size and "0" <= _text_character(pattern, index) <= "9":
-                    precision = precision * 10 + "0123456789".index(
-                        _text_character(pattern, index)
-                    )
+                while index < size:
+                    digit = _text_codepoint(pattern, index) - 48
+                    if digit < 0 or digit > 9:
+                        break
+                    precision = precision * 10 + digit
                     index += 1
         if index < size and _text_character(pattern, index) in "hlL":
             index += 1
