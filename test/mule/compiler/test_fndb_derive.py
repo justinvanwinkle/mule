@@ -39,13 +39,9 @@ from mule.compiler.node import (
 
 @contextmanager
 def saved_fun_info(*names: str):
-    from mule.compiler.sequence_protocol import (
-        stdlib_target_summary,
-        stdlib_type_summary,
-    )
+    from mule.compiler.driver import cached_builtins_interface
 
-    stdlib_type_summary()
-    stdlib_target_summary()
+    cached_builtins_interface()
     infos = [fun_info(name) for name in names]
     snapshots = [
         (info, info.derive_type, info.optimizer, info.transforms) for info in infos

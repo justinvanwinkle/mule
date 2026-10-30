@@ -683,20 +683,19 @@ class ModuleCompiler:
 
     def compile_pending(self):
         """Compile every module imported so far, and those they import."""
-        if self.primitives is None:
+        if self.primitives is None and (
+            not self.storage_methods or not self.exported_targets
+        ):
+            from .driver import cached_builtins_interface
+
+            interface = cached_builtins_interface()
             if not self.storage_methods:
-                from .sequence_protocol import stdlib_type_summary
-
-                exported, methods, builtins = stdlib_type_summary()
-                self.exported_types.update(exported)
-                self.storage_methods.update(methods)
-                self.builtin_return_types.update(builtins)
+                self.exported_types.update(interface.exported_types)
+                self.storage_methods.update(interface.storage_methods)
+                self.builtin_return_types.update(interface.builtin_return_types)
             if not self.exported_targets:
-                from .sequence_protocol import stdlib_target_summary
-
-                exp_targets, b_targets = stdlib_target_summary()
-                self.exported_targets.update(exp_targets)
-                self.builtin_targets.update(b_targets)
+                self.exported_targets.update(interface.exported_targets)
+                self.builtin_targets.update(interface.builtin_targets)
         pending_compilations: list[tuple[CompiledModule, Compilation]] = []
         while self.pending:
             descriptor = self.pending.popleft()
@@ -764,20 +763,19 @@ class ModuleCompiler:
         """Compile the main module and every module it imports; imported
         modules accumulate on the compiler. Returns the main module's
         ``Compilation``."""
-        if self.primitives is None:
+        if self.primitives is None and (
+            not self.storage_methods or not self.exported_targets
+        ):
+            from .driver import cached_builtins_interface
+
+            interface = cached_builtins_interface()
             if not self.storage_methods:
-                from .sequence_protocol import stdlib_type_summary
-
-                exported, methods, builtins = stdlib_type_summary()
-                self.exported_types.update(exported)
-                self.storage_methods.update(methods)
-                self.builtin_return_types.update(builtins)
+                self.exported_types.update(interface.exported_types)
+                self.storage_methods.update(interface.storage_methods)
+                self.builtin_return_types.update(interface.builtin_return_types)
             if not self.exported_targets:
-                from .sequence_protocol import stdlib_target_summary
-
-                exp_targets, b_targets = stdlib_target_summary()
-                self.exported_targets.update(exp_targets)
-                self.builtin_targets.update(b_targets)
+                self.exported_targets.update(interface.exported_targets)
+                self.builtin_targets.update(interface.builtin_targets)
         compilation = compile_toplevel(source, filename, imports=self)
         self.compile_pending()
         compilation.imported_function_types = self.exported_types

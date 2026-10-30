@@ -28,8 +28,8 @@ from mule.compiler.ctype import (
     ValueTypeVisitor,
     widen_fact,
 )
+from mule.compiler.driver import cached_builtins_interface
 from mule.compiler.main import compile_source
-from mule.compiler.sequence_protocol import stdlib_type_summary
 
 
 def test_parameterized_list_type():
@@ -217,7 +217,9 @@ def aggregate(items: list):
 
 
 def test_stdlib_type_summary_derives_methods_and_builtins():
-    _, methods, builtins = stdlib_type_summary()
+    interface = cached_builtins_interface()
+    methods = interface.storage_methods
+    builtins = interface.builtin_return_types
     for pred in (
         "isalpha",
         "isdigit",

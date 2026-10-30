@@ -325,9 +325,11 @@ def test_table_storage_fields_and_fixnum_hash_invariants():
         ListType,
         TupleType,
     )
-    from mule.compiler.sequence_protocol import stdlib_type_summary
+    from mule.compiler.driver import cached_builtins_interface
 
-    exported_types, storage_methods, _ = stdlib_type_summary()
+    interface = cached_builtins_interface()
+    exported_types = interface.exported_types
+    storage_methods = interface.storage_methods
     # The index and hash vectors are fixnum word vectors, whose representation
     # fixes their element type as SBCL's specialized arrays do. Keys and
     # values are ordinary lists, which carry only SBCL's conservative type.
