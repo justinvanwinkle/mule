@@ -26,7 +26,9 @@ selection and inline Latin-1 string equality (Section 6L), and `SetType`
 lattice, IR1 set/dict transforms, and pre-sized `_Table` set operations
 (Section 6M); **proposed** for
 Sections 1C, 2, the remaining items in Sections 1D and 5, Sections 6D, 6F, 6H, 6I, 6K, and the remaining SBCL parity gaps identified in the
-24-workload and `pyperformance` suite reviews (Sections 6N–6R).
+24-workload and `pyperformance` suite reviews (Sections 6N–6R); **in progress**
+for SBCL conservative container types, word vectors, and declared instance
+fields (Section 6V).
 
 This document records the remaining architectural and transform gaps between
 SBCL's compiler (`~/checkout/sbcl/src/compiler/`) and Mule (`mule/compiler/`,
@@ -233,7 +235,10 @@ down into four groups:
      for `_Table` storage fields and exports them across stdlib units via
      `storage_methods`, proving `_table_lookup -> IntegerType(-1, (1 << 60) - 1)`,
      unboxed `icmp eq i64` probe-loop hash comparisons, and unboxed `icmp sge i64`
-     entry checks in `dict_get` and `dict_getitem`.
+     entry checks in `dict_get` and `dict_getitem`. This inference from writes is
+     an SBCL departure. Section 6V replaces it with word vectors, as SBCL's hash
+     table declares its index and hash vectors
+     `(simple-array hash-table-index (*))` (`src/code/hash-table.lisp:106-119`).
 
 ### 0C. Preserving `InstanceType(cls)` method specialization, instance field inference, and method call return contracts (`locall.py`, `constraint.py`, `return_checks.py`, `codegen.py`) (implemented)
 
@@ -1650,5 +1655,71 @@ describe the Python mutation and ownership adaptations to SBCL.
      `_next_method(x)()`, `_getitem_method(x)(i)`, etc.) that pass `receiver` as
      arg 0 to `Data::Function` without allocating a transient
      `Data::BoundMethod` on the heap, matching CPython's
-     `_PyObject_VectorcallTstate` / `PY_VECTORCALL_ARGUMENTS_OFFSET` special
+  `_PyObject_VectorcallTstate` / `PY_VECTORCALL_ARGUMENTS_OFFSET` special
      method call path.
+
+### 6V. SBCL conservative container types, word vectors, and declared instance fields (`constraint.py`, `ctype.py`, `locall.py`, `wordops.py`, `ir1tran.py`) (in progress)
+
+Mule tracked what mutable containers hold by joining the values written into
+them, and tracked aliases and parent containers to invalidate those facts.
+A write through an untracked alias left a stale element or length fact, which
+miscompiled programs at `optimize=1`. SBCL keeps no such facts: a mutable
+object's contents type is used only at a reference to a variable with a single
+reference (`lvar-conservative-type`, `node-conservative-type`, and
+`conservative-type` in `src/compiler/ir1opt.lisp`), array element types come
+from the array's representation, and slot types come from declarations. The
+target behavior is specified in [type-inference.md](type-inference.md)
+Section 3.6.
+
+Implemented on branch `sbcl-container-types`, not yet merged:
+
+- `ValueType.conservative_type()` and `Fact.conservative()` apply SBCL's
+  conservative type at references to multiply referenced variables and module
+  globals.
+- Vector-length constraints apply only to simple sequences: text, bytes,
+  tuples, and word vectors (`%check-bound` and `vector-constraint-length` in
+  `src/compiler/equality-constraints.lisp`).
+- Word vectors: `WordVectorType`, `WORD_VECTOR_T`, `mule/compiler/wordops.py`,
+  and `Data::RawWords` in `mule/runtime/object.rs`. `_Table._indices` and
+  `_Table._hashes` use them.
+
+Remaining, in order:
+
+1. Generic storage accesses whose receiver is not proven to be a word vector
+   must dispatch on the receiver's tag, as SBCL's `hairy-data-vector-ref`
+   dispatches on the array's widetag. Until then, every program compiled on the
+   branch fails at startup with `TypeError: sequence storage is required`.
+2. Declared types must survive the conservative rule. On the branch,
+   `Fact.conservative()` discards declared element types, such as a parameter declared
+   `set[int]` or `list[int]`, at references to multiply referenced variables.
+3. Remove the container-mutation tracking: `update_mutated_container`,
+   `mutate_container_element`, `mutate_list`, `mutate_dict`, `mutate_set`,
+   `record_alias` and `walk.aliases`, `record_container_child`,
+   `walk.parent_containers` and `parent_origins`, `widen_escaped_container`,
+   the `update_nested_*`, `_update_as_nested_*`, and
+   `propagate_to_parent_container` methods in `ctype.py`, and their callers in
+   `protocols.py` and `fndb.py`.
+4. Declared instance fields, following `slot-access-transform` in
+   `src/code/defstruct.lisp`: reads of a declared field have the declared type
+   and are never checked; stores the compiler resolves to the field are
+   policy-controlled `Cast`s, checked above safety 0 and trusted at safety 0;
+   unresolved stores, such as dynamic `setattr`, are unchecked like
+   `%instance-set`, and the field keeps its declared type. A subclass that
+   narrows an inherited field's type is checked on read, following
+   `dsd-safe-p`. `field_annotations` in `ir1tran.py` currently has no consumer.
+5. A regression test at `optimize=1` covering writes through aliases, nested
+   containers, length changes, augmented assignment, and field stores, failing
+   on `master` before this change.
+6. Measure and record the expected slowdowns in
+   [performance.md](performance.md): list-indexing loops keep their bound
+   checks and general element reads, and module-global containers such as the
+   nbody and spectralnorm inputs carry only their kind.
+
+Separate follow-up work:
+
+- Replace inferred instance field types with declared field types. SBCL never
+  infers slot types: an undeclared slot has type `T`. See the known analysis
+  gap in [type-inference.md](type-inference.md) Section 3.5.
+- Word-vector templates check the receiver's tag and unproven fixnum operands
+  on every access. SBCL omits such checks where declarations are trusted, such
+  as in internal code compiled at safety 0. No change is planned.
