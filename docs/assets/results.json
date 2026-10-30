@@ -4227,9 +4227,9 @@
       "runtime": "cpython",
       "samples": [
         {
-          "kernel_seconds": 0.03790230699814856,
-          "preparation_seconds": 0.032957665011053905,
-          "process_seconds": 0.13098065000667702,
+          "kernel_seconds": 0.040078329999232665,
+          "preparation_seconds": 0.03226660999644082,
+          "process_seconds": 0.13509852900460828,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4240,9 +4240,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0459174629941117,
-          "preparation_seconds": 0.04182433499954641,
-          "process_seconds": 0.15292061099899001,
+          "kernel_seconds": 0.03307637599937152,
+          "preparation_seconds": 0.034820339002180845,
+          "process_seconds": 0.12441304999811109,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4253,9 +4253,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.03511798699037172,
-          "preparation_seconds": 0.028350295004202053,
-          "process_seconds": 0.11512744800711516,
+          "kernel_seconds": 0.037318385002436116,
+          "preparation_seconds": 0.03343786299228668,
+          "process_seconds": 0.13465957799053285,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4277,9 +4277,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.03164935699896887,
-        "preparation_seconds": 0.03194752499985043,
-        "process_seconds": 0.11144273399258964,
+        "kernel_seconds": 0.032522188004804775,
+        "preparation_seconds": 0.03203115999349393,
+        "process_seconds": 0.11871710998821072,
         "fields": {
           "CASE": "graph_paths",
           "SIZE": "20000",
@@ -4292,22 +4292,22 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.03790230699814856,
-          "min": 0.03511798699037172,
-          "max": 0.0459174629941117,
-          "stdev": 0.004578013221434795
+          "median": 0.037318385002436116,
+          "min": 0.03307637599937152,
+          "max": 0.040078329999232665,
+          "stdev": 0.0028798012389668463
         },
         "process_seconds": {
-          "median": 0.13098065000667702,
-          "min": 0.11512744800711516,
-          "max": 0.15292061099899001,
-          "stdev": 0.015495551587161848
+          "median": 0.13465957799053285,
+          "min": 0.12441304999811109,
+          "max": 0.13509852900460828,
+          "stdev": 0.004936974731447193
         },
         "preparation_seconds": {
-          "median": 0.032957665011053905,
-          "min": 0.028350295004202053,
-          "max": 0.04182433499954641,
-          "stdev": 0.0055916152393165235
+          "median": 0.03343786299228668,
+          "min": 0.03226660999644082,
+          "max": 0.034820339002180845,
+          "stdev": 0.0010437435473103919
         }
       },
       "time_ratio": {
@@ -4320,9 +4320,9 @@
       "runtime": "mule-o2",
       "samples": [
         {
-          "kernel_seconds": 0.0895022729964694,
-          "preparation_seconds": 0.019945937994634733,
-          "process_seconds": 0.24075484200147912,
+          "kernel_seconds": 0.0840252909983974,
+          "preparation_seconds": 0.014613880994147621,
+          "process_seconds": 0.21550590900005773,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4333,9 +4333,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.08307073899777606,
-          "preparation_seconds": 0.012700412000413053,
-          "process_seconds": 0.2051167220051866,
+          "kernel_seconds": 0.07897731399862096,
+          "preparation_seconds": 0.014726762005011551,
+          "process_seconds": 0.20240301500598434,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4346,9 +4346,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.0865531040035421,
-          "preparation_seconds": 0.013237406994448975,
-          "process_seconds": 0.21330164599930868,
+          "kernel_seconds": 0.0799515669932589,
+          "preparation_seconds": 0.01563627499854192,
+          "process_seconds": 0.20433779600716662,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4360,7 +4360,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261030T055055.743313Z/build/11-1",
+        "/home/jvanwinkle/repos/mule/perf/results/20261030T060134.304000Z/build/0-1",
         "--seed",
         "42",
         "--loops",
@@ -4369,9 +4369,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.09220749400265049,
-        "preparation_seconds": 0.015309444992453791,
-        "process_seconds": 0.25145344900374766,
+        "kernel_seconds": 0.08288307400653139,
+        "preparation_seconds": 0.0197161810065154,
+        "process_seconds": 0.243476097995881,
         "fields": {
           "CASE": "graph_paths",
           "SIZE": "20000",
@@ -4384,27 +4384,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.0865531040035421,
-          "min": 0.08307073899777606,
-          "max": 0.0895022729964694,
-          "stdev": 0.0026286687242906832
+          "median": 0.0799515669932589,
+          "min": 0.07897731399862096,
+          "max": 0.0840252909983974,
+          "stdev": 0.0021864854589011256
         },
         "process_seconds": {
-          "median": 0.21330164599930868,
-          "min": 0.2051167220051866,
-          "max": 0.24075484200147912,
-          "stdev": 0.01524156068267612
+          "median": 0.20433779600716662,
+          "min": 0.20240301500598434,
+          "max": 0.21550590900005773,
+          "stdev": 0.005775003187728254
         },
         "preparation_seconds": {
-          "median": 0.013237406994448975,
-          "min": 0.012700412000413053,
-          "max": 0.019945937994634733,
-          "stdev": 0.003296300935847384
+          "median": 0.014726762005011551,
+          "min": 0.014613880994147621,
+          "max": 0.01563627499854192,
+          "stdev": 0.00045768080922985454
         }
       },
       "time_ratio": {
-        "kernel_seconds": 2.2835840575026216,
-        "process_seconds": 1.6284973848307758
+        "kernel_seconds": 2.1424176578927443,
+        "process_seconds": 1.517439747371943
       }
     },
     {
@@ -4412,9 +4412,9 @@
       "runtime": "sbcl",
       "samples": [
         {
-          "kernel_seconds": 0.018671535988687538,
-          "preparation_seconds": 0.003010612999787554,
-          "process_seconds": 0.03898402099730447,
+          "kernel_seconds": 0.01265485500334762,
+          "preparation_seconds": 0.003517513003316708,
+          "process_seconds": 0.03296014800434932,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4425,9 +4425,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.011457418004283682,
-          "preparation_seconds": 0.002273745005368255,
-          "process_seconds": 0.02904425299493596,
+          "kernel_seconds": 0.013460061003570445,
+          "preparation_seconds": 0.003179331004503183,
+          "process_seconds": 0.03476253099506721,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4438,9 +4438,9 @@
           "stderr": ""
         },
         {
-          "kernel_seconds": 0.011643826990621164,
-          "preparation_seconds": 0.00230621499940753,
-          "process_seconds": 0.028960246010683477,
+          "kernel_seconds": 0.01345537300221622,
+          "preparation_seconds": 0.003524856991134584,
+          "process_seconds": 0.03442949798773043,
           "fields": {
             "CASE": "graph_paths",
             "SIZE": "20000",
@@ -4452,7 +4452,7 @@
         }
       ],
       "command": [
-        "/home/jvanwinkle/repos/mule/perf/results/20261030T055055.743313Z/build/11-2",
+        "/home/jvanwinkle/repos/mule/perf/results/20261030T060134.304000Z/build/0-2",
         "--seed",
         "42",
         "--loops",
@@ -4461,9 +4461,9 @@
         "1"
       ],
       "validation": {
-        "kernel_seconds": 0.012813563997042365,
-        "preparation_seconds": 0.004557526990538463,
-        "process_seconds": 0.0583499250060413,
+        "kernel_seconds": 0.013465391006320715,
+        "preparation_seconds": 0.0036156370042590424,
+        "process_seconds": 0.044693817995721474,
         "fields": {
           "CASE": "graph_paths",
           "SIZE": "20000",
@@ -4476,27 +4476,27 @@
       "status": "ok",
       "summary": {
         "kernel_seconds": {
-          "median": 0.011643826990621164,
-          "min": 0.011457418004283682,
-          "max": 0.018671535988687538,
-          "stdev": 0.003357693328008739
+          "median": 0.01345537300221622,
+          "min": 0.01265485500334762,
+          "max": 0.013460061003570445,
+          "stdev": 0.0003784776151701744
         },
         "process_seconds": {
-          "median": 0.02904425299493596,
-          "min": 0.028960246010683477,
-          "max": 0.03898402099730447,
-          "stdev": 0.0047055771885512005
+          "median": 0.03442949798773043,
+          "min": 0.03296014800434932,
+          "max": 0.03476253099506721,
+          "stdev": 0.0007830485157998406
         },
         "preparation_seconds": {
-          "median": 0.00230621499940753,
-          "min": 0.002273745005368255,
-          "max": 0.003010612999787554,
-          "stdev": 0.0003399681822778596
+          "median": 0.003517513003316708,
+          "min": 0.003179331004503183,
+          "max": 0.003524856991134584,
+          "stdev": 0.00016117940518984946
         }
       },
       "time_ratio": {
-        "kernel_seconds": 0.3072062867094063,
-        "process_seconds": 0.2217446087911105
+        "kernel_seconds": 0.360556144145516,
+        "process_seconds": 0.2556780475737936
       }
     },
     {

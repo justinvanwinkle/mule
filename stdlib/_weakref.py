@@ -18,6 +18,10 @@ from _mule_native import weak_handle
 from _mule_native import weak_owners
 from _mule_native import weak_target
 from _object import _builtin_types, builtin_function_or_method, code, function, method
+from mule_types import final
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
 
 
 # Native builtin layouts do not acquire weak-reference support merely because
@@ -26,6 +30,7 @@ from _object import _builtin_types, builtin_function_or_method, code, function, 
 _builtin_classes = _builtin_types()
 
 
+@final
 def _referenceable(ob):
     if isinstance(ob, (type, function, builtin_function_or_method, method, code, set, frozenset)):
         return True
@@ -92,6 +97,7 @@ class ref:
 ReferenceType = ref
 
 
+@final
 def _target(proxy):
     target = weak_target(instance_field(proxy, "_handle"))
     if target is None:

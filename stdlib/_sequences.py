@@ -78,6 +78,7 @@ from _mule_native import math_fabs
 from _mule_native import set_instance_field
 from _mule_native import type_of
 from _slice import is_slice, positions, slice
+from mule_types import final, optimize as _optimize
 
 __speed__ = 3
 __mule_builtin_implementation__ = True
@@ -697,6 +698,8 @@ def abs(value, /):
     return method()
 
 
+@final
+@_optimize(safety=0)
 def integer_index(value):
     if _type_of(value) is int:
         return _integer_storage(value)
@@ -821,7 +824,11 @@ def dict_setitem(table, key, value):
         slot,
         _storage_length(_instance_field(table, "_keys")),
     )
-    _storage_append(_instance_field(table, "_hashes"), code)
+    _storage_write(
+        _instance_field(table, "_hashes"),
+        _storage_length(_instance_field(table, "_keys")),
+        code,
+    )
     _storage_append(_instance_field(table, "_keys"), key)
     _storage_append(_instance_field(table, "_values"), value)
     next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
@@ -918,7 +925,11 @@ def set_add(table, key):
         slot,
         _storage_length(_instance_field(table, "_keys")),
     )
-    _storage_append(_instance_field(table, "_hashes"), code)
+    _storage_write(
+        _instance_field(table, "_hashes"),
+        _storage_length(_instance_field(table, "_keys")),
+        code,
+    )
     _storage_append(_instance_field(table, "_keys"), key)
     next_used = (_instance_field(table, "_used") + 1) & _TABLE_MASK_LIMIT
     _set_instance_field(table, "_used", next_used)
@@ -1065,7 +1076,7 @@ def set_and(left, right):
                             _storage_write(
                                 res_indices, res_slot, _storage_length(res_keys)
                             )
-                            _storage_append(res_hashes, code)
+                            _storage_write(res_hashes, _storage_length(res_keys), code)
                             _storage_append(res_keys, key)
                             break
                 elif entry is _TABLE_EMPTY:
@@ -1099,7 +1110,7 @@ def set_or(left, right):
                 res_perturb >>= 5
                 res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
             _storage_write(res_indices, res_slot, _storage_length(res_keys))
-            _storage_append(res_hashes, code)
+            _storage_write(res_hashes, _storage_length(res_keys), code)
             _storage_append(res_keys, key)
         index += 1
     right_count = _storage_length(_instance_field(right, "_keys"))
@@ -1119,7 +1130,7 @@ def set_or(left, right):
                             break
                 elif entry is _TABLE_EMPTY:
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 res_perturb >>= 5
@@ -1162,7 +1173,7 @@ def set_sub(left, right):
                         res_perturb >>= 5
                         res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 perturb >>= 5
@@ -1207,7 +1218,7 @@ def set_xor(left, right):
                         res_perturb >>= 5
                         res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 perturb >>= 5
@@ -1238,7 +1249,7 @@ def set_xor(left, right):
                         res_perturb >>= 5
                         res_slot = (res_slot * 5 + res_perturb + 1) & res_mask
                     _storage_write(res_indices, res_slot, _storage_length(res_keys))
-                    _storage_append(res_hashes, code)
+                    _storage_write(res_hashes, _storage_length(res_keys), code)
                     _storage_append(res_keys, key)
                     break
                 perturb >>= 5
@@ -2228,20 +2239,6 @@ def _bytes_repeat(sequence, count):
     return bytes_from_values(_repeat(sequence, count))
 
 
-def _sequence_order(left, right):
-    """The pair that orders two sequences lexicographically: the first unequal
-    elements, or else the two lengths."""
-    index = 0
-    left_length, right_length = _storage_length(left), _storage_length(right)
-    while index < left_length and index < right_length:
-        a = _storage_read(left, index)
-        b = _storage_read(right, index)
-        if not (a is b or a == b):
-            return a, b
-        index += 1
-    return left_length, right_length
-
-
 def _merge_sort(items, keys):
     """Stable merge sort of ``items`` by ``keys``, comparing with ``<`` only."""
     length = _storage_length(items)
@@ -2330,26 +2327,22 @@ class _OrderedSequence:
     def __lt__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a < b
+        return sequence_lt(self, other)
 
     def __le__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a <= b
+        return sequence_le(self, other)
 
     def __gt__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a > b
+        return sequence_gt(self, other)
 
     def __ge__(self, other):
         if not _storage_compatible(self, other):
             return NotImplemented
-        a, b = _sequence_order(self, other)
-        return a >= b
+        return sequence_ge(self, other)
 
     def __iter__(self):
         cls = TupleIterator if _tuple_storage(self) else StorageIterator
@@ -3851,7 +3844,7 @@ def sequence_equal(left, right):
         return False
     if left is right:
         return True
-    if not _tuple_storage(left) and _storage_length(left) != _storage_length(right):
+    if _storage_length(left) != _storage_length(right):
         return False
     index = 0
     while index < _storage_length(left) and index < _storage_length(right):
@@ -3861,6 +3854,62 @@ def sequence_equal(left, right):
             return False
         index += 1
     return _storage_length(left) == _storage_length(right)
+
+
+def sequence_ne(left, right):
+    return not sequence_equal(left, right)
+
+
+def sequence_lt(left, right):
+    if left is right:
+        return False
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a < b
+        index += 1
+    return _storage_length(left) < _storage_length(right)
+
+
+def sequence_le(left, right):
+    if left is right:
+        return True
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a <= b
+        index += 1
+    return _storage_length(left) <= _storage_length(right)
+
+
+def sequence_gt(left, right):
+    if left is right:
+        return False
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a > b
+        index += 1
+    return _storage_length(left) > _storage_length(right)
+
+
+def sequence_ge(left, right):
+    if left is right:
+        return True
+    index = 0
+    while index < _storage_length(left) and index < _storage_length(right):
+        a = _storage_read(left, index)
+        b = _storage_read(right, index)
+        if not (a is b or a == b):
+            return a >= b
+        index += 1
+    return _storage_length(left) >= _storage_length(right)
 
 
 def get_attribute(value, name):

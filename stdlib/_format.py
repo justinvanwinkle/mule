@@ -14,10 +14,13 @@ from _mule_native import bind_instance_attribute
 from _mule_native import class_lookup_default
 from _mule_native import integer_decimal
 from _mule_native import type_of
+from mule_types import final, optimize
 
 _MAPPING_MISSING = object()
 
 
+@final
+@optimize(safety=0)
 def _index_integer(value):
     if type_of(value) is int or type_of(value) is bool:
         return _integer_storage(value)
@@ -27,6 +30,8 @@ def _index_integer(value):
     return _integer_storage(value)
 
 
+@final
+@optimize(safety=0)
 def _int_or_index(value):
     if type_of(value) is int or type_of(value) is bool:
         return _integer_storage(value)
@@ -38,6 +43,7 @@ def _int_or_index(value):
     return _integer_storage(value)
 
 
+@final
 def string(value):
     if _text_storage(value) and type_of(value) is str:
         return value
@@ -53,6 +59,7 @@ def string(value):
     return _text_result(method())
 
 
+@final
 def representation(value):
     if type_of(value) is int:
         return integer_decimal(value)
@@ -64,6 +71,7 @@ def representation(value):
     return _text_result(method())
 
 
+@final
 def format_value(value, specification):
     if specification == "":
         if _text_storage(value) and type_of(value) is str:
@@ -82,10 +90,12 @@ def format_value(value, specification):
     return _text_result(method(specification))
 
 
+@final
 def decimal_integer(value):
     return integer_decimal(_integer_storage(value))
 
 
+@final
 def percent_decimal(pattern, values):
     original = values
     mapping = None
@@ -319,6 +329,7 @@ def percent_decimal(pattern, values):
     return "".join(pieces)
 
 
+@final
 def _mapping_operand(value):
     return (
         not _text_storage(value)
@@ -328,12 +339,14 @@ def _mapping_operand(value):
     )
 
 
+@final
 def modulo(left, right):
     if _text_storage(left):
         return _percent_decimal_protocol(left, right)
     return _numeric_modulo(left, right)
 
 
+@final
 def ascii_representation(value):
     """``ascii(value)``: the representation with non-ASCII escaped."""
     text = _representation_protocol(value)
@@ -353,6 +366,8 @@ def ascii_representation(value):
     return "".join(pieces)
 
 
+@final
+@optimize(safety=0)
 def _hex(code, width):
     digits = []
     while width > 0:

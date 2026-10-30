@@ -62,6 +62,8 @@ from .vops import (
     text_result,
     write_int64,
 )
+from .wordops import PRIMITIVES as WORD_PRIMITIVES
+from .wordops import define_storage_templates
 
 _LOOKUPS = {
     "_pos_method": "__pos__",
@@ -329,6 +331,8 @@ for _name, _emit in _EMITTERS.items():
     )
 
 PRIMITIVES.update(BYTE_PRIMITIVES)
+PRIMITIVES.update(WORD_PRIMITIVES)
+define_storage_templates(PRIMITIVES)
 
 # `_mule_native` exports whose generic entry only unpacks an argument tuple
 # around one of these primitives. A protocol module whose only binding of a
@@ -399,9 +403,6 @@ def _propagate_set_instance_field(visitor, node):
 
 @defpropagate("_storage_append")
 def _propagate_storage_append(visitor, node) -> ValueType | None:
-    args = node.args
-    if len(args) == 2:
-        visitor.mutate_container_element(args[0], visitor.type_of(args[1]))
     return None
 
 
@@ -416,9 +417,6 @@ def _propagate_storage_write(visitor, node) -> ValueType | None:
         )
         visitor.check_in_bounds_access(node, args[0], args[1])
         visitor.prove_argument_type(args[1], IntegerType(0, max_idx))
-        visitor.mutate_container_element(
-            args[0], visitor.type_of(args[2]), preserves_length=True
-        )
     return None
 
 

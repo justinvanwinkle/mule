@@ -451,26 +451,6 @@ def _constrain_instance_check(visitor, node, state, truth: bool) -> bool:
             narrowed = narrowed.narrow_by_runtime_class(cls, False)
     if narrowed is not current.type:
         state[source] = visitor.narrowed_fact(current, narrowed)
-        for alias in visitor.walk.aliases.get(source, ()):
-            if alias not in visitor.walk.indirect and alias in state:
-                alias_current = state[alias]
-                if truth:
-                    alias_narrowed = BOTTOM
-                    for cls in classes:
-                        alias_narrowed = alias_narrowed.join(
-                            alias_current.type.narrow_by_runtime_class(cls, True)
-                        )
-                else:
-                    alias_narrowed = alias_current.type
-                    for cls in classes:
-                        alias_narrowed = alias_narrowed.narrow_by_runtime_class(
-                            cls, False
-                        )
-                if (
-                    alias_narrowed is not BOTTOM
-                    and alias_narrowed is not alias_current.type
-                ):
-                    state[alias] = visitor.narrowed_fact(alias_current, alias_narrowed)
     return True
 
 
@@ -635,6 +615,22 @@ def derive_max2_types(left: ValueType, right: ValueType) -> ValueType:
             return IntegerType(lo, hi)
         return PythonIntegerType(lo, hi)
     return left.join(right).widen_constant()
+
+
+def derive_abs_type(value: ValueType) -> ValueType:
+    if value is BOTTOM:
+        return BOTTOM
+    if value.fits(PYTHON_INTEGER) and not value.may_be_unbound:
+        lo, hi = value.minimum, value.maximum
+        if lo is not None and lo >= 0:
+            return IntegerType(lo, hi)
+        if hi is not None and hi <= 0:
+            return IntegerType(-hi, -lo if lo is not None else None)
+        res_hi = max(-lo, hi) if (lo is not None and hi is not None) else None
+        return IntegerType(0, res_hi)
+    if value is FLOAT:
+        return FLOAT
+    return UNKNOWN
 
 
 MIN2 = defknown(

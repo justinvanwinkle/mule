@@ -254,7 +254,7 @@ def test_intermediate_safety_levels_check_unknown_annotation_values(tmp_path, sa
         tmp_path,
         "from mule_types import int32, optimize\n"
         f"@optimize(safety={safety})\ndef consume(value: int32):\n print(value)\n"
-        "consume(str(42))\n",
+        "consume(getattr(int, '__name__'))\n",
     )
     assert result.returncode != 0
     assert "TypeError" in result.stderr
@@ -263,7 +263,7 @@ def test_intermediate_safety_levels_check_unknown_annotation_values(tmp_path, sa
 @pytest.mark.parametrize(
     "source",
     [
-        "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume(value: int32):\n print(value)\nconsume(str(42))\n",
+        "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume(value: int32):\n print(value)\nconsume(getattr(int, '__name__'))\n",
         "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume() -> int32:\n return str(42)\nprint(consume())\n",
         "from mule_types import int32, optimize\n@optimize(safety=3)\ndef consume():\n value: int32 = str(42)\n print(value)\nconsume()\n",
     ],

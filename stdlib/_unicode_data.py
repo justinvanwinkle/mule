@@ -29,6 +29,12 @@ values are little-endian. The tables are bytes literals so that they compile to
 static data instead of tuples constructed at startup.
 """
 
+from mule_types import final
+
+__speed__ = 3
+__safety__ = 0
+__mule_builtin_implementation__ = True
+
 _TOP = (
     b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13"
     b"\x14\x11\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !!\x22!!#!!!$%&'()*+!,\x11"
@@ -1427,6 +1433,7 @@ _EXPANSIONS = (
 )
 
 
+@final
 def _record(cp):
     """Return the offset of the codepoint's record in _RECORDS."""
     block = _TOP[cp >> 8]
@@ -1436,10 +1443,12 @@ def _record(cp):
     return (_LEAVES[leaf] | (_LEAVES[leaf + 1] << 8)) * 15
 
 
+@final
 def _u24(data, at):
     return data[at] | (data[at + 1] << 8) | (data[at + 2] << 16)
 
 
+@final
 def _case(cp, field):
     mapping = _u24(_RECORDS, _record(cp) + field)
     if mapping < 0x800000:
@@ -1452,6 +1461,7 @@ def _case(cp, field):
     return (first, second, _u24(_EXPANSIONS, at + 7))
 
 
+@final
 def is_alpha(cp):
     """str.isalpha: general category Lm, Lt, Lu, Ll, or Lo."""
     if cp < 128:
@@ -1459,6 +1469,7 @@ def is_alpha(cp):
     return (_RECORDS[_record(cp)] & 1) != 0
 
 
+@final
 def is_numeric(cp):
     """str.isnumeric: the character has a numeric value."""
     if cp < 128:
@@ -1466,6 +1477,7 @@ def is_numeric(cp):
     return (_RECORDS[_record(cp)] & 2) != 0
 
 
+@final
 def is_space(cp):
     """str.isspace: bidirectional WS, B, or S, or category Zs."""
     if cp < 128:
@@ -1473,6 +1485,7 @@ def is_space(cp):
     return (_RECORDS[_record(cp)] & 4) != 0
 
 
+@final
 def is_printable(cp):
     """str.isprintable: not in categories C* or Z*, except U+0020 SPACE."""
     if cp < 128:
@@ -1480,6 +1493,7 @@ def is_printable(cp):
     return (_RECORDS[_record(cp)] & 8) != 0
 
 
+@final
 def is_lower(cp):
     """str.islower for one character: derived Lowercase."""
     if cp < 128:
@@ -1487,6 +1501,7 @@ def is_lower(cp):
     return (_RECORDS[_record(cp)] & 16) != 0
 
 
+@final
 def is_upper(cp):
     """str.isupper for one character: derived Uppercase."""
     if cp < 128:
@@ -1494,6 +1509,7 @@ def is_upper(cp):
     return (_RECORDS[_record(cp)] & 32) != 0
 
 
+@final
 def is_cased(cp):
     """Derived Cased: Lowercase, Uppercase, or category Lt."""
     if cp < 128:
@@ -1501,6 +1517,7 @@ def is_cased(cp):
     return (_RECORDS[_record(cp)] & 64) != 0
 
 
+@final
 def is_case_ignorable(cp):
     """Derived Case_Ignorable, as used by str.lower's Final_Sigma rule."""
     if cp < 128:
@@ -1508,6 +1525,7 @@ def is_case_ignorable(cp):
     return (_RECORDS[_record(cp)] & 128) != 0
 
 
+@final
 def is_titlecase(cp):
     """General category Lt."""
     if cp < 128:
@@ -1515,6 +1533,7 @@ def is_titlecase(cp):
     return (_RECORDS[_record(cp) + 1] & 1) != 0
 
 
+@final
 def is_xid_start(cp):
     """Derived XID_Start; U+005F LOW LINE is not XID_Start."""
     if cp < 128:
@@ -1522,6 +1541,7 @@ def is_xid_start(cp):
     return (_RECORDS[_record(cp) + 1] & 2) != 0
 
 
+@final
 def is_xid_continue(cp):
     """Derived XID_Continue."""
     if cp < 128:
@@ -1529,6 +1549,7 @@ def is_xid_continue(cp):
     return (_RECORDS[_record(cp) + 1] & 4) != 0
 
 
+@final
 def is_linebreak(cp):
     """A boundary for str.splitlines: bidirectional B, or category Zl or Zp."""
     if cp < 128:
@@ -1536,6 +1557,7 @@ def is_linebreak(cp):
     return (_RECORDS[_record(cp) + 1] & 8) != 0
 
 
+@final
 def decimal_value(cp):
     """The decimal digit value used by int() and str.isdecimal, or -1."""
     if cp < 128:
@@ -1548,6 +1570,7 @@ def decimal_value(cp):
     return value
 
 
+@final
 def digit_value(cp):
     """The digit value used by str.isdigit, or -1."""
     if cp < 128:
@@ -1560,16 +1583,19 @@ def digit_value(cp):
     return value
 
 
+@final
 def is_decimal(cp):
     """str.isdecimal: the character has a decimal digit value."""
     return decimal_value(cp) >= 0
 
 
+@final
 def is_digit(cp):
     """str.isdigit: the character has a digit value."""
     return digit_value(cp) >= 0
 
 
+@final
 def lower_full(cp):
     """Full lowercase mapping, as str.lower applies it without Final_Sigma."""
     if cp < 128:
@@ -1579,6 +1605,7 @@ def lower_full(cp):
     return _case(cp, 3)
 
 
+@final
 def upper_full(cp):
     """Full uppercase mapping, as str.upper applies it."""
     if cp < 128:
@@ -1588,6 +1615,7 @@ def upper_full(cp):
     return _case(cp, 6)
 
 
+@final
 def title_full(cp):
     """Full titlecase mapping, as str.title applies it to a word's first character."""
     if cp < 128:
@@ -1597,6 +1625,7 @@ def title_full(cp):
     return _case(cp, 9)
 
 
+@final
 def fold_full(cp):
     """Full case folding, as str.casefold applies it."""
     if cp < 128:

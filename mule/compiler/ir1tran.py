@@ -4296,13 +4296,29 @@ class _Statements(ast.Visitor):
             )
             frontier = ctran
             operands.append(value)
+        resolved_field_annotations = []
+        if native is not None:
+            for fname, (contract, _) in native.fields.items():
+                resolved_field_annotations.append((fname, contract))
+        else:
+            for fname, annotation in declarations:
+                if fname in (
+                    "__dict__",
+                    "__slots__",
+                    "__class__",
+                    "__match_args__",
+                    "__annotations__",
+                    "__weakref__",
+                ):
+                    continue
+                contract = converter.declared_contract(annotation, function)
+                if contract is not None:
+                    resolved_field_annotations.append((fname, contract))
         info = ClassInfo(
             node.name,
             len(positional),
             tuple(fields),
-            tuple(contract for contract, declaration in native.fields.values())
-            if native is not None
-            else (),
+            tuple(resolved_field_annotations),
             policy,
             converter.location(node),
             identity,
@@ -5920,6 +5936,12 @@ class _OptimizeBinding(_CompilerBinding):
         return ()
 
 
+class _FinalBinding(_CompilerBinding):
+    def runtime_decorators(self, decorator):
+        # A compile-time declaration, not a runtime decorator.
+        return ()
+
+
 class _ModuleBinding(_CompilerBinding):
     def supports_runtime_annotation(self):
         return False
@@ -5935,6 +5957,7 @@ _EXPORT_BINDINGS: dict[str, _CompilerBinding] = {
     name: _NumericBinding(contract) for name, contract in EXPORTS.items()
 }
 _EXPORT_BINDINGS["optimize"] = _OptimizeBinding()
+_EXPORT_BINDINGS["final"] = _FinalBinding()
 _MODULE_BINDING = _ModuleBinding()
 _OPAQUE_BINDING = _CompilerBinding()
 _ELLIPSIS_BINDING = _EllipsisBinding()
@@ -6296,14 +6319,22 @@ class _PolicyDecorator(ast.Visitor):
 
 
 class _DecoratorBinding(ast.Visitor):
-    """The compiler binding a decorator calls, such as the imported
-    ``mule_types.optimize`` directive; a decorator that is not a call calls none."""
+    """The compiler binding a decorator calls or names, such as the imported
+    ``mule_types.optimize`` and ``mule_types.final`` directives."""
 
     def __init__(self, converter):
         self.converter = converter
 
     def visit_Node(self, node):
         return _OPAQUE_BINDING
+
+    def visit_Name(self, node):
+        binding = node.accept(_AnnotationReference(self.converter))
+        return _OPAQUE_BINDING if binding.runtime_decorators(node) else binding
+
+    def visit_Attribute(self, node):
+        binding = node.accept(_AnnotationReference(self.converter))
+        return _OPAQUE_BINDING if binding.runtime_decorators(node) else binding
 
     def visit_Call(self, node):
         return node.function.accept(_AnnotationReference(self.converter))
@@ -7969,6 +8000,14 @@ class _StaticDecoratorBinding(ast.Visitor):
 
     def visit_Node(self, node):
         return _OPAQUE_BINDING
+
+    def visit_Name(self, node):
+        binding = node.accept(_StaticAnnotationReference(self.converter))
+        return _OPAQUE_BINDING if binding.runtime_decorators(node) else binding
+
+    def visit_Attribute(self, node):
+        binding = node.accept(_StaticAnnotationReference(self.converter))
+        return _OPAQUE_BINDING if binding.runtime_decorators(node) else binding
 
     def visit_Call(self, node):
         return node.function.accept(_StaticAnnotationReference(self.converter))

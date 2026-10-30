@@ -6,6 +6,12 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+unsafe extern "C" {
+    /// Compiled code allocates `RawWords` data with `malloc`.
+    #[link_name = "free"]
+    fn raw_words_free(data: *mut c_void);
+}
+
 pub type Value = *mut Object;
 pub type Native = unsafe extern "C" fn(Value, Value) -> Value;
 #[repr(C)]
@@ -414,6 +420,9 @@ pub enum Data {
     },
     /// Private compact mutable storage owned by a compiled bytearray instance.
     ByteStorage(crate::byte_buffer::ByteBuffer),
+    /// Words laid out, allocated, and accessed by compiled code. They hold no
+    /// object references, so destruction only frees the `malloc` block.
+    RawWords { data: *mut i64, length: usize },
 }
 
 /// Byte offsets compiled code reads, from the object address. `Data`'s
@@ -441,6 +450,9 @@ pub const NATIVE_INSTANCE_TAG: u32 = 17;
 pub const NATIVE_INSTANCE_CLASS_OFFSET: usize = 24;
 pub const NATIVE_INSTANCE_PAYLOAD_OFFSET: usize = 32;
 pub const NATIVE_INSTANCE_LENGTH_OFFSET: usize = 40;
+pub const RAW_WORDS_TAG: u32 = 28;
+pub const RAW_WORDS_DATA_OFFSET: usize = 24;
+pub const RAW_WORDS_LENGTH_OFFSET: usize = 32;
 pub const CLASS_TAG: u32 = 15;
 /// `Data::Instance.ty`, the class object.
 pub const INSTANCE_CLASS_OFFSET: usize = 24;
@@ -462,7 +474,7 @@ impl Data {
 
     pub fn visit_owned_values(&self, mut visit: impl FnMut(Value)) {
         match self {
-            Self::ByteStorage(_) => (),
+            Self::ByteStorage(_) | Self::RawWords { .. } => (),
             Self::Args(values, ty, attributes) | Self::List(values, ty, attributes) => {
                 visit(*ty); visit(*attributes);
                 for value in values.iter().rev() { visit(*value); }
@@ -506,7 +518,7 @@ impl Data {
 
     pub fn cycle_candidate(&self) -> bool {
         match self {
-            Self::ByteStorage(_) => false,
+            Self::ByteStorage(_) | Self::RawWords { .. } => false,
             Self::BigInt(_, ty, attributes) | Self::Float(_, ty, attributes)
             | Self::Text(_, ty, attributes) | Self::Bytes(_, ty, attributes) => !ty.is_null() || !attributes.is_null(),
             Self::Args(values, ty, attributes) => {
@@ -1264,6 +1276,11 @@ unsafe fn destroy(value: Value) {
             Data::NativeInstance { ty, .. } => {
                 release(*ty);
                 drop_and_dealloc_object(value);
+                return;
+            }
+            Data::RawWords { data, .. } => {
+                raw_words_free((*data).cast());
+                dealloc_object(value);
                 return;
             }
             _ => (),
@@ -2671,165 +2688,10 @@ unsafe fn contains(container: Value, item: Value) -> Option<bool> {
     }
 }
 
-#[cold]
-#[inline(never)]
-unsafe fn compare_sequence_storage_slow(
-    op: i32,
-    left: Value,
-    right: Value,
-    index: usize,
-) -> Value {
-    unsafe {
-        if has_error() {
-            return std::ptr::null_mut();
-        }
-        if crate::mule_enter_frame() < 0 {
-            return std::ptr::null_mut();
-        }
-        retain(left);
-        retain(right);
-        let result = compare_sequence_storage_slow_inner(op, left, right, index);
-        release(left);
-        release(right);
-        crate::mule_leave_frame();
-        result
-    }
-}
-
-unsafe fn compare_sequence_storage_slow_inner(
-    op: i32,
-    left: Value,
-    right: Value,
-    mut index: usize,
-) -> Value {
-    unsafe {
-        let elements = |v: Value| -> &[Value] {
-            match &(*v).data {
-                Data::Args(items, ..) | Data::List(items, ..) => items.as_slice(),
-                _ => &[],
-            }
-        };
-        loop {
-            let a = elements(left);
-            let b = elements(right);
-            if index >= a.len() || index >= b.len() {
-                let (la, lb) = (a.len(), b.len());
-                return bool_value(match op {
-                    0 => la == lb,
-                    1 => la != lb,
-                    2 => la < lb,
-                    3 => la <= lb,
-                    4 => la > lb,
-                    _ => la >= lb,
-                });
-            }
-            let x = a[index];
-            let y = b[index];
-            if x == y {
-                index += 1;
-                continue;
-            }
-            if is_fixnum(x) && is_fixnum(y) {
-                let (fx, fy) = (fixnum(x), fixnum(y));
-                return bool_value(match op {
-                    0 => false,
-                    1 => true,
-                    2 => fx < fy,
-                    3 => fx <= fy,
-                    4 => fx > fy,
-                    _ => fx >= fy,
-                });
-            }
-            retain(x);
-            retain(y);
-            let eq = compare(0, x, y);
-            if eq.is_null() {
-                release(x);
-                release(y);
-                return std::ptr::null_mut();
-            }
-            let same = truth(eq);
-            release(eq);
-            let Some(same) = same else {
-                release(x);
-                release(y);
-                return std::ptr::null_mut();
-            };
-            if same {
-                release(x);
-                release(y);
-                index += 1;
-                continue;
-            }
-            if op < 2 {
-                release(x);
-                release(y);
-                return bool_value(op == 1);
-            }
-            let ord = compare(op, x, y);
-            release(x);
-            release(y);
-            return ord;
-        }
-    }
-}
-
-#[inline(always)]
-unsafe fn compare_sequence_storage(
-    op: i32,
-    left: Value,
-    right: Value,
-    init_a: &[Value],
-    init_b: &[Value],
-) -> Value {
-    unsafe {
-        if std::ptr::eq(left, right) {
-            return bool_value(matches!(op, 0 | 3 | 5));
-        }
-        if op < 2 && init_a.len() != init_b.len() {
-            return bool_value(op == 1);
-        }
-        let mut index = 0usize;
-        let min_len = init_a.len().min(init_b.len());
-        while index < min_len {
-            let x = *init_a.get_unchecked(index);
-            let y = *init_b.get_unchecked(index);
-            if x == y {
-                index += 1;
-                continue;
-            }
-            if ((x as usize) & (y as usize) & 1) != 0 {
-                let (sx, sy) = (x as isize, y as isize);
-                return bool_value(match op {
-                    0 => false,
-                    1 => true,
-                    2 | 3 => sx < sy,
-                    _ => sx > sy,
-                });
-            }
-            return compare_sequence_storage_slow(op, left, right, index);
-        }
-        let (la, lb) = (init_a.len(), init_b.len());
-        bool_value(match op {
-            0 => la == lb,
-            1 => la != lb,
-            2 => la < lb,
-            3 => la <= lb,
-            4 => la > lb,
-            _ => la >= lb,
-        })
-    }
-}
-
 pub unsafe fn compare(op: i32, left: Value, right: Value) -> Value {
     unsafe {
         if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
             match (&(*left).data, &(*right).data) {
-                (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
-                    if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
-                {
-                    return compare_sequence_storage(op, left, right, a.as_slice(), b.as_slice());
-                }
                 (Data::Text(a, ty_a, ..), Data::Text(b, ty_b, ..))
                     if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
                 {
@@ -3063,6 +2925,7 @@ pub unsafe fn formatted_value(
         }
         Some(match &(*value).data {
             Data::ByteStorage(_) => b"<compact byte storage>".to_vec(),
+            Data::RawWords { .. } => b"<raw words>".to_vec(),
             Data::None => b"None".to_vec(),
             Data::Bool(value) => {
                 if *value {
@@ -3806,6 +3669,7 @@ pub unsafe fn type_name(value: Value) -> Option<String> {
         Some(
             match &(*value).data {
                 Data::ByteStorage(_) => "compact byte storage",
+                Data::RawWords { .. } => "raw words",
                 Data::None => "NoneType",
                 Data::Bool(_) => "bool",
                 Data::BigInt(..) => "int",
@@ -4531,16 +4395,6 @@ unsafe fn coerce_compare_bool(result: Value) -> Value {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mule_compare_bool(op: i32, left: Value, right: Value) -> Value {
     unsafe {
-        if !left.is_null() && !right.is_null() && !is_fixnum(left) && !is_fixnum(right) {
-            match (&(*left).data, &(*right).data) {
-                (Data::List(a, ty_a, ..), Data::List(b, ty_b, ..))
-                    if ty_a.is_null() && ty_b.is_null() && (0..=5).contains(&op) =>
-                {
-                    return compare_sequence_storage(op, left, right, a.as_slice(), b.as_slice());
-                }
-                _ => (),
-            }
-        }
         let result = compare(op, left, right);
         if result.is_null()
             || std::ptr::eq(result, bool_value(true))
@@ -4902,6 +4756,24 @@ mod lifetime_tests {
             assert_eq!(payload as *const f64 as usize - base, FLOAT_VALUE_OFFSET);
             assert_eq!(class as *const Value as usize - base, FLOAT_CLASS_OFFSET);
             assert_eq!(attributes as *const Value as usize - base, FLOAT_ATTRIBUTES_OFFSET);
+            release(value);
+        }
+    }
+
+    #[test]
+    fn compiled_raw_words_offsets_match_header_and_release_frees_data() {
+        unsafe extern "C" {
+            fn malloc(size: usize) -> *mut c_void;
+        }
+        unsafe {
+            let data = malloc(2 * 8).cast::<i64>();
+            data.write(-1);
+            data.add(1).write(7);
+            let value = new_untracked_value(Data::RawWords { data, length: 2 });
+            assert_eq!(word::<u32>(value, DATA_OFFSET), RAW_WORDS_TAG);
+            assert_eq!(word::<*mut i64>(value, RAW_WORDS_DATA_OFFSET), data);
+            assert_eq!(word::<usize>(value, RAW_WORDS_LENGTH_OFFSET), 2);
+            assert!(!(*value).data.cycle_candidate());
             release(value);
         }
     }

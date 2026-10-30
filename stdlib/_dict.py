@@ -28,6 +28,7 @@ from _mule_native import is_class
 from _mule_native import is_subclass
 from _mule_native import math_number_kind
 from _mule_native import storage_hash
+from mule_types import final, optimize
 
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
@@ -58,11 +59,15 @@ _DELETED = _Deleted()
 _MISSING = _Missing()
 
 
+@final
+@optimize(safety=0)
 def _signed(value):
     value = _integer_storage(value) & _WORD
     return value - (1 << 64) if value >= 1 << 63 else value
 
 
+@final
+@optimize(safety=0)
 def _lanes_to_signed_hash(acc_hi, acc_lo):
     acc_hi = _integer_storage(acc_hi) & 0xFFFFFFFF
     acc_lo = _integer_storage(acc_lo) & 0xFFFFFFFF
@@ -73,6 +78,8 @@ def _lanes_to_signed_hash(acc_hi, acc_lo):
     return _signed((acc_hi << 32) | acc_lo)
 
 
+@final
+@optimize(safety=0)
 def _lanes_to_table_hash(acc_hi, acc_lo):
     acc_hi = _integer_storage(acc_hi) & 0xFFFFFFFF
     acc_lo = _integer_storage(acc_lo) & 0xFFFFFFFF
@@ -86,6 +93,7 @@ def _lanes_to_table_hash(acc_hi, acc_lo):
     return folded ^ 0x3FFFFFFFFFFFFFFE
 
 
+@final
 def _tuple_hash(value):
     count = _storage_length(value)
     acc_hi = 0x27D4EB2F
@@ -231,7 +239,7 @@ def _table_clear(self):
     new_indices = _empty_indices(_MINIMUM_SIZE)
     _set_instance_field(self, "_indices", new_indices)
     del new_indices
-    empty_hashes = []
+    empty_hashes = _empty_hashes(_MINIMUM_SIZE)
     _set_instance_field(self, "_hashes", empty_hashes)
     del empty_hashes
     empty_keys = []
@@ -304,7 +312,8 @@ def _table_resize(self, minimum):
     size = _MINIMUM_SIZE
     while size * 2 < minimum * 3:
         size *= 2
-    hashes, keys, values = [], [], []
+    hashes = _empty_hashes(size * 2)
+    keys, values = [], []
     old_hashes = _instance_field(self, "_hashes")
     old_keys = _instance_field(self, "_keys")
     old_values = _instance_field(self, "_values")
@@ -315,7 +324,9 @@ def _table_resize(self, minimum):
         while index < count:
             key = _storage_read(old_keys, index)
             if key is not _DELETED:
-                _storage_append(hashes, _storage_read(old_hashes, index))
+                _storage_write(
+                    hashes, _storage_length(keys), _storage_read(old_hashes, index)
+                )
                 _storage_append(keys, key)
                 _storage_append(values, _storage_read(old_values, index))
             index += 1
@@ -323,7 +334,9 @@ def _table_resize(self, minimum):
         while index < count:
             key = _storage_read(old_keys, index)
             if key is not _DELETED:
-                _storage_append(hashes, _storage_read(old_hashes, index))
+                _storage_write(
+                    hashes, _storage_length(keys), _storage_read(old_hashes, index)
+                )
                 _storage_append(keys, key)
             index += 1
     indices = _empty_indices(size * 2)
@@ -392,7 +405,7 @@ def _table_insert(self, key, value):
         slot,
         _storage_length(keys),
     )
-    _storage_append(hashes, code)
+    _storage_write(hashes, _storage_length(keys), code)
     _storage_append(keys, key)
     _storage_append(values, value)
     next_used = (_instance_field(self, "_used") + 1) & _MASK_LIMIT
@@ -454,7 +467,7 @@ class _Table:
         new_indices = _empty_indices(_MINIMUM_SIZE)
         _set_instance_field(self, "_indices", new_indices)
         del new_indices
-        empty_hashes = []
+        empty_hashes = _empty_hashes(_MINIMUM_SIZE)
         _set_instance_field(self, "_hashes", empty_hashes)
         del empty_hashes
         empty_keys = []
@@ -493,7 +506,13 @@ class _Table:
 
 
 def _empty_indices(size):
-    return [-1] * size
+    return _word_vector_new(size, _EMPTY)
+
+
+def _empty_hashes(index_size):
+    """Entry hashes for a table of ``index_size`` slots: inserts resize
+    before entries exceed two thirds of the slots, as in CPython."""
+    return _word_vector_new((index_size * 2) // 3, 0)
 
 
 class _TableIterator:
@@ -1036,7 +1055,7 @@ def _set_insert(self, key):
         slot,
         _storage_length(keys),
     )
-    _storage_append(hashes, code)
+    _storage_write(hashes, _storage_length(keys), code)
     _storage_append(keys, key)
     next_used = (_instance_field(self, "_used") + 1) & _MASK_LIMIT
     _set_instance_field(self, "_used", next_used)
@@ -1639,7 +1658,7 @@ def _empty_set_sized(minimum):
     new_indices = _empty_indices(size)
     _set_instance_field(result, "_indices", new_indices)
     del new_indices
-    empty_hashes = []
+    empty_hashes = _empty_hashes(size)
     _set_instance_field(result, "_hashes", empty_hashes)
     del empty_hashes
     empty_keys = []

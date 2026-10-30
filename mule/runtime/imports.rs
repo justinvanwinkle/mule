@@ -100,14 +100,16 @@ pub unsafe extern "C" fn mule_set_image_search_path(paths: *const *const c_char,
                 };
                 resolved.parent().map(Path::to_path_buf)
             });
-        if let Some(dir) = active_dir {
-            if dir.is_dir() {
-                let dir_str = dir.to_string_lossy().into_owned();
-                if stored.first() != Some(&dir_str) {
-                    if stored.first().is_some_and(|first| !Path::new(first).is_dir()) {
-                        stored[0] = dir_str;
-                    } else if !stored.contains(&dir_str) {
-                        stored.insert(0, dir_str);
+        if stored.len() >= 2 {
+            if let Some(dir) = active_dir {
+                if dir.is_dir() {
+                    let dir_str = dir.to_string_lossy().into_owned();
+                    if stored.first() != Some(&dir_str) {
+                        if stored.first().is_some_and(|first| !Path::new(first).is_dir()) {
+                            stored[0] = dir_str;
+                        } else if !stored.contains(&dir_str) {
+                            stored.insert(0, dir_str);
+                        }
                     }
                 }
             }

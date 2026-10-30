@@ -12,8 +12,13 @@ from _object import (
     type_of,
     object,
 )
+from mule_types import final
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
 
 
+@final
 def getstate(value):
     owner = type_of(value)
     slotnames = copyreg._slotnames(owner)
@@ -43,6 +48,7 @@ def getstate(value):
     return (state, slots) if slots else state
 
 
+@final
 def _new_arguments(value):
     owner = type_of(value)
     missing = object()
@@ -78,6 +84,7 @@ def _new_arguments(value):
     return args, {}
 
 
+@final
 def reduce(value, protocol):
     if protocol < 2:
         return copyreg._reduce_ex(value, protocol)
@@ -93,6 +100,7 @@ def reduce(value, protocol):
     return constructor, arguments, state, listitems, dictitems
 
 
+@final
 def reduce_ex(value, protocol):
     protocol = _index_integer(protocol)
     if protocol < -(1 << 31) or protocol >= 1 << 31:

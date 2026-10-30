@@ -536,3 +536,32 @@ main()
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "6.0\n"
+
+
+def test_mule_types_final_directive_seals_function_without_runtime_import(tmp_path):
+    source = """\
+from mule_types import final
+import mule_types as mt
+
+@final
+def first(value):
+    return value + 1
+
+@mt.final
+def second(value):
+    return first(value) + 2
+
+def call_both(value):
+    return first(value) + second(value)
+
+print(call_both(10))
+"""
+    llvm = emit_llvm(source, str(tmp_path / "main.py"), roots=(tmp_path,))
+    body = _llvm_function(llvm, "mule_fn_call_both.body")
+    for callee in ("first", "second"):
+        assert re.search(
+            rf'call ptr @"mule\.direct\.mule_fn_{callee}\.[^"]+"\(', body
+        ), f"call_both must retain the target of {callee}"
+    result = execute(tmp_path, {}, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "24\n"

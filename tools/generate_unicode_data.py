@@ -380,10 +380,17 @@ offset in _EXPANSIONS of a count byte followed by 3-byte codepoints. Multi-byte
 values are little-endian. The tables are bytes literals so that they compile to
 static data instead of tuples constructed at startup.
 """
+
+from mule_types import final
+
+__speed__ = 3
+__safety__ = 0
+__mule_builtin_implementation__ = True
 '''
 
 HELPERS = """
 
+@final
 def _record(cp):
     \"\"\"Return the offset of the codepoint's record in _RECORDS.\"\"\"
     block = _TOP[cp >> {top_shift}]
@@ -393,10 +400,12 @@ def _record(cp):
     return (_LEAVES[leaf] | (_LEAVES[leaf + 1] << 8)) * {record_size}
 
 
+@final
 def _u24(data, at):
     return data[at] | (data[at + 1] << 8) | (data[at + 2] << 16)
 
 
+@final
 def _case(cp, field):
     mapping = _u24(_RECORDS, _record(cp) + field)
     if mapping < 0x{expanded:X}:
@@ -411,6 +420,7 @@ def _case(cp, field):
 
 PREDICATE = """
 
+@final
 def {function}(cp):
     \"\"\"{doc}\"\"\"
     if cp < 128:
@@ -420,6 +430,7 @@ def {function}(cp):
 
 VALUES = """
 
+@final
 def decimal_value(cp):
     \"\"\"The decimal digit value used by int() and str.isdecimal, or -1.\"\"\"
     if cp < 128:
@@ -432,6 +443,7 @@ def decimal_value(cp):
     return value
 
 
+@final
 def digit_value(cp):
     \"\"\"The digit value used by str.isdigit, or -1.\"\"\"
     if cp < 128:
@@ -444,11 +456,13 @@ def digit_value(cp):
     return value
 
 
+@final
 def is_decimal(cp):
     \"\"\"str.isdecimal: the character has a decimal digit value.\"\"\"
     return decimal_value(cp) >= 0
 
 
+@final
 def is_digit(cp):
     \"\"\"str.isdigit: the character has a digit value.\"\"\"
     return digit_value(cp) >= 0
@@ -456,6 +470,7 @@ def is_digit(cp):
 
 CASES = """
 
+@final
 def lower_full(cp):
     \"\"\"Full lowercase mapping, as str.lower applies it without Final_Sigma.\"\"\"
     if cp < 128:
@@ -465,6 +480,7 @@ def lower_full(cp):
     return _case(cp, {lower})
 
 
+@final
 def upper_full(cp):
     \"\"\"Full uppercase mapping, as str.upper applies it.\"\"\"
     if cp < 128:
@@ -474,6 +490,7 @@ def upper_full(cp):
     return _case(cp, {upper})
 
 
+@final
 def title_full(cp):
     \"\"\"Full titlecase mapping, as str.title applies it to a word's first character.\"\"\"
     if cp < 128:
@@ -483,6 +500,7 @@ def title_full(cp):
     return _case(cp, {title})
 
 
+@final
 def fold_full(cp):
     \"\"\"Full case folding, as str.casefold applies it.\"\"\"
     if cp < 128:

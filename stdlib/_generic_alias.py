@@ -9,8 +9,13 @@ other builtins.
 
 from _attributes import getattr, hasattr
 from _descriptors import classmethod, property
+from mule_types import final
+
+__speed__ = 3
+__mule_builtin_implementation__ = True
 
 
+@final
 def _type_repr(value):
     """How generic aliases and unions show their arguments (``_Py_typing_type_repr``)."""
     if value is ...:
@@ -30,6 +35,7 @@ def _type_repr(value):
     return repr(value)
 
 
+@final
 def _collect_parameters(args):
     """The type parameters among ``args``, each once, in order of appearance."""
     parameters = []
@@ -52,6 +58,7 @@ def _collect_parameters(args):
     return tuple(parameters)
 
 
+@final
 def _substitute(args, parameters, items):
     """Replace ``parameters`` in ``args`` with ``items`` (``_Py_subs_parameters``)."""
     if not isinstance(items, tuple):
@@ -178,12 +185,14 @@ class GenericAlias:
         return f"{prefix}{_type_repr(self.__origin__)}[{arguments}]"
 
 
+@final
 def _union_member(value):
     if value is None:
         return type(None)
     return value
 
 
+@final
 def _unionable(value):
     return (
         value is None
@@ -195,6 +204,7 @@ def _unionable(value):
     )
 
 
+@final
 def _union_of(left, right):
     if not (_unionable(left) and _unionable(right)):
         return NotImplemented

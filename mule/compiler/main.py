@@ -63,7 +63,7 @@ from .node import (
     Set,
     linked,
 )
-from .return_checks import assert_inferred_results
+from .return_checks import assert_declared_field_stores, assert_inferred_results
 
 
 @dataclass(slots=True)
@@ -107,6 +107,9 @@ def ir1_phases(compilation: Compilation) -> None:
                 facts_stale = True
                 continue
             if assert_inferred_results(compilation):
+                facts_stale = True
+                continue
+            if assert_declared_field_stores(compilation):
                 facts_stale = True
                 continue
             facts = linked(compilation.facts, compilation, "facts")
@@ -547,14 +550,13 @@ def compile_source(
             compilation.builtin_return_types = imports.builtin_return_types
             compilation.builtin_targets = imports.builtin_targets
         elif not compilation.entry.is_protocol:
-            from .sequence_protocol import stdlib_target_summary, stdlib_type_summary
+            from .driver import cached_builtins_interface
 
-            exported, methods, builtins = stdlib_type_summary()
-            exp_targets, b_targets = stdlib_target_summary()
-            compilation.imported_function_types = exported
-            compilation.imported_targets = exp_targets
-            compilation.storage_methods = methods
-            compilation.builtin_return_types = builtins
-            compilation.builtin_targets = b_targets
+            interface = cached_builtins_interface()
+            compilation.imported_function_types = interface.exported_types
+            compilation.imported_targets = interface.exported_targets
+            compilation.storage_methods = interface.storage_methods
+            compilation.builtin_return_types = interface.builtin_return_types
+            compilation.builtin_targets = interface.builtin_targets
         ir1_phases(compilation)
     return compilation

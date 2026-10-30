@@ -595,7 +595,7 @@ print("ok")
     assert completed.stdout == "ok\n"
 
 
-def test_list_and_tuple_in_bounds_unboxed_indexing_and_setitem(tmp_path):
+def test_tuple_in_bounds_and_list_checked_unboxed_indexing_and_setitem(tmp_path):
     import subprocess
 
     from mule.compiler.driver import build_executable, emit_llvm
@@ -629,10 +629,13 @@ print(accumulate_and_search([10, 20, 30, 40], (10, 20, 31, 99)))
     )
     spec_end = ir.index("\n}", spec_start)
     spec_body = ir[spec_start:spec_end]
-    assert "@mule_list_getitem_borrow" not in spec_body
+    # A tuple is a simple sequence: its length facts remove the bound check.
+    # A list is an adjustable vector, so as in SBCL (%CHECK-BOUND elides
+    # checks only for a SIMPLE-ARRAY) its reads keep the check and their
+    # out-of-line fallbacks, for reads and stores alike.
+    assert "@mule_list_getitem_borrow" in spec_body
+    assert "@mule.fast.setitem.move" in spec_body
     assert "@mule_tuple_getitem_borrow" not in spec_body
-    assert "@mule.fast.setitem.move" not in spec_body
-    assert "icmp ult i64" not in spec_body
 
     exe_src = (
         src

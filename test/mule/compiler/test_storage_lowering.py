@@ -319,24 +319,24 @@ for sequence in ([1], (1,), b'x', 'x'):
 
 def test_table_storage_fields_and_fixnum_hash_invariants():
     from mule.compiler.ctype import (
-        FIXNUM_MAX,
-        FIXNUM_MIN,
         UNKNOWN,
+        WORD_VECTOR_TYPE,
         IntegerType,
         ListType,
         TupleType,
     )
-    from mule.compiler.sequence_protocol import stdlib_type_summary
+    from mule.compiler.driver import cached_builtins_interface
 
-    exported_types, storage_methods, _ = stdlib_type_summary()
-    assert storage_methods.get(("_Table", "_indices")) == ListType(
-        element=IntegerType(-2, (1 << 60) - 1)
-    )
-    assert storage_methods.get(("_Table", "_hashes")) == ListType(
-        element=IntegerType(FIXNUM_MIN, FIXNUM_MAX)
-    )
-    assert storage_methods.get(("_Table", "_keys")) == ListType(element=UNKNOWN)
-    assert storage_methods.get(("_Table", "_values")) == ListType(element=UNKNOWN)
+    interface = cached_builtins_interface()
+    exported_types = interface.exported_types
+    storage_methods = interface.storage_methods
+    # The index and hash vectors are fixnum word vectors, whose representation
+    # fixes their element type as SBCL's specialized arrays do. Keys and
+    # values are ordinary lists, which carry only SBCL's conservative type.
+    for field in ("_indices", "_hashes"):
+        assert storage_methods.get(("_Table", field)) == WORD_VECTOR_TYPE
+    for field in ("_keys", "_values"):
+        assert storage_methods.get(("_Table", field)) == ListType(element=UNKNOWN)
     assert storage_methods.get(("_Table", "_used")) == IntegerType(0, (1 << 57) - 1)
     assert exported_types.get(("_dict", "_table_lookup")) == IntegerType(
         -1, (1 << 60) - 1

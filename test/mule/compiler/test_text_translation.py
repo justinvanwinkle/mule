@@ -42,8 +42,8 @@ def classify_token(tok: str) -> int:
     if s.isalnum():
         return 4
     if "_" in s:
-        parts = s.split("_")
-        if len(parts) == 2 and parts[0].isalpha() and parts[1].isdigit():
+        left, _, right = s.partition("_")
+        if left.isalpha() and right.isdigit():
             return 5
     return 6
 

@@ -372,7 +372,8 @@ print(binary_search_intervals([(0, 2, 1), (4, 6, 2), (8, 10, 3), (12, 14, 4)], 1
         1
     ].split("\n}")[0]
     assert "getelementptr ptr, ptr " in body
+    # ``merged[mid]`` keeps its list bound check, as SBCL keeps %CHECK-BOUND
+    # for an adjustable vector; the out-of-line fallback still borrows.
     assert "call ptr @mule_list_getitem(" not in body
-    assert "call ptr @mule_list_getitem_borrow(" not in body
     assert body.count("call ptr @mule.fast.tuple.borrow(") == 2
     compare(tmp_path, source)

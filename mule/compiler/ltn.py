@@ -45,6 +45,7 @@ from .vop import (
     FIXNUM,
     IMMORTAL_T,
     NONE_T,
+    WORD_VECTOR_T,
     IR2Lvar,
     IR2LvarKind,
     PrimitiveType,
@@ -298,6 +299,10 @@ class _PrimitiveTypeOf(ValueTypeVisitor):
     visit_TextType = visit_ValueType
     visit_BytesType = visit_ValueType
     visit_ByteArrayType = visit_ValueType
+
+    def visit_WordVectorType(self, fact: ValueType) -> PrimitiveType:
+        return T if fact.may_be_unbound else WORD_VECTOR_T
+
     visit_FunctionType = visit_ValueType
     visit_TupleType = visit_ValueType
 
@@ -561,5 +566,6 @@ __all__ = [
     "find_template_for_ltn_policy",
     "ltn_analyze",
     "primitive_type_of",
+    "template_args_ok",
     "template_results_ok",
 ]

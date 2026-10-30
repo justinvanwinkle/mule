@@ -30,7 +30,7 @@ class _GenerateTypeCheck(NodeVisitor):
     def visit_Cast(self, node):
         actual = self.types.get(node.value.use())
         needed = node.contract.requires_check(self.checks) and (
-            actual is None or not actual.fits(node.contract.fact)
+            actual is None or not actual.fits(node.contract.checked_type)
         )
         if node.type_check != needed:
             node.type_check = needed

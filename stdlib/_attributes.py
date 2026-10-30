@@ -12,6 +12,7 @@ from _mule_native import delete_attribute
 from _mule_native import get_attribute
 from _mule_native import get_attribute_or
 from _mule_native import set_attribute
+from mule_types import final
 
 # Compiler-provided physical primitives are not host Python globals.
 # ruff: noqa: F821
@@ -24,11 +25,13 @@ class _Missing:
 _MISSING = _Missing()
 
 
+@final
 def _require_name(name):
     if not _text_storage(name):
         raise TypeError(f"attribute name must be string, not '{_type_name(name)}'")
 
 
+@final
 def getattr(obj, name, default=_MISSING, /):
     _require_name(name)
     if default is _MISSING:
@@ -41,6 +44,7 @@ def getattr(obj, name, default=_MISSING, /):
         return default
 
 
+@final
 def hasattr(obj, name, /):
     _require_name(name)
     try:
@@ -49,11 +53,13 @@ def hasattr(obj, name, /):
         return False
 
 
+@final
 def setattr(obj, name, value, /):
     _require_name(name)
     set_attribute(obj, name, value)
 
 
+@final
 def delattr(obj, name, /):
     _require_name(name)
     delete_attribute(obj, name)

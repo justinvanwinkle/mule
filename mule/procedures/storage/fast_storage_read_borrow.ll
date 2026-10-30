@@ -1,4 +1,4 @@
-; Physical sequence (`List`/`Args`) storage helper `@mule.fast.storage.read.borrow` (`mule/runtime/object.rs`).
+; Physical sequence (`List`/`Args`/`RawWords`) storage helper `@mule.fast.storage.read.borrow` (`mule/runtime/object.rs`).
 
 define internal ptr @mule.fast.storage.read.borrow(ptr %sequence, ptr %position) {
 entry:
@@ -10,8 +10,11 @@ check.kind:
   %kind = call i32 @mule.storage.kind(ptr %sequence)
   %list = icmp eq i32 %kind, 13
   %tuple = icmp eq i32 %kind, 9
-  %supported = or i1 %list, %tuple
-  br i1 %supported, label %bounds, label %slow
+  %words = icmp eq i32 %kind, 28
+  %list.or.tuple = or i1 %list, %tuple
+  br i1 %list.or.tuple, label %bounds, label %check.words
+check.words:
+  br i1 %words, label %words.bounds, label %slow
 bounds:
   %length.addr = getelementptr i8, ptr %sequence, i64 32
   %length = load i64, ptr %length.addr
@@ -24,6 +27,21 @@ read:
   %slot = getelementptr ptr, ptr %data, i64 %index
   %value = load ptr, ptr %slot
   ret ptr %value
+words.bounds:
+  %wlength.addr = getelementptr i8, ptr %sequence, i64 32
+  %wlength = load i64, ptr %wlength.addr
+  %windex = ashr i64 %bits, 1
+  %winside = icmp ult i64 %windex, %wlength
+  br i1 %winside, label %words.read, label %slow
+words.read:
+  %wdata.addr = getelementptr i8, ptr %sequence, i64 24
+  %wdata = load ptr, ptr %wdata.addr
+  %wslot = getelementptr i64, ptr %wdata, i64 %windex
+  %word = load i64, ptr %wslot
+  %shifted = shl i64 %word, 1
+  %tagged = or i64 %shifted, 1
+  %wvalue = inttoptr i64 %tagged to ptr
+  ret ptr %wvalue
 slow:
   %fallback = call ptr @mule_storage_read(ptr %sequence, ptr %position)
   ret ptr %fallback

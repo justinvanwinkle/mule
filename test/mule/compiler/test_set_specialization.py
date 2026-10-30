@@ -10,7 +10,6 @@ from mule.compiler.ctype import (
     FROZENSET_TYPE,
     INTEGER,
     NONE_TYPE,
-    PYTHON_INTEGER,
     SET_TYPE,
     TEXT_TYPE,
     IteratorType,
@@ -20,6 +19,7 @@ from mule.compiler.ctype import (
 from mule.compiler.main import compile_source
 from test.mule.compiler.test_exception_groups import compare
 from test.mule.compiler.test_llvm_boxing import function_body
+from test.mule.compiler.test_native import run_native
 
 
 def test_set_type_lattice_and_serialization():
@@ -95,10 +95,11 @@ def build_and_consume(items: list[int]) -> tuple[set[int], int]:
     fn = compilation.lambdas[1]
     variant = compilation.facts[fn].variants[0]
     var_types = {var.name: variant.types[var.refs[-1]] for var in fn.locals if var.refs}
-    assert var_types["s"] == SetType("mule_dict_set", element=PYTHON_INTEGER)
-    assert var_types["combined"] == SetType("mule_dict_set", element=PYTHON_INTEGER)
+    from mule.compiler.ctype import PYTHON_INTEGER
+
+    assert var_types["s"] == SET_TYPE
+    assert var_types["combined"] == SET_TYPE
     assert var_types["val"] == PYTHON_INTEGER
-    assert var_types["total"] == INTEGER
 
 
 def test_set_and_dict_protocol_specialization_in_llvm():
@@ -118,7 +119,10 @@ def exercise_set(n: int) -> int:
         return len(a) + len(b) + len(c) + len(x) + len(d)
     return 0
 """)
-    body = function_body(llvm, '"mule_fn_exercise_set.spec.0"')
+    # The set and dict kinds alone select the protocols, so the general body
+    # uses them. The multiply referenced sets carry no element types, and no
+    # separate guarded entry is emitted for ``n: int``.
+    body = function_body(llvm, '"mule_fn_exercise_set.body"')
     for protocol in (
         "empty_set",
         "set_add",
@@ -185,3 +189,138 @@ except TypeError as exc:
     print("bad_elem:", type(exc).__name__)
 """,
     )
+
+
+def test_conservative_container_mutations_and_declared_instance_fields(tmp_path):
+    source = """
+from mule_types import optimize
+
+def mutate_via_alias():
+    xs = [1, 2]
+    alias = xs
+    alias[0] = "hello"
+    return xs[0]
+
+def mutate_nested_list():
+    outer = [[1, 2]]
+    inner = outer[0]
+    inner[0] = "world"
+    return outer[0][0]
+
+def mutate_list_length():
+    xs = [10, 20, 30]
+    ys = xs
+    ys.pop()
+    ys.pop()
+    return len(xs), xs[0]
+
+def augmented_assign_list():
+    xs = [1, 2]
+    ys = xs
+    ys += ["three"]
+    return xs[2]
+
+class Holder:
+    def __init__(self, v):
+        self.v = v
+
+def mutate_undeclared_field():
+    h = Holder(10)
+    h.v = "changed"
+    return h.v
+
+class DeclaredBox:
+    count: int
+    items: list[int]
+    __secret: int
+
+    def __init__(self, count: int, items: list[int], secret: int):
+        self.count = count
+        self.items = items
+        self.__secret = secret
+
+    def total(self) -> int:
+        s = self.count + self.__secret
+        for x in self.items:
+            s += x
+        return s
+
+class BaseField:
+    value: int | str
+
+    def __init__(self, v: int | str):
+        self.value = v
+
+class NarrowedSub(BaseField):
+    value: int
+
+    def read_narrowed(self) -> int:
+        return self.value + 1
+
+@optimize(safety=0)
+def store_unchecked(box: DeclaredBox, bad_val):
+    box.count = bad_val
+
+print("alias:", mutate_via_alias())
+print("nested:", mutate_nested_list())
+print("length:", mutate_list_length())
+print("aug:", augmented_assign_list())
+print("undeclared:", mutate_undeclared_field())
+
+def exercise_declared_fields():
+    box = DeclaredBox(5, [10, 20], 7)
+    print("box_total:", box.total())
+
+    try:
+        box.count = "not-an-int"
+    except TypeError as exc:
+        print("checked_field_store:", type(exc).__name__)
+
+    try:
+        box.items.append("not-an-int")
+    except TypeError as exc:
+        print("checked_field_elem_append:", type(exc).__name__)
+
+    try:
+        box.items[0] = "not-an-int"
+    except TypeError as exc:
+        print("checked_field_elem_setitem:", type(exc).__name__)
+
+    # Unresolved dynamic setattr and @optimize(safety=0) bypass compile-time store
+    # checks; reading the declared field trusts the declared type without a runtime
+    # check on read.
+    store_unchecked(box, 12)
+    print("after_unchecked:", box.total())
+    setattr(box, "count", 15)
+    print("after_setattr:", box.total())
+
+    sub = NarrowedSub(41)
+    print("narrowed_ok:", sub.read_narrowed())
+    setattr(sub, "value", "oops")
+    try:
+        print(sub.read_narrowed())
+    except TypeError as exc:
+        print("narrowed_read_checked:", type(exc).__name__)
+
+exercise_declared_fields()
+"""
+    result = run_native(tmp_path, source)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "alias: hello\n"
+        "nested: world\n"
+        "length: (1, 10)\n"
+        "aug: three\n"
+        "undeclared: changed\n"
+        "box_total: 42\n"
+        "checked_field_store: TypeError\n"
+        "checked_field_elem_append: TypeError\n"
+        "checked_field_elem_setitem: TypeError\n"
+        "after_unchecked: 49\n"
+        "after_setattr: 52\n"
+        "narrowed_ok: 42\n"
+        "narrowed_read_checked: TypeError\n"
+    )
+    ir = emit_llvm(source)
+    unchecked_body = function_body(ir, '"mule_fn_store_unchecked.body"')
+    assert "@mule_native_type_error" not in unchecked_body

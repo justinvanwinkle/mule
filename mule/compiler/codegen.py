@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from mule import ast, procedures
 from mule.diagnostics import phase
 
-from . import fndb, vops
+from . import fndb, vops, wordops
 from .callconv import (
     NumericEntry,
     entry_steps,
@@ -421,7 +421,10 @@ def _parsed_helpers(
     helper_defs: list[tuple[str, str]] = []
     current_symbol = None
     current_lines: list[str] = []
-    for emitter, helper_text in procedures.all_procedures():
+    for emitter, helper_text in (
+        *procedures.all_procedures(),
+        ("mule/compiler/wordops.py", wordops.helpers()),
+    ):
         for line in helper_text.splitlines():
             if current_symbol is not None:
                 current_lines.append(line)
@@ -4025,7 +4028,7 @@ def _vop_clears_tn(vop, tn) -> bool:
         return vop.results[0].tn is tn
     if vop.info is vops.LOAD_LOCAL:
         return vop.args[0].tn is tn and vop.codegen_info.move
-    if tn.leaf is not None:
+    if tn.leaf is not None or (tn.name is not None and tn.name.startswith("$scalar.")):
         return False
     if not any(ref.tn is tn for ref in vop.args):
         return False
@@ -4034,65 +4037,111 @@ def _vop_clears_tn(vop, tn) -> bool:
     return not (vop.info.name == "sequence-available" and vop.args[0].tn is tn)
 
 
-def _value_tns_live_in(component, candidates) -> dict:
-    """Backward liveness of the cross-block temporaries in ``candidates``:
-    for each IR2 block, those read on some path from its start before being
-    written. Error edges count as successors."""
-    uses, defs, successors = {}, {}, {}
-    for block in component.blocks:
-        used, defined = set(), set()
-        for vop in block.vops:
-            for ref in (*vop.args, *vop.results):
-                tn = ref.tn
-                if tn not in candidates:
-                    continue
-                if tn not in defined and _vop_reads_tn(vop, tn):
-                    used.add(tn)
-                if any(res.tn is tn for res in vop.results):
-                    defined.add(tn)
-        uses[block], defs[block] = used, defined
-        following = [
-            component.ir2_blocks[succ]
-            for succ in block.block.succ
-            if succ in component.ir2_blocks
-        ]
-        target = block.exception_target
-        if target is not None and target in component.ir2_blocks:
-            following.append(component.ir2_blocks[target])
-        successors[block] = following
-    live = {block: set(uses[block]) for block in component.blocks}
-    changed = True
-    while changed:
-        changed = False
-        for block in reversed(component.blocks):
-            out = set()
-            for succ in successors[block]:
-                out |= live[succ]
-            incoming = uses[block] | (out - defs[block])
-            if incoming != live[block]:
-                live[block] = incoming
-                changed = True
-    return live
-
-
-def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
-    """Assign stack slots to ``fixed`` (one each) and ``candidates`` (packing
-    non-overlapping TNs of the same storage class and cleanup policy, following
-    SBCL ``life.lisp``/``pack.lisp``). Returns the list of TN groups per slot."""
-    import heapq
-
+def _pack_group_tns(
+    candidates,
+    fixed,
+    prefix: str,
+    owned_set: set,
+    first_step: dict,
+    tn_full_blocks: dict[object, int],
+    tn_part_blocks: dict[object, int],
+    tn_spans: dict[object, dict[int, tuple[int, int]]],
+) -> list[list]:
     groups: list[list] = []
     for tn in fixed:
         tn.slot = f"{prefix}.{len(groups)}"
         groups.append([tn])
     if not candidates:
         return groups
+    by_kind: dict[tuple, list] = {}
+    for tn in candidates:
+        if tn not in first_step:
+            continue
+        key = (
+            tn.sc,
+            tn in owned_set,
+            tn.private_box,
+            (tn.type or UNKNOWN).is_heap_object,
+        )
+        by_kind.setdefault(key, []).append(tn)
+    for kind_tns in by_kind.values():
+        kind_tns.sort(key=lambda tn: first_step[tn])
+        slots: list[list] = []
+        for tn in kind_tns:
+            full = tn_full_blocks.get(tn, 0)
+            part = tn_part_blocks.get(tn, 0)
+            all_b = full | part
+            spans = tn_spans.get(tn)
+            chosen = None
+            for slot in slots:
+                s_full = slot[1]
+                s_all = slot[2]
+                if (all_b & s_full) or (full & s_all):
+                    continue
+                common = part & s_all
+                if common and spans is not None:
+                    s_spans = slot[3]
+                    conflict = False
+                    for b_num, (start, end) in spans.items():
+                        if not ((common >> b_num) & 1):
+                            continue
+                        for o_start, o_end in s_spans.get(b_num, ()):
+                            if o_start <= end and start <= o_end:
+                                conflict = True
+                                break
+                        if conflict:
+                            break
+                    if conflict:
+                        continue
+                chosen = slot
+                break
+            if chosen is not None:
+                group_idx = chosen[0]
+                groups[group_idx].append(tn)
+                chosen[1] |= full
+                chosen[2] |= all_b
+                if spans is not None:
+                    s_spans = chosen[3]
+                    for b_num, span in spans.items():
+                        s_spans.setdefault(b_num, []).append(span)
+            else:
+                group_idx = len(groups)
+                groups.append([tn])
+                s_spans = (
+                    {b_num: [span] for b_num, span in spans.items()}
+                    if spans is not None
+                    else {}
+                )
+                slots.append([group_idx, full, all_b, s_spans])
+            tn.slot = f"{prefix}.{group_idx}"
+    for tn in candidates:
+        if tn not in first_step:
+            group_idx = len(groups)
+            groups.append([tn])
+            tn.slot = f"{prefix}.{group_idx}"
+    return groups
+
+
+def _lifetime_analyze_and_pack_slots(
+    component, fixed_locals, packable_locals, value_tns
+) -> tuple[list[list], list[list], dict[str, list[list]]]:
+    """Analyze cross-block liveness and slot occupancy once (following SBCL
+    ``life.lisp``/``pack.lisp``), pack local and temporary slots, and compute
+    per-handler abandoned slot groups."""
+    candidates = [*packable_locals, *value_tns]
+    if not candidates:
+        local_groups = _pack_group_tns(
+            (), fixed_locals, "%local", set(), {}, {}, {}, {}
+        )
+        return local_groups, [], {}
     candidate_set = set(candidates)
     owned_set = {tn for tn in candidates if _needs_cleanup_release(tn)}
     blocks = component.blocks
     ir2_blocks = component.ir2_blocks
     block_start = {}
     block_end = {}
+    block_first = {}
+    block_last = {}
     normal_succs = {}
     handlers = {}
     live_use = {}
@@ -4101,10 +4150,11 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
     occ_kill = {}
     occ_mid = {}
     first_step = {}
-    last_step = {}
     step = 0
     for block in blocks:
         start_step = step
+        b_first = {}
+        b_last = {}
         used, defined = set(), set()
         gen, kill, mid = set(), set(), set()
         for vop in block.vops:
@@ -4114,7 +4164,9 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
             for tn in touched:
                 if tn not in first_step:
                     first_step[tn] = step
-                last_step[tn] = step
+                if tn not in b_first:
+                    b_first[tn] = step
+                b_last[tn] = step
                 if tn not in defined and _vop_reads_tn(vop, tn):
                     used.add(tn)
                 if any(ref.tn is tn for ref in vop.results):
@@ -4135,6 +4187,8 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
             step += 1
         block_start[block] = start_step
         block_end[block] = step - 1
+        block_first[block] = b_first
+        block_last[block] = b_last
         live_use[block] = used
         live_kill[block] = defined
         occ_gen[block] = gen
@@ -4153,10 +4207,11 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
             out = set()
             for succ in normal_succs[block]:
                 out |= live_in[succ]
+            incoming = live_use[block] | (out - live_kill[block])
             handler = handlers[block]
             if handler is not None:
                 out |= live_in[handler]
-            incoming = live_use[block] | (out - live_kill[block])
+                incoming |= live_in[handler]
             if out != live_out[block] or incoming != live_in[block]:
                 live_out[block] = out
                 live_in[block] = incoming
@@ -4181,49 +4236,71 @@ def _pack_slot_tns(component, candidates, fixed, prefix: str) -> list[list]:
                 if not into_handler.issubset(occ_in[handler]):
                     occ_in[handler] |= into_handler
                     changed = True
-    for block in blocks:
+    tn_full_blocks: dict[object, int] = {}
+    tn_part_blocks: dict[object, int] = {}
+    tn_spans: dict[object, dict[int, tuple[int, int]]] = {}
+    for b_num, block in enumerate(blocks):
+        b_bit = 1 << b_num
         b_start = block_start[block]
         b_end = block_end[block]
-        for tn in live_in[block] | occ_in[block]:
-            if tn not in first_step or b_start < first_step[tn]:
-                first_step[tn] = b_start
-            if tn not in last_step or b_start > last_step[tn]:
-                last_step[tn] = b_start
-        for tn in live_out[block] | occ_out[block]:
-            if tn not in first_step or b_end < first_step[tn]:
-                first_step[tn] = b_end
-            if tn not in last_step or b_end > last_step[tn]:
-                last_step[tn] = b_end
-    by_kind: dict[tuple, list] = {}
-    for tn in candidates:
-        if tn not in first_step:
-            continue
-        key = (tn.sc, tn in owned_set, tn.private_box)
-        by_kind.setdefault(key, []).append(tn)
-    for kind_tns in by_kind.values():
-        kind_tns.sort(key=lambda tn: (first_step[tn], last_step[tn]))
-        active_heap: list[tuple[int, int]] = []
-        free_groups: list[int] = []
-        for tn in kind_tns:
-            start = first_step[tn]
-            end = last_step[tn]
-            while active_heap and active_heap[0][0] < start:
-                _, freed_idx = heapq.heappop(active_heap)
-                free_groups.append(freed_idx)
-            if free_groups:
-                group_idx = free_groups.pop()
-                groups[group_idx].append(tn)
+        b_first = block_first[block]
+        b_last = block_last[block]
+        in_set = live_in[block] | occ_in[block]
+        out_set = live_out[block] | occ_out[block]
+        for tn in in_set | out_set | b_first.keys():
+            s = b_start if tn in in_set else b_first[tn]
+            e = b_end if tn in out_set else b_last[tn]
+            if tn not in first_step or s < first_step[tn]:
+                first_step[tn] = s
+            if s <= b_start and e >= b_end:
+                tn_full_blocks[tn] = tn_full_blocks.get(tn, 0) | b_bit
             else:
-                group_idx = len(groups)
-                groups.append([tn])
-            tn.slot = f"{prefix}.{group_idx}"
-            heapq.heappush(active_heap, (end, group_idx))
-    for tn in candidates:
-        if tn not in first_step:
-            group_idx = len(groups)
-            groups.append([tn])
-            tn.slot = f"{prefix}.{group_idx}"
-    return groups
+                tn_part_blocks[tn] = tn_part_blocks.get(tn, 0) | b_bit
+                tn_spans.setdefault(tn, {})[b_num] = (s, e)
+    local_groups = _pack_group_tns(
+        packable_locals,
+        fixed_locals,
+        "%local",
+        owned_set,
+        first_step,
+        tn_full_blocks,
+        tn_part_blocks,
+        tn_spans,
+    )
+    value_groups = _pack_group_tns(
+        value_tns,
+        (),
+        "%value",
+        owned_set,
+        first_step,
+        tn_full_blocks,
+        tn_part_blocks,
+        tn_spans,
+    )
+    unwind_slot_groups = [
+        *local_groups[len(fixed_locals) :],
+        *value_groups,
+    ]
+    unwind_groups_by_target: dict[str, list[list]] = {}
+    for target in dict.fromkeys(block.exception_target for block in blocks):
+        if target is None or target not in ir2_blocks:
+            continue
+        handler = ir2_blocks[target]
+        abandoned = set()
+        for block in blocks:
+            if block.exception_target is target:
+                abandoned |= occ_in[block] | occ_mid[block]
+        abandoned -= live_in[handler]
+        if not abandoned:
+            continue
+        groups = [
+            group
+            for group in unwind_slot_groups
+            if any(member in abandoned for member in group)
+        ]
+        if groups:
+            unwind_groups_by_target[handler.label] = groups
+    return local_groups, value_groups, unwind_groups_by_target
 
 
 class _HelperBuilder:
@@ -4715,14 +4792,13 @@ class FunctionGenerator:
             if tn.cleanup_owner is None
             for member in (tn, *reversed(scalar_children.get(tn, ())))
         ]
-        self.local_slot_groups = _pack_slot_tns(
-            component, packable_locals, fixed_locals, "%local"
+        (
+            self.local_slot_groups,
+            self.value_slot_groups,
+            self.unwind_groups_by_target,
+        ) = _lifetime_analyze_and_pack_slots(
+            component, fixed_locals, packable_locals, self.value_tns
         )
-        self.value_slot_groups = _pack_slot_tns(component, self.value_tns, (), "%value")
-        self.unwind_slot_groups = [
-            *self.local_slot_groups[len(fixed_locals) :],
-            *self.value_slot_groups,
-        ]
         for tn in self.local_tns:
             if tn.leaf is not None:
                 self.local_slots[tn.leaf.name] = tn.slot
@@ -4877,7 +4953,11 @@ class FunctionGenerator:
             base = (
                 "error"
                 if self.exception_target is None
-                else "unwind." + self.exception_target
+                else (
+                    "unwind." + self.exception_target
+                    if self.exception_target in self.unwind_groups_by_target
+                    else self.exception_target
+                )
             )
         # Native entries leave value ownership to their boundary adapter and
         # report errors through their error flag.
@@ -6356,25 +6436,13 @@ class FunctionGenerator:
             )
         self.line(f"br label %{self.component.blocks[0].label}")
         self.emit_blocks()
-        handler_live = None
-        for target in dict.fromkeys(
-            block.exception_target for block in self.component.blocks
-        ):
-            if target is None or target not in self.component.ir2_blocks:
-                continue
-            if handler_live is None:
-                unwind_tns = {tn for group in self.unwind_slot_groups for tn in group}
-                handler_live = _value_tns_live_in(self.component, unwind_tns)
-            label = self.component.ir2_blocks[target].label
+        for label, groups in self.unwind_groups_by_target.items():
             self.lines.append("unwind." + label + ":")
             # Values the handler still uses were computed before its region
             # was entered, like the stack below an SBCL catch block; only the
             # temporaries the transfer abandons are released.
-            live = handler_live[self.component.ir2_blocks[target]]
-            for group in self.unwind_slot_groups:
+            for group in groups:
                 tn = group[0]
-                if tn.sc not in OBJECT or any(member in live for member in group):
-                    continue
                 value = self.operation(f"load ptr, ptr {tn.slot}")
                 self.line(f"store ptr null, ptr {tn.slot}")
                 self.record_facts(tn, value)

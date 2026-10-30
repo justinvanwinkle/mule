@@ -4,6 +4,8 @@ Every compiled function with parameters binds a call through ``bind``, driven
 by that function's constant signature tuple.
 """
 
+from mule_types import final
+
 __speed__ = 3
 __mule_builtin_implementation__ = True
 
@@ -13,6 +15,7 @@ __mule_builtin_implementation__ = True
 # ruff: noqa: F821
 
 
+@final
 def construct(cls, view):
     creator = overriding_new(cls)
     if creator is None:
@@ -53,6 +56,7 @@ def construct(cls, view):
     return instance
 
 
+@final
 def bind(view, signature):
     """Bind an argument view to parameter order, CPython's binding rules.
 

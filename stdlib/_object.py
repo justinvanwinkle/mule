@@ -47,8 +47,10 @@ from _mule_native import storage_dictionary
 from _mule_native import is_class
 from _mule_native import is_instance as _raw_is_instance
 from _mule_native import is_subclass
+from mule_types import final
 
 
+@final
 def is_instance(value, cls):
     return is_subclass(type_of(value), cls)
 from _mule_native import new_class

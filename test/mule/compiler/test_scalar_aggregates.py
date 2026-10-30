@@ -527,7 +527,7 @@ def target(y):
 @pytest.mark.parametrize(
     "optimize", (2, pytest.param(3, marks=pytest.mark.integration))
 )
-def test_multi_block_aliased_list_and_conditional_tuple_scalar_replacement(
+def test_multi_block_aliased_list_with_unknown_elements_stays_allocated(
     tmp_path, optimize
 ):
     case = build_case(
@@ -556,12 +556,13 @@ print(kernel(int(parts[0]), int(parts[1])))
     body = case.function_ir(
         r"^mule_fn_kernel\.(?:body(?:\.fallback\.fixnum)?|spec\.[0-9]+)$"
     )
-    assert "@mule_sequence_list(" not in body
-    assert "@mule_sequence_tuple" not in body
+    # ``row`` and ``alias`` each have several references, so their element
+    # reads see SBCL's conservative list type: unknown objects, whose release
+    # may run user code. Scalar replacement requires inert elements, so both
+    # the list and the tuple built from its reads stay allocated, as an
+    # undeclared SIMPLE-VECTOR's elements are type T in SBCL.
     assert "@mule_fast_setitem" not in body
-    assert "@mule_list_getitem" not in body
     assert "@mule_tuple_getitem" not in body
-    assert "add i64" in body or "llvm.sadd.with.overflow.i64" in body
     for value in ("0 5\n", "1 5\n", "8 -3\n", "19 12\n"):
         case.compare(value)
 

@@ -44,11 +44,11 @@ class FinalFunctions(ast.Visitor):
         for item in node.items:
             name = item.alias or item.name
             if (
-                item.name == "typing"
+                item.name in ("typing", "mule_types")
                 and not self.qualified_mutation
                 and self.binding_counts.get(name) == 1
             ):
-                self.imports[name] = "typing"
+                self.imports[name] = item.name
 
     def visit_ImportFrom(self, node):
         if (
@@ -56,7 +56,7 @@ class FinalFunctions(ast.Visitor):
             or "*" in self.binding_counts
             or self.qualified_mutation
             or node.level
-            or node.module != "typing"
+            or node.module not in ("typing", "mule_types")
         ):
             return
         for item in node.items:
@@ -132,7 +132,7 @@ class _TypingReference(ast.Visitor):
         return False
 
     def visit_Name(self, node):
-        return self.imports.get(node.identifier) == "typing"
+        return self.imports.get(node.identifier) in ("typing", "mule_types")
 
 
 class _FinalAttributeMutations(ast.Visitor):
@@ -152,8 +152,8 @@ class _FinalAttributeMutations(ast.Visitor):
         for item in node.items:
             name = item.alias or item.name.split(".")[0]
             self.aliases.pop(name, None)
-            if item.name == "typing":
-                self.aliases[name] = "typing"
+            if item.name in ("typing", "mule_types"):
+                self.aliases[name] = item.name
 
     def visit_ImportFrom(self, node):
         for item in node.items:

@@ -1,6 +1,12 @@
 """Ordinary compiled exception group classes and recursive tree selection."""
 
+from mule_types import final
 
+__speed__ = 3
+__mule_builtin_implementation__ = True
+
+
+@final
 def _predicate(condition):
     error = (
         "expected an exception type, a tuple of exception types, "
@@ -120,6 +126,7 @@ BaseExceptionGroup.__module__ = "builtins"
 ExceptionGroup.__module__ = "builtins"
 
 
+@final
 def _validate_except_star_target(target):
     if isinstance(target, type):
         if not issubclass(target, BaseException):
@@ -138,6 +145,7 @@ def _validate_except_star_target(target):
     )
 
 
+@final
 def _collect_leaves(exc, leaves):
     if isinstance(exc, BaseExceptionGroup):
         for child in exc.exceptions:
@@ -155,10 +163,12 @@ class _ExceptStarState:
         self.reraised_leaves = set()
 
 
+@final
 def except_star_start(exc):
     return _ExceptStarState(exc)
 
 
+@final
 def except_star_match(state, targets):
     try:
         _validate_except_star_target(targets)
@@ -186,10 +196,12 @@ def except_star_match(state, targets):
     return False
 
 
+@final
 def except_star_matched(state):
     return state.matched
 
 
+@final
 def except_star_caught(state, exc):
     if exc is state.matched and not getattr(exc, "_explicit_raise", False):
         if isinstance(state.original, BaseExceptionGroup):
@@ -202,6 +214,7 @@ def except_star_caught(state, exc):
         state.raised.append(exc)
 
 
+@final
 def except_star_finish(state):
     if (
         not state.raised
