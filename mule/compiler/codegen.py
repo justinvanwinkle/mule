@@ -1598,7 +1598,7 @@ class ModuleGenerator:
             "entry:",
             f"  %cached = load ptr, ptr {slot}",
             "  %present = icmp ne ptr %cached, null",
-            "  br i1 %present, label %ready, label %build",
+            f"  br i1 %present, label %ready, label %build, {vops.HOT_BRANCH}",
             "build:",
         ]
         operands = [f"ptr {slot}"]
@@ -1615,7 +1615,7 @@ class ModuleGenerator:
                 operands.append(f"ptr {value}")
         lines.extend(
             [
-                f"  %built = call ptr {packer}({', '.join(operands)})",
+                f"  %built = call ptr {packer}({', '.join(operands)}) cold noinline",
                 "  ret ptr %built",
                 "ready:",
                 "  %owned = call ptr @mule_retain(ptr %cached)",
@@ -1655,7 +1655,8 @@ class ModuleGenerator:
             ""
             if borrowed_protocol
             else "\n".join(
-                f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
+                f"  call void @mule.fast.release(ptr %arg.{i}) cold noinline"
+                for i in range(arity)
             )
         )
         attrs = (
@@ -1665,7 +1666,7 @@ class ModuleGenerator:
         )
         entry_guard = (
             "  %arg.null = icmp eq ptr %arg.0, null\n"
-            "  br i1 %arg.null, label %failed.raise, label %frame.enter\n"
+            f"  br i1 %arg.null, label %failed.raise, label %frame.enter, {vops.COLD_BRANCH}\n"
             "frame.enter:\n"
             if name == "raise_value"
             else ""
@@ -1673,7 +1674,7 @@ class ModuleGenerator:
         tail = (
             (
                 "  %raised.null = icmp eq ptr %result, null\n"
-                "  br i1 %raised.null, label %failed.raise, label %raise.pending\n"
+                f"  br i1 %raised.null, label %failed.raise, label %raise.pending, {vops.COLD_BRANCH}\n"
                 "raise.pending:\n"
                 "  call ptr @mule_raise_pending(ptr %result) cold\n"
                 "  call void @mule.fast.release(ptr %result)\n"
@@ -1695,7 +1696,7 @@ class ModuleGenerator:
             + "  %globals = call ptr @mule_protocol_globals()\n"
             "  %status = call i32 @mule_enter_frame()\n"
             "  %bad = icmp slt i32 %status, 0\n"
-            "  br i1 %bad, label %failed, label %entered\n"
+            f"  br i1 %bad, label %failed, label %entered, {vops.COLD_BRANCH}\n"
             "failed:\n" + (releases + "\n" if releases else "") + "  ret ptr null\n"
             "entered:\n"
             f"  %result = call ptr {body}({operands})\n"
@@ -1717,13 +1718,13 @@ class ModuleGenerator:
             "entry:\n"
             "  %fast = call ptr @mule_fast_getitem(ptr %sequence, ptr %index)\n"
             "  %matched = icmp ne ptr %fast, null\n"
-            "  br i1 %matched, label %hit, label %slow\n"
+            f"  br i1 %matched, label %hit, label %slow, {vops.HOT_BRANCH}\n"
             "hit:\n"
             "  ret ptr %fast\n"
             "slow:\n"
-            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
-            "  %owned.idx = call ptr @mule.fast.retain(ptr %index)\n"
-            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx)\n"
+            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence) cold noinline\n"
+            "  %owned.idx = call ptr @mule.fast.retain(ptr %index) cold noinline\n"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx) cold noinline\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1744,21 +1745,21 @@ class ModuleGenerator:
             "entry:\n"
             "  %fast = call ptr @mule_fast_getslice(ptr %sequence, ptr %start, ptr %stop, ptr %step)\n"
             "  %matched = icmp ne ptr %fast, null\n"
-            "  br i1 %matched, label %hit, label %slow\n"
+            f"  br i1 %matched, label %hit, label %slow, {vops.HOT_BRANCH}\n"
             "hit:\n"
             "  ret ptr %fast\n"
             "slow:\n"
-            "  %owned.start = call ptr @mule.fast.retain(ptr %start)\n"
-            "  %owned.stop = call ptr @mule.fast.retain(ptr %stop)\n"
-            "  %owned.step = call ptr @mule.fast.retain(ptr %step)\n"
-            f"  %slice = call ptr {make_slice}(ptr %owned.start, ptr %owned.stop, ptr %owned.step)\n"
+            "  %owned.start = call ptr @mule.fast.retain(ptr %start) cold noinline\n"
+            "  %owned.stop = call ptr @mule.fast.retain(ptr %stop) cold noinline\n"
+            "  %owned.step = call ptr @mule.fast.retain(ptr %step) cold noinline\n"
+            f"  %slice = call ptr {make_slice}(ptr %owned.start, ptr %owned.stop, ptr %owned.step) cold noinline\n"
             "  %bad = icmp eq ptr %slice, null\n"
-            "  br i1 %bad, label %failed, label %lookup\n"
+            f"  br i1 %bad, label %failed, label %lookup, {vops.COLD_BRANCH}\n"
             "failed:\n"
             "  ret ptr null\n"
             "lookup:\n"
-            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
-            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %slice)\n"
+            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence) cold noinline\n"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %slice) cold noinline\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1774,7 +1775,9 @@ class ModuleGenerator:
         slow = self.protocol_helper("setitem", 3)
         fast_fn = "@mule_fast_setitem_move" if move else "@mule_fast_setitem"
         item_setup = (
-            "" if move else "  %owned.item = call ptr @mule.fast.retain(ptr %item)\n"
+            ""
+            if move
+            else "  %owned.item = call ptr @mule.fast.retain(ptr %item) cold noinline\n"
         )
         item_arg = "%item" if move else "%owned.item"
         self.auxiliary.append(
@@ -1784,14 +1787,14 @@ class ModuleGenerator:
             "entry:\n"
             f"  %matched = call i32 {fast_fn}(ptr %sequence, ptr %index, ptr %item)\n"
             "  %valid = icmp ne i32 %matched, 0\n"
-            "  br i1 %valid, label %hit, label %slow\n"
+            f"  br i1 %valid, label %hit, label %slow, {vops.HOT_BRANCH}\n"
             "hit:\n"
             "  ret ptr @mule.none\n"
             "slow:\n"
-            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence)\n"
-            "  %owned.idx = call ptr @mule.fast.retain(ptr %index)\n"
+            "  %owned.seq = call ptr @mule.fast.retain(ptr %sequence) cold noinline\n"
+            "  %owned.idx = call ptr @mule.fast.retain(ptr %index) cold noinline\n"
             f"{item_setup}"
-            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx, ptr {item_arg})\n"
+            f"  %result = call ptr {slow}(ptr %owned.seq, ptr %owned.idx, ptr {item_arg}) cold noinline\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1807,7 +1810,9 @@ class ModuleGenerator:
         slow = self.protocol_helper("iterate", 1)
         fast_fn = "@mule_fast_iterate_move" if move else "@mule_fast_iterate"
         slow_setup = (
-            "" if move else "  %owned = call ptr @mule.fast.retain(ptr %sequence)\n"
+            ""
+            if move
+            else "  %owned = call ptr @mule.fast.retain(ptr %sequence) cold noinline\n"
         )
         slow_arg = "%sequence" if move else "%owned"
         self.auxiliary.append(
@@ -1817,12 +1822,12 @@ class ModuleGenerator:
             "entry:\n"
             f"  %fast = call ptr {fast_fn}(ptr %sequence)\n"
             "  %ok = icmp ne ptr %fast, null\n"
-            "  br i1 %ok, label %hit, label %slow\n"
+            f"  br i1 %ok, label %hit, label %slow, {vops.HOT_BRANCH}\n"
             "hit:\n"
             "  ret ptr %fast\n"
             "slow:\n"
             f"{slow_setup}"
-            f"  %result = call ptr {slow}(ptr {slow_arg})\n"
+            f"  %result = call ptr {slow}(ptr {slow_arg}) cold noinline\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1842,12 +1847,12 @@ class ModuleGenerator:
             "entry:\n"
             "  %status = call i32 @mule_fast_next_item(ptr %iterator, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
-            "  br i1 %handled, label %fast, label %slow\n"
+            f"  br i1 %handled, label %fast, label %slow, {vops.HOT_BRANCH}\n"
             "fast:\n"
             "  ret i32 %status\n"
             "slow:\n"
-            "  %owned = call ptr @mule.fast.retain(ptr %iterator)\n"
-            f"  %item = call ptr {slow}(ptr %owned)\n"
+            "  %owned = call ptr @mule.fast.retain(ptr %iterator) cold noinline\n"
+            f"  %item = call ptr {slow}(ptr %owned) cold noinline\n"
             "  store ptr %item, ptr %out\n"
             "  %failed = icmp eq ptr %item, null\n"
             "  %result = select i1 %failed, i32 -1, i32 1\n"
@@ -1871,12 +1876,12 @@ class ModuleGenerator:
             "entry:\n"
             f"  %status = call i32 @mule_fast_next_unpack(ptr %iterator, i64 {arity}, ptr %unpack.out, ptr %out)\n"
             "  %handled = icmp sge i32 %status, 0\n"
-            "  br i1 %handled, label %fast, label %slow\n"
+            f"  br i1 %handled, label %fast, label %slow, {vops.HOT_BRANCH}\n"
             "fast:\n"
             "  ret i32 %status\n"
             "slow:\n"
-            "  %owned = call ptr @mule.fast.retain(ptr %iterator)\n"
-            f"  %item = call ptr {slow}(ptr %owned)\n"
+            "  %owned = call ptr @mule.fast.retain(ptr %iterator) cold noinline\n"
+            f"  %item = call ptr {slow}(ptr %owned) cold noinline\n"
             "  store ptr %item, ptr %out\n"
             "  %failed = icmp eq ptr %item, null\n"
             "  %result = select i1 %failed, i32 -1, i32 1\n"
@@ -1913,14 +1918,14 @@ class ModuleGenerator:
             "check:\n"
             f"  %matched = call i32 @mule_fast_unpack(ptr %value, i64 {arity}, ptr %out)\n"
             "  %valid = icmp ne i32 %matched, 0\n"
-            "  br i1 %valid, label %fast.done, label %slow\n"
+            f"  br i1 %valid, label %fast.done, label %slow, {vops.HOT_BRANCH}\n"
             "fast.done:\n"
             "  call void @mule.fast.release(ptr %count)\n"
             "  ret ptr @mule.none\n"
             "slow:\n"
-            f"  %tuple = call ptr {slow}(ptr %value, ptr %count)\n"
+            f"  %tuple = call ptr {slow}(ptr %value, ptr %count) cold noinline\n"
             "  %bad = icmp eq ptr %tuple, null\n"
-            "  br i1 %bad, label %failed, label %copy\n"
+            f"  br i1 %bad, label %failed, label %copy, {vops.COLD_BRANCH}\n"
             "failed:\n"
             "  ret ptr null\n"
             "copy:\n"
@@ -1945,16 +1950,16 @@ class ModuleGenerator:
             + f"define internal ptr {symbol}(ptr %value, ptr %count) {{\n"
             "entry:\n"
             f"  %valid = call i1 @mule.fast.tuple.shape(ptr %value, i64 {arity})\n"
-            "  br i1 %valid, label %tuple, label %list.check\n"
+            f"  br i1 %valid, label %tuple, label %list.check, {vops.HOT_BRANCH}\n"
             "tuple:\n"
             "  call void @mule.fast.release(ptr %count)\n"
             "  ret ptr %value\n"
             "list.check:\n"
             f"  %matched.list = call i32 @mule_list_shape_matches(ptr %value, i64 {arity})\n"
             "  %valid.list = icmp ne i32 %matched.list, 0\n"
-            "  br i1 %valid.list, label %tuple, label %iterable\n"
+            f"  br i1 %valid.list, label %tuple, label %iterable, {vops.HOT_BRANCH}\n"
             "iterable:\n"
-            f"  %result = call ptr {slow}(ptr %value, ptr %count)\n"
+            f"  %result = call ptr {slow}(ptr %value, ptr %count) cold noinline\n"
             "  ret ptr %result\n"
             "}"
         )
@@ -1981,7 +1986,8 @@ class ModuleGenerator:
             )
             return symbol
         releases = "\n".join(
-            f"  call void @mule.fast.release(ptr %arg.{i})" for i in range(arity)
+            f"  call void @mule.fast.release(ptr %arg.{i}) cold noinline"
+            for i in range(arity)
         )
         self.auxiliary.append(
             _helper_comment(f"compiled call with frame check; target: {function.name}")
@@ -1990,7 +1996,7 @@ class ModuleGenerator:
             "entry:\n"
             "  %status = call i32 @mule_enter_frame()\n"
             "  %bad = icmp slt i32 %status, 0\n"
-            "  br i1 %bad, label %failed, label %entered\n"
+            f"  br i1 %bad, label %failed, label %entered, {vops.COLD_BRANCH}\n"
             "failed:\n" + (releases + "\n" if releases else "") + "  ret ptr null\n"
             "entered:\n"
             f"  %result = call ptr {body}({params})\n"
@@ -2212,7 +2218,7 @@ class ModuleGenerator:
                 checker = self.return_contract_helper(result_contract)
                 builder.line(f"  %null.{tag} = icmp eq ptr {res_name}, null")
                 builder.line(
-                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}"
+                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.failed.{tag}:")
                 builder.line("  ret ptr null")
@@ -2220,10 +2226,12 @@ class ModuleGenerator:
                 checked = builder.operation(f"call i32 {checker}(ptr {res_name})")
                 rejected = builder.operation(f"icmp slt i32 {checked}, 0")
                 builder.line(
-                    f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}"
+                    f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.incompatible.{tag}:")
-                builder.line(f"  call void @mule.fast.release(ptr {res_name})")
+                builder.line(
+                    f"  call void @mule.fast.release(ptr {res_name}) cold noinline"
+                )
                 builder.line("  ret ptr null")
                 builder.lines.append(f"invoke.accepted.{tag}:")
             if returned is not UNKNOWN:
@@ -2255,7 +2263,7 @@ class ModuleGenerator:
                     ready = combined
                 builder.lines.extend(
                     [
-                        f"  br i1 {ready}, label %defaults.ready.{variant_index}, label %fallback",
+                        f"  br i1 {ready}, label %defaults.ready.{variant_index}, label %fallback, {vops.HOT_BRANCH}",
                         f"defaults.ready.{variant_index}:",
                     ]
                 )
@@ -2312,7 +2320,7 @@ class ModuleGenerator:
                         [
                             f"  %frame.{tag} = call i32 @mule_enter_frame()",
                             f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0",
-                            f"  br i1 %rejected.{tag}, label %failed, label %{entered_label}",
+                            f"  br i1 %rejected.{tag}, label %failed, label %{entered_label}, {vops.COLD_BRANCH}",
                             f"{entered_label}:",
                         ]
                     )
@@ -2372,7 +2380,9 @@ class ModuleGenerator:
                     valid = builder.operation(f"and i1 {valid}, {guard}")
                 typed = f"typed.{variant_index}.{step_idx}"
                 next_label = f"next.{variant_index}.{step_idx}"
-                builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
+                builder.line(
+                    f"  br i1 {valid}, label %{typed}, label %{next_label}, {vops.HOT_BRANCH}"
+                )
                 builder.lines.append(f"{typed}:")
                 emit_step_invoke(context, step_idx)
                 builder.lines.append(f"{next_label}:")
@@ -2394,11 +2404,14 @@ class ModuleGenerator:
                     if candidate_index + 1 < len(candidates)
                     else "fallback"
                 )
+                branch_weight = (
+                    f", {vops.HOT_BRANCH}" if next_label == "fallback" else ""
+                )
                 builder.lines.extend(
                     [
                         f"check.{shape}.{candidate_index}:",
                         f"  %match.{shape}.{candidate_index} = icmp eq ptr %entry.{shape}, {self.functions[function]}",
-                        f"  br i1 %match.{shape}.{candidate_index}, label %direct.{variant_index}, label %{next_label}",
+                        f"  br i1 %match.{shape}.{candidate_index}, label %direct.{variant_index}, label %{next_label}{branch_weight}",
                     ]
                 )
                 emit_invoke(function, order, steps, variant_index, bound)
@@ -2406,16 +2419,18 @@ class ModuleGenerator:
             builder.lines.extend(
                 [
                     "failed:",
-                    "  call void @mule.fast.release(ptr %receiver)",
+                    "  call void @mule.fast.release(ptr %receiver) cold noinline",
                 ]
             )
             for i in range(arity):
-                builder.line(f"  call void @mule.fast.release(ptr %arg.{i})")
+                builder.line(
+                    f"  call void @mule.fast.release(ptr %arg.{i}) cold noinline"
+                )
             builder.line("  ret ptr null")
         builder.lines.extend(
             [
                 "fallback:",
-                f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
+                f"  %fallback.res = call ptr {fallback_helper}({fallback_args}) cold noinline",
             ]
         )
         if result_contract is not None:
@@ -2423,21 +2438,23 @@ class ModuleGenerator:
             builder.lines.extend(
                 [
                     "  %fallback.null = icmp eq ptr %fallback.res, null",
-                    "  br i1 %fallback.null, label %fallback.err, label %fallback.check",
+                    f"  br i1 %fallback.null, label %fallback.err, label %fallback.check, {vops.COLD_BRANCH}",
                     "fallback.err:",
                     "  ret ptr null",
                     "fallback.check:",
                 ]
             )
-            checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
+            checked = builder.operation(
+                f"call i32 {checker}(ptr %fallback.res) cold noinline"
+            )
             rejected = builder.operation(f"icmp slt i32 {checked}, 0")
             builder.line(
-                f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok"
+                f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok, {vops.COLD_BRANCH}"
             )
             builder.lines.extend(
                 [
                     "fallback.incompatible:",
-                    "  call void @mule.fast.release(ptr %fallback.res)",
+                    "  call void @mule.fast.release(ptr %fallback.res) cold noinline",
                     "  ret ptr null",
                     "fallback.ok:",
                 ]
@@ -2538,12 +2555,12 @@ class ModuleGenerator:
                 builder.lines += [
                     "  %bound.receiver = icmp ne ptr %arg.0, null",
                     "  %matching.bound = and i1 %matching, %bound.receiver",
-                    "  br i1 %matching.bound, label %direct, label %fallback",
+                    f"  br i1 %matching.bound, label %direct, label %fallback, {vops.HOT_BRANCH}",
                     "direct:",
                 ]
             else:
                 builder.lines += [
-                    "  br i1 %matching, label %direct, label %fallback",
+                    f"  br i1 %matching, label %direct, label %fallback, {vops.HOT_BRANCH}",
                     "direct:",
                 ]
             builder.line("  %callee.globals = load ptr, ptr %fn.globals.slot")
@@ -2561,7 +2578,7 @@ class ModuleGenerator:
                 builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
                 builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
                 builder.line(
-                    f"  br i1 %rejected.{tag}, label %failed, label %{entered}"
+                    f"  br i1 %rejected.{tag}, label %failed, label %{entered}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"{entered}:")
             owned = []
@@ -2608,7 +2625,7 @@ class ModuleGenerator:
                 checker = self.return_contract_helper(result_contract)
                 builder.line(f"  %null.{tag} = icmp eq ptr %res.{tag}, null")
                 builder.line(
-                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}"
+                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.failed.{tag}:")
                 builder.line("  ret ptr null")
@@ -2616,7 +2633,7 @@ class ModuleGenerator:
                 checked = builder.operation(f"call i32 {checker}(ptr %res.{tag})")
                 rejected = builder.operation(f"icmp slt i32 {checked}, 0")
                 builder.line(
-                    f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}"
+                    f"  br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.incompatible.{tag}:")
                 builder.line(f"  call void @mule.fast.release(ptr %res.{tag})")
@@ -2658,7 +2675,9 @@ class ModuleGenerator:
                 valid = builder.operation(f"and i1 {valid}, {guard}")
             typed = f"typed.{step_idx}"
             next_label = f"next.{step_idx}"
-            builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
+            builder.line(
+                f"  br i1 {valid}, label %{typed}, label %{next_label}, {vops.HOT_BRANCH}"
+            )
             builder.lines.append(f"{typed}:")
             emit_invoke(context, step_idx)
             builder.lines.append(f"{next_label}:")
@@ -2681,7 +2700,7 @@ class ModuleGenerator:
                 builder.lines.extend(
                     [
                         "  %fallback.null = icmp eq ptr %fallback.res, null",
-                        "  br i1 %fallback.null, label %fallback.err, label %fallback.check",
+                        f"  br i1 %fallback.null, label %fallback.err, label %fallback.check, {vops.COLD_BRANCH}",
                         "fallback.err:",
                         "  ret ptr null",
                         "fallback.check:",
@@ -2690,7 +2709,7 @@ class ModuleGenerator:
                 checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
                 rejected = builder.operation(f"icmp slt i32 {checked}, 0")
                 builder.line(
-                    f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok"
+                    f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok, {vops.COLD_BRANCH}"
                 )
                 builder.lines.extend(
                     [
@@ -2805,7 +2824,7 @@ class ModuleGenerator:
                 "  %fn.globals.slot = alloca ptr",
                 "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
                 f"  %matching = icmp eq ptr %callee.entry, {self.functions[function]}",
-                "  br i1 %matching, label %direct, label %fallback",
+                f"  br i1 %matching, label %direct, label %fallback, {vops.HOT_BRANCH}",
                 "direct:",
                 "  %callee.globals = load ptr, ptr %fn.globals.slot",
             ]
@@ -2818,7 +2837,7 @@ class ModuleGenerator:
                 builder.line("  %frame." + str(tag) + " = call i32 @mule_enter_frame()")
                 builder.line(f"  %rejected.{tag} = icmp slt i32 %frame.{tag}, 0")
                 builder.line(
-                    f"  br i1 %rejected.{tag}, label %failed, label %{entered}"
+                    f"  br i1 %rejected.{tag}, label %failed, label %{entered}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"{entered}:")
             owned = []
@@ -2866,7 +2885,7 @@ class ModuleGenerator:
                 )
                 builder.line(f"  %null.{tag} = icmp eq ptr %res.{tag}, null")
                 builder.line(
-                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}"
+                    f"  br i1 %null.{tag}, label %invoke.failed.{tag}, label %invoke.check.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.failed.{tag}:")
                 builder.line("ret ptr null")
@@ -2874,7 +2893,7 @@ class ModuleGenerator:
                 checked = builder.operation(f"call i32 {checker}(ptr %tuple.out)")
                 rejected = builder.operation(f"icmp slt i32 {checked}, 0")
                 builder.line(
-                    f"br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}"
+                    f"br i1 {rejected}, label %invoke.incompatible.{tag}, label %invoke.accepted.{tag}, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append(f"invoke.incompatible.{tag}:")
                 for slot_index in range(unpack_arity):
@@ -2914,7 +2933,9 @@ class ModuleGenerator:
                 valid = builder.operation(f"and i1 {valid}, {guard}")
             typed = f"typed.{step_idx}"
             next_label = f"next.{step_idx}"
-            builder.line(f"  br i1 {valid}, label %{typed}, label %{next_label}")
+            builder.line(
+                f"  br i1 {valid}, label %{typed}, label %{next_label}, {vops.HOT_BRANCH}"
+            )
             builder.lines.append(f"{typed}:")
             emit_invoke(context, step_idx)
             builder.lines.append(f"{next_label}:")
@@ -2930,7 +2951,7 @@ class ModuleGenerator:
                     "fallback:",
                     f"  %fallback.res = call ptr {fallback_helper}({fallback_args})",
                     "  %fallback.null = icmp eq ptr %fallback.res, null",
-                    "  br i1 %fallback.null, label %fallback.err, label %fallback.check",
+                    f"  br i1 %fallback.null, label %fallback.err, label %fallback.check, {vops.COLD_BRANCH}",
                     "fallback.err:",
                     "  ret ptr null",
                     "fallback.check:",
@@ -2941,7 +2962,7 @@ class ModuleGenerator:
                 checked = builder.operation(f"call i32 {checker}(ptr %fallback.res)")
                 rejected = builder.operation(f"icmp slt i32 {checked}, 0")
                 builder.line(
-                    f"br i1 {rejected}, label %fallback.incompatible, label %fallback.unpack"
+                    f"br i1 {rejected}, label %fallback.incompatible, label %fallback.unpack, {vops.COLD_BRANCH}"
                 )
                 builder.lines.append("fallback.incompatible:")
                 builder.line("call void @mule.fast.release(ptr %fallback.res)")
@@ -2953,7 +2974,7 @@ class ModuleGenerator:
                     "fallback.unpack:",
                     f"  %unpacked = call ptr {unpack_helper}(ptr %fallback.res, ptr inttoptr (i64 {encoded_arity} to ptr))",
                     "  %unpacked.null = icmp eq ptr %unpacked, null",
-                    "  br i1 %unpacked.null, label %fallback.err, label %fallback.slots",
+                    f"  br i1 %unpacked.null, label %fallback.err, label %fallback.slots, {vops.COLD_BRANCH}",
                     "fallback.slots:",
                 ]
             )
@@ -3134,7 +3155,7 @@ class ModuleGenerator:
             "  %fn.globals.slot = alloca ptr",
             "  %callee.entry = call ptr @mule_method_entry(ptr %callee, ptr %fn.globals.slot)",
             f"  %matching = icmp eq ptr %callee.entry, {self.functions[entry.function]}",
-            "  br i1 %matching, label %direct, label %fallback",
+            f"  br i1 %matching, label %direct, label %fallback, {vops.HOT_BRANCH}",
             "direct:",
         ]
         if check_depth:
@@ -3142,7 +3163,7 @@ class ModuleGenerator:
                 [
                     "  %frame = call i32 @mule_enter_frame()",
                     "  %frame.bad = icmp slt i32 %frame, 0",
-                    f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered",
+                    f"  br i1 %frame.bad, label %{frame_fail_label}, label %entered, {vops.COLD_BRANCH}",
                 ]
             )
             if owned_descriptors:
@@ -3200,7 +3221,7 @@ class ModuleGenerator:
             [
                 f"  %fallback.res = call ptr {fallback_helper}({fallback_call_args}) cold noinline",
                 "  %fallback.null = icmp eq ptr %fallback.res, null",
-                "  br i1 %fallback.null, label %failed, label %fallback.check",
+                f"  br i1 %fallback.null, label %failed, label %fallback.check, {vops.COLD_BRANCH}",
                 "fallback.check:",
             ]
         )
@@ -3212,7 +3233,7 @@ class ModuleGenerator:
             rejected = builder.operation(f"icmp slt i32 {checked}, 0")
             builder.lines.extend(
                 [
-                    f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok",
+                    f"  br i1 {rejected}, label %fallback.incompatible, label %fallback.ok, {vops.COLD_BRANCH}",
                     "fallback.incompatible:",
                     "  call void @mule.fast.release(ptr %fallback.res) cold noinline",
                     "  br label %failed",
@@ -3542,7 +3563,7 @@ class ModuleGenerator:
             "entry:\n"
             "  %frame = call i32 @mule_enter_frame()\n"
             "  %bad = icmp slt i32 %frame, 0\n"
-            "  br i1 %bad, label %failed, label %entered\n"
+            f"  br i1 %bad, label %failed, label %entered, {vops.COLD_BRANCH}\n"
             "entered:\n"
             "  %globals = call ptr @mule_protocol_globals()\n"
             "  %owned.receiver = call ptr @mule_retain(ptr %receiver)\n"
@@ -3654,7 +3675,7 @@ class ModuleGenerator:
             startup += [
                 f"  %unit.{index} = call ptr {unit_initializer(unit)}()",
                 f"  %unit.bad.{index} = icmp eq ptr %unit.{index}, null",
-                f"  br i1 %unit.bad.{index}, label %failure, label %unit.ready.{index}",
+                f"  br i1 %unit.bad.{index}, label %failure, label %unit.ready.{index}, {vops.COLD_BRANCH}",
                 f"unit.ready.{index}:",
             ]
         definitions.append(
@@ -3667,25 +3688,25 @@ class ModuleGenerator:
             + f"  %sequence = call ptr {self.functions[linked(program.protocol_entry, program, 'protocol entry')]}(ptr %globals, ptr %args)\n"
             "  %failed = icmp eq ptr %sequence, null\n"
             "  call void @mule_release(ptr %sequence)\n"
-            "  br i1 %failed, label %failure, label %print\n"
+            f"  br i1 %failed, label %failure, label %print, {vops.COLD_BRANCH}\n"
             "print:\n"
             + (
                 f"  %format = call ptr {self.functions[linked(program.format_entry, program, 'format entry')]}(ptr %globals, ptr %args)\n"
                 "  %format.failed = icmp eq ptr %format, null\n"
                 "  call void @mule_release(ptr %format)\n"
-                "  br i1 %format.failed, label %failure, label %format.ready\n"
+                f"  br i1 %format.failed, label %failure, label %format.ready, {vops.COLD_BRANCH}\n"
                 "format.ready:\n"
                 if program.format_entry is not None
                 else ""
             )
             + f"  %result = call ptr {self.functions[linked(program.print_entry, program, 'print entry')]}(ptr %globals, ptr %args)\n"
             "  %print.failed = icmp eq ptr %result, null\n"
-            "  br i1 %print.failed, label %failure, label %unit\n"
+            f"  br i1 %print.failed, label %failure, label %unit, {vops.COLD_BRANCH}\n"
             "unit:\n"
             "  call void @mule_set_attribute_lookup(ptr @mule.attribute.lookup)\n"
             f"  %own = call ptr {unit_initializer(program.unit)}()\n"
             "  %own.failed = icmp eq ptr %own, null\n"
-            "  br i1 %own.failed, label %own.failure, label %ready\n"
+            f"  br i1 %own.failed, label %own.failure, label %ready, {vops.COLD_BRANCH}\n"
             "ready:\n"
             "  ret ptr %result\n"
             "own.failure:\n"
@@ -3784,7 +3805,7 @@ class ModuleGenerator:
         return [
             f"  %unit = call ptr {unit_initializer(unit)}()",
             "  %unit.bad = icmp eq ptr %unit, null",
-            "  br i1 %unit.bad, label %unit.failed, label %unit.ready",
+            f"  br i1 %unit.bad, label %unit.failed, label %unit.ready, {vops.COLD_BRANCH}",
             "unit.failed:",
             "  ret ptr null",
             "unit.ready:",
@@ -3831,21 +3852,21 @@ class ModuleGenerator:
             "entry:",
             f"  %cached = load ptr, ptr {cache}",
             "  %ready = icmp ne ptr %cached, null",
-            "  br i1 %ready, label %existing, label %initialize",
+            f"  br i1 %ready, label %existing, label %initialize, {vops.HOT_BRANCH}",
             "existing:",
             f"  %owned = call ptr @mule_import_loaded(ptr {self.text(info.module_name)})",
             "  ret ptr %owned",
             "initialize:",
             f"  %globals = call ptr {self.import_create_symbol(info)}()",
             "  %bad.globals = icmp eq ptr %globals, null",
-            "  br i1 %bad.globals, label %failed, label %created",
+            f"  br i1 %bad.globals, label %failed, label %created, {vops.COLD_BRANCH}",
             "created:",
             f"  call void @mule_module_loaded(ptr {self.text(info.module_name)}, ptr %globals)",
             f"  %result = call ptr {self.import_execute_symbol(info)}(ptr %globals)",
             "  call void @mule_release(ptr %globals)",
             "  %bad.result = icmp eq ptr %result, null",
             "  call void @mule_release(ptr %result)",
-            "  br i1 %bad.result, label %failed, label %finished",
+            f"  br i1 %bad.result, label %failed, label %finished, {vops.COLD_BRANCH}",
             "finished:",
             f"  %module = call ptr @mule_import_loaded(ptr {self.text(info.module_name)})",
             "  ret ptr %module",
@@ -3879,7 +3900,7 @@ class ModuleGenerator:
                     f"  %status.{label} = {store}",
                     f"  call void @mule_release(ptr %{label})",
                     f"  %bad.{label} = icmp slt i32 %status.{label}, 0",
-                    f"  br i1 %bad.{label}, label %failed, label %after.{label}",
+                    f"  br i1 %bad.{label}, label %failed, label %after.{label}, {vops.COLD_BRANCH}",
                     f"after.{label}:",
                 ]
             )
@@ -3894,7 +3915,7 @@ class ModuleGenerator:
                 [
                     f"  %status.{label} = {store}",
                     f"  %bad.{label} = icmp slt i32 %status.{label}, 0",
-                    f"  br i1 %bad.{label}, label %failed, label %after.{label}",
+                    f"  br i1 %bad.{label}, label %failed, label %after.{label}, {vops.COLD_BRANCH}",
                     f"after.{label}:",
                 ]
             )
@@ -3922,7 +3943,7 @@ class ModuleGenerator:
                     f"  %status.path = {store}",
                     "  call void @mule_release(ptr %path)",
                     "  %bad.path = icmp slt i32 %status.path, 0",
-                    "  br i1 %bad.path, label %failed, label %after.path",
+                    f"  br i1 %bad.path, label %failed, label %after.path, {vops.COLD_BRANCH}",
                     "after.path:",
                 ]
             )
@@ -3957,7 +3978,7 @@ class ModuleGenerator:
                 [
                     "  %frame = call i32 @mule_enter_frame()",
                     "  %bad.frame = icmp slt i32 %frame, 0",
-                    "  br i1 %bad.frame, label %failed, label %execute",
+                    f"  br i1 %bad.frame, label %failed, label %execute, {vops.COLD_BRANCH}",
                     "execute:",
                     f"  %result = call ptr {self.bodies_by_name(info.initializer)}(ptr %globals)",
                     "  call void @mule_leave_frame()",
@@ -3967,7 +3988,7 @@ class ModuleGenerator:
             [
                 "  %bad.result = icmp eq ptr %result, null",
                 "  call void @mule_release(ptr %result)",
-                "  br i1 %bad.result, label %failed, label %success",
+                f"  br i1 %bad.result, label %failed, label %success, {vops.COLD_BRANCH}",
                 "success:",
                 "  %module = call ptr @mule_retain(ptr %globals)",
                 "  ret ptr %module",
@@ -4240,7 +4261,9 @@ class _HelperBuilder:
     def check_condition(self, condition):
         rejected = self.fresh("check.failed")[1:]
         accepted = self.fresh("check.accepted")[1:]
-        self.line(f"br i1 {condition}, label %{rejected}, label %{accepted}")
+        self.line(
+            f"br i1 {condition}, label %{rejected}, label %{accepted}, {vops.COLD_BRANCH}"
+        )
         self.lines.append(rejected + ":")
         self.propagate()
         self.lines.append(accepted + ":")
@@ -4341,7 +4364,9 @@ class _ArgumentGuard(ValueTypeVisitor):
         done = self.gen.fresh("guard.list.done")[1:]
         self.gen.line(f"br label %{start}")
         self.gen.lines.append(start + ":")
-        self.gen.line(f"br i1 {valid}, label %{header}, label %{done}")
+        self.gen.line(
+            f"br i1 {valid}, label %{header}, label %{done}, {vops.HOT_BRANCH}"
+        )
         self.gen.lines.append(header + ":")
         len_addr = self.gen.operation(
             f"getelementptr i64, ptr {self.value}, i64 {vops.VALUE_BUFFER_LENGTH_OFFSET // 8}"
@@ -4361,7 +4386,9 @@ class _ArgumentGuard(ValueTypeVisitor):
         item = self.gen.operation(f"load ptr, ptr {slot}")
         elem_valid = fact.element.accept(_ArgumentGuard(self.gen, item))
         elem_end = self.gen.current_block()
-        self.gen.line(f"br i1 {elem_valid}, label %{step}, label %{done}")
+        self.gen.line(
+            f"br i1 {elem_valid}, label %{step}, label %{done}, {vops.HOT_BRANCH}"
+        )
         self.gen.lines.append(step + ":")
         self.gen.lines.append(f"  %next.{step} = add i64 {idx}, 1")
         self.gen.line(f"br label %{loop}")
@@ -4405,7 +4432,9 @@ class _ArgumentGuard(ValueTypeVisitor):
         done = self.gen.fresh("guard.tuple.done")[1:]
         self.gen.line(f"br label %{start}")
         self.gen.lines.append(start + ":")
-        self.gen.line(f"br i1 {valid}, label %{fields}, label %{done}")
+        self.gen.line(
+            f"br i1 {valid}, label %{fields}, label %{done}, {vops.HOT_BRANCH}"
+        )
         self.gen.lines.append(fields + ":")
         checked = "true"
         for index, element in enumerate(fact.elements):
@@ -5005,7 +5034,9 @@ class FunctionGenerator:
         the continuation block."""
         continuation = self.fresh("ok")[1:]
         target = self.failure_target(failed_value=failed_value)
-        self.line(f"br i1 {failed}, label %{target}, label %{continuation}")
+        self.line(
+            f"br i1 {failed}, label %{target}, label %{continuation}, {vops.COLD_BRANCH}"
+        )
         self.lines.append(continuation + ":")
         return continuation
 
@@ -5271,9 +5302,11 @@ class FunctionGenerator:
         )
         wrong = self.operation(f"icmp eq i32 {matched}, 0")
         failed, accepted = self.fresh("receiver.bad")[1:], self.fresh("receiver.ok")[1:]
-        self.line(f"br i1 {wrong}, label %{failed}, label %{accepted}")
+        self.line(
+            f"br i1 {wrong}, label %{failed}, label %{accepted}, {vops.COLD_BRANCH}"
+        )
         self.lines.append(failed + ":")
-        self.line("call i32 @mule_native_type_error()")
+        self.line("call i32 @mule_native_type_error() cold noinline")
         self.propagate()
         self.lines.append(accepted + ":")
 
@@ -5567,9 +5600,11 @@ class FunctionGenerator:
         if opcode == "fdiv" and check_zero:
             zero = self.operation(f"fcmp oeq double {right}, 0.0")
             failed, continuation = self.fresh("zero")[1:], self.fresh("nonzero")[1:]
-            self.line(f"br i1 {zero}, label %{failed}, label %{continuation}")
+            self.line(
+                f"br i1 {zero}, label %{failed}, label %{continuation}, {vops.COLD_BRANCH}"
+            )
             self.lines.append(failed + ":")
-            self.line("call i32 @mule_native_zero_division()")
+            self.line("call i32 @mule_native_zero_division() cold noinline")
             self.line(f"br label %{self.failure_target()}")
             self.lines.append(continuation + ":")
         return self.operation(f"{opcode} double {left}, {right}")
@@ -5581,9 +5616,11 @@ class FunctionGenerator:
                 self.fresh("domain_err")[1:],
                 self.fresh("sqrt_ok")[1:],
             )
-            self.line(f"br i1 {neg}, label %{failed}, label %{continuation}")
+            self.line(
+                f"br i1 {neg}, label %{failed}, label %{continuation}, {vops.COLD_BRANCH}"
+            )
             self.lines.append(failed + ":")
-            self.line("call i32 @mule_math_domain_error()")
+            self.line("call i32 @mule_math_domain_error() cold noinline")
             self.line(f"br label %{self.failure_target()}")
             self.lines.append(continuation + ":")
         return self.operation(f"call double @llvm.sqrt.f64(double {value})")
@@ -5596,9 +5633,11 @@ class FunctionGenerator:
         neg_exp = self.operation(f"fcmp olt double {right}, 0.0")
         zero_div = self.operation(f"and i1 {zero_base}, {neg_exp}")
         failed_z, check_pow = self.fresh("pow.zero")[1:], self.fresh("pow.eval")[1:]
-        self.line(f"br i1 {zero_div}, label %{failed_z}, label %{check_pow}")
+        self.line(
+            f"br i1 {zero_div}, label %{failed_z}, label %{check_pow}, {vops.COLD_BRANCH}"
+        )
         self.lines.append(failed_z + ":")
-        self.line("call i32 @mule_native_zero_division()")
+        self.line("call i32 @mule_native_zero_division() cold noinline")
         self.line(f"br label %{self.failure_target()}")
         self.lines.append(check_pow + ":")
         result = self.operation(
@@ -5613,9 +5652,11 @@ class FunctionGenerator:
         both_fin = self.operation(f"and i1 {left_fin}, {right_fin}")
         overflow = self.operation(f"and i1 {is_inf}, {both_fin}")
         failed_ovf, ok_label = self.fresh("pow.ovf")[1:], self.fresh("pow.ok")[1:]
-        self.line(f"br i1 {overflow}, label %{failed_ovf}, label %{ok_label}")
+        self.line(
+            f"br i1 {overflow}, label %{failed_ovf}, label %{ok_label}, {vops.COLD_BRANCH}"
+        )
         self.lines.append(failed_ovf + ":")
-        self.line("call i32 @mule_native_overflow()")
+        self.line("call i32 @mule_native_overflow() cold noinline")
         self.line(f"br label %{self.failure_target()}")
         self.lines.append(ok_label + ":")
         return result
@@ -5651,9 +5692,11 @@ class FunctionGenerator:
                     self.fresh("overflow")[1:],
                     self.fresh("bounded")[1:],
                 )
-                self.line(f"br i1 {overflow}, label %{failed}, label %{continuation}")
+                self.line(
+                    f"br i1 {overflow}, label %{failed}, label %{continuation}, {vops.COLD_BRANCH}"
+                )
                 self.lines.append(failed + ":")
-                self.line("call i32 @mule_native_overflow()")
+                self.line("call i32 @mule_native_overflow() cold noinline")
                 self.line(f"br label %{self.failure_target('error')}")
                 self.lines.append(continuation + ":")
                 return value
@@ -6193,7 +6236,9 @@ class FunctionGenerator:
                     if ready == "true"
                     else self.operation(f"and i1 {ready}, {present}")
                 )
-            self.line(f"br i1 {ready}, label %final.ready, label %final.fallback")
+            self.line(
+                f"br i1 {ready}, label %final.ready, label %final.fallback, {vops.HOT_BRANCH}"
+            )
             self.lines.append("final.fallback:")
             operands = ["ptr %globals"]
             if (
@@ -6310,13 +6355,32 @@ class FunctionGenerator:
         self.lines.append("}")
         return wrapper + "\n\n" + adapter + "\n\n" + "\n".join(self.lines)
 
-    def emit_blocks(self) -> None:
+    @property
+    def cold_blocks(self) -> set[str]:
+        cold: set[str] = set()
         for block in self.component.blocks:
-            self.in_cold_block = bool(
-                block.vops
-                and block.vops[-1].info.name
-                in ("raise", "reraise", "assertion-failure")
-            )
+            if block.vops and block.vops[-1].info.name in (
+                "raise",
+                "reraise",
+                "assertion-failure",
+            ):
+                cold.add(block.label)
+        changed = True
+        while changed:
+            changed = False
+            for block in self.component.blocks:
+                if block.label in cold or not block.vops:
+                    continue
+                last = block.vops[-1]
+                if last.info.name == "jump" and last.codegen_info in cold:
+                    cold.add(block.label)
+                    changed = True
+        return cold
+
+    def emit_blocks(self) -> None:
+        cold_blocks = self.cold_blocks
+        for block in self.component.blocks:
+            self.in_cold_block = block.label in cold_blocks
             self.lines.append(block.label + ":")
             target = block.exception_target
             self.exception_target = (
@@ -6478,7 +6542,7 @@ class FunctionGenerator:
                 lines.extend(builder.lines)
                 lines.extend(
                     [
-                        f"  br i1 {guard_ok}, label %invoke.fixnum, label %invoke.general",
+                        f"  br i1 {guard_ok}, label %invoke.fixnum, label %invoke.general, {vops.HOT_BRANCH}",
                         "invoke.fixnum:",
                         f"  %result.fixnum = call ptr {module.specialized[lambda_, 'fixnum']}({arguments})",
                         "  ret ptr %result.fixnum",
@@ -6556,7 +6620,7 @@ class FunctionGenerator:
             if not ordinary_view:
                 lines += [
                     "  %ordinary = call i1 @mule.argument_view.is_view(ptr %args)",
-                    "  br i1 %ordinary, label %view, label %other",
+                    f"  br i1 %ordinary, label %view, label %other, {vops.HOT_BRANCH}",
                     "view:",
                     f"  %view.result = tail call ptr {view_entry}(ptr %globals, ptr %args)",
                     "  ret ptr %view.result",
@@ -6576,7 +6640,7 @@ class FunctionGenerator:
             lines += [
                 f"  %plain.count = call i32 @{count_helper}(ptr %args, i32 {required}, i32 {positional}, i32 {int(rest_idx is not None)})",
                 "  %fits = icmp sge i32 %plain.count, 0",
-                "  br i1 %fits, label %plain, label %binding",
+                f"  br i1 %fits, label %plain, label %binding, {vops.HOT_BRANCH}",
                 "plain:",
             ]
             if rest_idx is not None:
@@ -6587,7 +6651,7 @@ class FunctionGenerator:
                         f"  %rest.start = select i1 %rest.more, i32 {positional}, i32 %plain.count",
                         f"  %plain.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %rest.start)",
                         f"  %plain.missing = icmp eq ptr %plain.{rest_idx}, null",
-                        "  br i1 %plain.missing, label %failed, label %plain.ok",
+                        f"  br i1 %plain.missing, label %failed, label %plain.ok, {vops.COLD_BRANCH}",
                         "plain.ok:",
                     ]
                 else:
@@ -6601,11 +6665,11 @@ class FunctionGenerator:
                     lines += [
                         f"  %plain.empty = {module.constant_tuple(ast.Tuple([]))}",
                         "  %plain.empty.missing = icmp eq ptr %plain.empty, null",
-                        "  br i1 %plain.empty.missing, label %plain.cleanup, label %plain.dictionary",
+                        f"  br i1 %plain.empty.missing, label %plain.cleanup, label %plain.dictionary, {vops.COLD_BRANCH}",
                         "plain.dictionary:",
                         f"  %plain.{keywords_idx} = call ptr {build_dict}(ptr %plain.empty)",
                         f"  %plain.dictionary.missing = icmp eq ptr %plain.{keywords_idx}, null",
-                        "  br i1 %plain.dictionary.missing, label %plain.cleanup, label %plain.ready",
+                        f"  br i1 %plain.dictionary.missing, label %plain.cleanup, label %plain.ready, {vops.COLD_BRANCH}",
                         "plain.cleanup:",
                     ]
                     if rest_idx is not None:
@@ -6729,7 +6793,7 @@ class FunctionGenerator:
                 "ptr %kw.values.slot)"
             ),
             "  %kw.view.bad = icmp slt i64 %kw.count, 0",
-            "  br i1 %kw.view.bad, label %failed, label %kw.view.ok",
+            f"  br i1 %kw.view.bad, label %failed, label %kw.view.ok, {vops.COLD_BRANCH}",
             "kw.view.ok:",
             "  %kw.npos = load i64, ptr %kw.count.slot",
             "  %kw.names = load ptr, ptr %kw.names.slot",
@@ -6739,7 +6803,7 @@ class FunctionGenerator:
         if rest_idx is None:
             lines += [
                 f"  %kw.too.many = icmp sgt i64 %kw.npos, {positional}",
-                "  br i1 %kw.too.many, label %kw.too.many.error, label %kw.slots.init",
+                f"  br i1 %kw.too.many, label %kw.too.many.error, label %kw.slots.init, {vops.COLD_BRANCH}",
                 "kw.too.many.error:",
                 "  call void @mule_binding_error(i32 0, ptr null)",
                 "  br label %failed",
@@ -6788,7 +6852,7 @@ class FunctionGenerator:
             *fast,
             f"  %kw.fast = add i64 {previous}, 0",
             "  %kw.miss = icmp eq i64 %kw.fast, -1",
-            "  br i1 %kw.miss, label %kw.slow, label %kw.dispatch",
+            f"  br i1 %kw.miss, label %kw.slow, label %kw.dispatch, {vops.COLD_BRANCH}",
             "kw.slow:",
             (
                 "  %kw.slow.index = call i64 @mule_binding_name_index(ptr %kw.name, "
@@ -6804,7 +6868,7 @@ class FunctionGenerator:
                 f"kw.bind.{position}:",
                 f"  %kw.old.{position} = load ptr, ptr %kw.slot.{index}",
                 f"  %kw.bound.{position} = icmp ne ptr %kw.old.{position}, null",
-                f"  br i1 %kw.bound.{position}, label %kw.duplicate, label %kw.store.{position}",
+                f"  br i1 %kw.bound.{position}, label %kw.duplicate, label %kw.store.{position}, {vops.COLD_BRANCH}",
                 f"kw.store.{position}:",
                 f"  %kw.value.addr.{position} = getelementptr ptr, ptr %kw.values, i64 %kw.k",
                 f"  %kw.value.{position} = load ptr, ptr %kw.value.addr.{position}",
@@ -6837,7 +6901,7 @@ class FunctionGenerator:
             lines += [
                 f"  %kw.check.{index} = load ptr, ptr %kw.slot.{index}",
                 f"  %kw.missing.{index} = icmp eq ptr %kw.check.{index}, null",
-                f"  br i1 %kw.missing.{index}, label %kw.missing.error.{index}, label %kw.present.{index}",
+                f"  br i1 %kw.missing.{index}, label %kw.missing.error.{index}, label %kw.present.{index}, {vops.COLD_BRANCH}",
                 f"kw.missing.error.{index}:",
                 f"  call void @mule_binding_error(i32 3, ptr {module.text(names[index])})",
                 "  br label %failed",
@@ -6862,7 +6926,7 @@ class FunctionGenerator:
                     "  %kw.rest.start = trunc i64 %kw.rest.from to i32",
                     f"  %bound.{rest_idx} = call ptr @mule_rest_args(ptr %args, i32 %kw.rest.start)",
                     f"  %kw.rest.bad = icmp eq ptr %bound.{rest_idx}, null",
-                    "  br i1 %kw.rest.bad, label %failed, label %kw.rest.ok",
+                    f"  br i1 %kw.rest.bad, label %failed, label %kw.rest.ok, {vops.COLD_BRANCH}",
                     "kw.rest.ok:",
                 ]
                 owned.append(f"%bound.{rest_idx}")
@@ -6877,11 +6941,11 @@ class FunctionGenerator:
                 lines += [
                     f"  %kw.empty = {module.constant_tuple(ast.Tuple([]))}",
                     "  %kw.empty.bad = icmp eq ptr %kw.empty, null",
-                    "  br i1 %kw.empty.bad, label %kw.dict.fail, label %kw.dict.make",
+                    f"  br i1 %kw.empty.bad, label %kw.dict.fail, label %kw.dict.make, {vops.COLD_BRANCH}",
                     "kw.dict.make:",
                     f"  {extra} = call ptr {build_dict}(ptr %kw.empty)",
                     f"  %kw.dict.bad = icmp eq ptr {extra}, null",
-                    "  br i1 %kw.dict.bad, label %kw.dict.fail, label %kw.dict.ok",
+                    f"  br i1 %kw.dict.bad, label %kw.dict.fail, label %kw.dict.ok, {vops.COLD_BRANCH}",
                     *fail_block("kw.dict.fail"),
                     "kw.dict.ok:",
                 ]
@@ -6900,7 +6964,7 @@ class FunctionGenerator:
                     "kw.extra.insert:",
                     "  %kw.e.key = call ptr @mule_binding_keyword_text(ptr %args, i64 %kw.e)",
                     "  %kw.e.key.bad = icmp eq ptr %kw.e.key, null",
-                    "  br i1 %kw.e.key.bad, label %kw.extra.fail, label %kw.extra.store",
+                    f"  br i1 %kw.e.key.bad, label %kw.extra.fail, label %kw.extra.store, {vops.COLD_BRANCH}",
                     "kw.extra.store:",
                     "  %kw.e.value.addr = getelementptr ptr, ptr %kw.values, i64 %kw.e",
                     "  %kw.e.value.borrowed = load ptr, ptr %kw.e.value.addr",
@@ -6908,7 +6972,7 @@ class FunctionGenerator:
                     f"  %kw.e.dict = call ptr @mule.fast.retain(ptr {extra})",
                     f"  %kw.e.result = call ptr {setitem}(ptr %kw.e.dict, ptr %kw.e.key, ptr %kw.e.value)",
                     "  %kw.e.result.bad = icmp eq ptr %kw.e.result, null",
-                    "  br i1 %kw.e.result.bad, label %kw.extra.fail, label %kw.extra.done",
+                    f"  br i1 %kw.e.result.bad, label %kw.extra.fail, label %kw.extra.done, {vops.COLD_BRANCH}",
                     "kw.extra.done:",
                     "  call void @mule.fast.release(ptr %kw.e.result)",
                     "  br label %kw.extra.next",
@@ -6942,7 +7006,7 @@ class FunctionGenerator:
                 f"kw.default.{index}:",
                 f"  %kw.default.value.{index} = call ptr @mule_binding_default_at(ptr %args, i32 {offset})",
                 f"  %kw.default.bad.{index} = icmp eq ptr %kw.default.value.{index}, null",
-                f"  br i1 %kw.default.bad.{index}, label %kw.default.fail.{index}, label %kw.acquired.{index}",
+                f"  br i1 %kw.default.bad.{index}, label %kw.default.fail.{index}, label %kw.acquired.{index}, {vops.COLD_BRANCH}",
                 *fail_block(f"kw.default.fail.{index}"),
                 f"kw.acquired.{index}:",
                 (
@@ -6970,7 +7034,7 @@ class FunctionGenerator:
             "entry:",
             f"  %status = call i32 @{check}(ptr %args, i32 {fixed})",
             "  %wrong = icmp slt i32 %status, 0",
-            "  br i1 %wrong, label %failed, label %checked",
+            f"  br i1 %wrong, label %failed, label %checked, {vops.COLD_BRANCH}",
             "checked:",
         ]
         if variadic:
@@ -6978,7 +7042,7 @@ class FunctionGenerator:
                 [
                     f"  %arg.{fixed} = call ptr @mule_rest_args(ptr %args, i32 {fixed})",
                     f"  %missing = icmp eq ptr %arg.{fixed}, null",
-                    "  br i1 %missing, label %failed, label %rest.ok",
+                    f"  br i1 %missing, label %failed, label %rest.ok, {vops.COLD_BRANCH}",
                     "rest.ok:",
                 ]
             )
@@ -7043,7 +7107,9 @@ def native_adapter(
         )
         wrong = gen.operation(f"icmp eq i32 {matched}, 0")
         continuation = gen.fresh("layout.ok")[1:]
-        gen.line(f"br i1 {wrong}, label %fallback, label %{continuation}")
+        gen.line(
+            f"br i1 {wrong}, label %fallback, label %{continuation}, {vops.COLD_BRANCH}"
+        )
         gen.lines.append(continuation + ":")
         dependencies.append(value)
     if not adapt_return:
@@ -7117,7 +7183,7 @@ def native_callbacks(module: ModuleGenerator, layout) -> str:
         f"define internal ptr {layout.constructor}(ptr %globals, ptr %class, i64 %count, ptr %args) {{",
         "entry:",
         f"  %wrong = icmp ne i64 %count, {count}",
-        "  br i1 %wrong, label %error, label %checked",
+        f"  br i1 %wrong, label %error, label %checked, {vops.COLD_BRANCH}",
         "checked:",
         "  %owned.class = call ptr @mule.fast.retain(ptr %class)",
     ]
@@ -7136,7 +7202,7 @@ def native_callbacks(module: ModuleGenerator, layout) -> str:
             f"  %result = call ptr {module.bodies[layout.protocols['construct']]}({', '.join(parameters)})",
             "  ret ptr %result",
             "error:",
-            "  call i32 @mule_native_type_error()",
+            "  call i32 @mule_native_type_error() cold noinline",
             "  ret ptr null",
             "}",
         ]

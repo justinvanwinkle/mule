@@ -5,11 +5,11 @@ entry:
   %bits = ptrtoint ptr %operand to i64
   %tag = and i64 %bits, 1
   %integer = icmp ne i64 %tag, 0
-  br i1 %integer, label %fixnum, label %slow
+  br i1 %integer, label %fixnum, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 fixnum:
   %decoded = ashr i64 %bits, 1
   ret ptr %operand
 slow:
-  %fallback = call ptr @mule_unary(i32 0, ptr %operand)
+  %fallback = call ptr @mule_unary(i32 0, ptr %operand) cold
   ret ptr %fallback
 }

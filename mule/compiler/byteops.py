@@ -10,6 +10,7 @@ from .fndb import _arg_type, defknown
 from .knownfun import defpropagate
 from .vmdef import define_vop
 from .vop import DESCRIPTOR, IMMEDIATE, NULL, REFERENCE, SIGNED
+from .vops import COLD_BRANCH, HOT_BRANCH
 
 OBJECT = (DESCRIPTOR, IMMEDIATE, REFERENCE)
 WORD = (SIGNED, DESCRIPTOR, IMMEDIATE)
@@ -63,14 +64,14 @@ def _checked_storage(gen, storage):
     bad = gen.fresh("byte.storage.bad")[1:]
     object_label = gen.fresh("byte.storage.object")[1:]
     valid = gen.fresh("byte.storage.valid")[1:]
-    gen.line(f"br i1 {invalid}, label %{bad}, label %{object_label}")
+    gen.line(f"br i1 {invalid}, label %{bad}, label %{object_label}, {COLD_BRANCH}")
     gen.lines.append(object_label + ":")
     tag_address = _address(gen, storage, 16)
     tag = gen.operation(f"load i32, ptr {tag_address}")
     matches = gen.operation(f"icmp eq i32 {tag}, 27")
-    gen.line(f"br i1 {matches}, label %{valid}, label %{bad}")
+    gen.line(f"br i1 {matches}, label %{valid}, label %{bad}, {HOT_BRANCH}")
     gen.lines.append(bad + ":")
-    gen.line("call i32 @mule_native_type_error()")
+    gen.line("call i32 @mule_native_type_error() cold noinline")
     gen.propagate()
     gen.lines.append(valid + ":")
     return storage
@@ -155,9 +156,11 @@ def _append_storage(gen, storage, value):
     capacity = _read_word(gen, storage, 40)
     room = gen.operation(f"icmp ult i64 {length}, {capacity}")
     grow, store = gen.fresh("byte.grow")[1:], gen.fresh("byte.store")[1:]
-    gen.line(f"br i1 {room}, label %{store}, label %{grow}")
+    gen.line(f"br i1 {room}, label %{store}, label %{grow}, {HOT_BRANCH}")
     gen.lines.append(grow + ":")
-    status = gen.operation(f"call i32 @mule_byte_storage_reserve(ptr {storage}, i64 1)")
+    status = gen.operation(
+        f"call i32 @mule_byte_storage_reserve(ptr {storage}, i64 1) cold noinline"
+    )
     gen.check_status(status)
     gen.line(f"br label %{store}")
     gen.lines.append(store + ":")
@@ -275,11 +278,11 @@ def _append_array_byte(gen, vop):
     bad = gen.fresh("byte.exported")[1:]
     append = gen.fresh("byte.append")[1:]
     done = gen.fresh("byte.append.done")[1:]
-    gen.line(f"br i1 {exported}, label %{bad}, label %{append}")
+    gen.line(f"br i1 {exported}, label %{bad}, label %{append}, {COLD_BRANCH}")
     gen.lines.append(bad + ":")
     boxed = gen.encode(value)
     result = gen.operation(
-        f"call ptr @mule_bytearray_append_fast(ptr {array}, ptr {boxed})"
+        f"call ptr @mule_bytearray_append_fast(ptr {array}, ptr {boxed}) cold noinline"
     )
     gen.check_pointer(result)
     gen.line(f"br label %{done}")

@@ -14,13 +14,13 @@ entry:
   %range = icmp eq i64 %result, %test.decoded
   %no.overflow = xor i1 %overflow, true
   %fits = and i1 %range, %no.overflow
-  br i1 %fits, label %encode, label %slow
+  br i1 %fits, label %encode, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 encode:
   %shifted = shl i64 %result, 1
   %tagged = or i64 %shifted, 1
   %value = inttoptr i64 %tagged to ptr
   ret ptr %value
 slow:
-  %fallback = call ptr @mule_binary_reuse(i32 2, ptr %left, ptr %right, i32 %inplace, ptr null)
+  %fallback = call ptr @mule_binary_reuse(i32 2, ptr %left, ptr %right, i32 %inplace, ptr null) cold
   ret ptr %fallback
 }

@@ -7,7 +7,7 @@ entry:
   %tag = and i64 %bits, 1
   %immediate = icmp ne i64 %tag, 0
   %invalid = or i1 %null, %immediate
-  br i1 %invalid, label %no, label %heap
+  br i1 %invalid, label %no, label %heap, !prof !{!"branch_weights", i32 1, i32 2000}
 heap:
   %kind.addr = getelementptr i8, ptr %args, i64 16
   %kind = load i32, ptr %kind.addr

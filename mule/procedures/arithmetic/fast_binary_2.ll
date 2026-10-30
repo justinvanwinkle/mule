@@ -7,7 +7,7 @@ entry:
   %tags = and i64 %left.bits, %right.bits
   %tag = and i64 %tags, 1
   %integers = icmp ne i64 %tag, 0
-  br i1 %integers, label %fixnums, label %slow
+  br i1 %integers, label %fixnums, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 fixnums:
   %a = ashr i64 %left.bits, 1
   %b = ashr i64 %right.bits, 1
@@ -19,7 +19,7 @@ fixnums:
   %range = icmp eq i64 %result, %test.decoded
   %no.overflow = xor i1 %overflow, true
   %fits = and i1 %range, %no.overflow
-  br i1 %fits, label %encode, label %slow
+  br i1 %fits, label %encode, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 encode:
   %shifted = shl i64 %result, 1
   %tagged = or i64 %shifted, 1
@@ -32,6 +32,6 @@ slow.store:
   store ptr %reuse, ptr %reuse.slot
   br label %slow.call
 slow.call:
-  %fallback = call ptr @mule_binary_reuse(i32 2, ptr %left, ptr %right, i32 %inplace, ptr %reuse.slot)
+  %fallback = call ptr @mule_binary_reuse(i32 2, ptr %left, ptr %right, i32 %inplace, ptr %reuse.slot) cold
   ret ptr %fallback
 }

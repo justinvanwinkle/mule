@@ -7,7 +7,7 @@ entry:
   %a = ashr i64 %left.bits, 1
   %b = ashr i64 %right.bits, 1
   %nonnegative = icmp sge i64 %b, 0
-  br i1 %nonnegative, label %shift, label %slow
+  br i1 %nonnegative, label %shift, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 shift:
   %bounded = icmp slt i64 %b, 63
   %count = select i1 %bounded, i64 %b, i64 63
@@ -19,6 +19,6 @@ encode:
   %value = inttoptr i64 %tagged to ptr
   ret ptr %value
 slow:
-  %fallback = call ptr @mule_binary_reuse(i32 9, ptr %left, ptr %right, i32 %inplace, ptr null)
+  %fallback = call ptr @mule_binary_reuse(i32 9, ptr %left, ptr %right, i32 %inplace, ptr null) cold
   ret ptr %fallback
 }

@@ -23,6 +23,6 @@ yes:
 no:
   ret i32 0
 slow:
-  %result = call i32 @mule_truth(ptr %value)
+  %result = call i32 @mule_truth(ptr %value) cold
   ret i32 %result
 }

@@ -59,6 +59,6 @@ read:
   %res = inttoptr i64 %tagged to ptr
   ret ptr %res
 slow:
-  %slow.res = call ptr @mule_text_codepoint_at(ptr %value, i64 %index)
+  %slow.res = call ptr @mule_text_codepoint_at(ptr %value, i64 %index) cold
   ret ptr %slow.res
 }

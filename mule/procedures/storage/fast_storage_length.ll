@@ -8,7 +8,7 @@ entry:
   %words = icmp eq i32 %kind, 28
   %list.or.tuple = or i1 %list, %tuple
   %supported = or i1 %list.or.tuple, %words
-  br i1 %supported, label %length, label %slow
+  br i1 %supported, label %length, label %slow, !prof !{!"branch_weights", i32 2000, i32 1}
 length:
   %length.addr = getelementptr i8, ptr %sequence, i64 32
   %count = load i64, ptr %length.addr
@@ -17,6 +17,6 @@ length:
   %result = inttoptr i64 %tagged to ptr
   ret ptr %result
 slow:
-  %fallback = call ptr @mule_storage_length(ptr %sequence)
+  %fallback = call ptr @mule_storage_length(ptr %sequence) cold
   ret ptr %fallback
 }

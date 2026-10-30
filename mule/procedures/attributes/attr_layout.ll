@@ -8,17 +8,17 @@ entry:
   %integer = icmp ne i64 %tag, 0
   %null = icmp eq ptr %value, null
   %skip = or i1 %integer, %null
-  br i1 %skip, label %none, label %object
+  br i1 %skip, label %none, label %object, !prof !{!"branch_weights", i32 1, i32 2000}
 object:
   %tag.addr = getelementptr i8, ptr %value, i64 16
   %kind = load i32, ptr %tag.addr
   %instance = icmp eq i32 %kind, 16
-  br i1 %instance, label %fields, label %none
+  br i1 %instance, label %fields, label %none, !prof !{!"branch_weights", i32 2000, i32 1}
 fields:
   %attrs.addr = getelementptr i8, ptr %value, i64 48
   %attrs = load ptr, ptr %attrs.addr
   %plain = icmp eq ptr %attrs, null
-  br i1 %plain, label %owner, label %none
+  br i1 %plain, label %owner, label %none, !prof !{!"branch_weights", i32 2000, i32 1}
 owner:
   %class.addr = getelementptr i8, ptr %value, i64 24
   %class = load ptr, ptr %class.addr

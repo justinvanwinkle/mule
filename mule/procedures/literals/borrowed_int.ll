@@ -4,9 +4,9 @@ define internal ptr @mule.borrowed.int(ptr %slot, ptr %integer) {
 entry:
   %cached = load ptr, ptr %slot
   %present = icmp ne ptr %cached, null
-  br i1 %present, label %ready, label %build
+  br i1 %present, label %ready, label %build, !prof !{!"branch_weights", i32 2000, i32 1}
 build:
-  %built = call ptr @mule_literal_integer(ptr %integer)
+  %built = call ptr @mule_literal_integer(ptr %integer) cold
   store ptr %built, ptr %slot
   br label %ready
 ready:
